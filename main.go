@@ -12,17 +12,14 @@ import (
 
 type Sample struct {
 	sample string
-	tags   map[string]string
+	tags   string
 	count  int
 }
 
-func sampleHash(s string, tags map[string]string) uint32 {
+func sampleHash(s string, tags string) uint32 {
 	h := fnv.New32a()
 	h.Write([]byte(s))
-	for k, v := range tags {
-		h.Write([]byte(k))
-		h.Write([]byte(v))
-	}
+	h.Write([]byte(tags))
 	return h.Sum32()
 }
 
@@ -39,7 +36,7 @@ func newSampleCollection() *SampleCollection {
 	}
 }
 
-func (sc *SampleCollection) addSample(str string, tags map[string]string) {
+func (sc *SampleCollection) addSample(str string, tags string) {
 	hash := sampleHash(str, tags)
 	if sample, exists := sc.samples[hash]; !exists {
 		sc.samples[hash] = Sample{
@@ -67,38 +64,53 @@ func main() {
 				Name:  "pyroscopeAuth",
 				Usage: "Pyroscope authentication token",
 			},
+			&cli.StringFlag{
+				Name:  "app",
+				Usage: "App Name for pyroscope",
+			},
 			&cli.StringSliceFlag{
-				Name:  "tag-from",
-				Usage: "Map tags from trace to custom tag names",
+				Name:  "tag",
+				Usage: "key=value for static tags, key=%value% for dynamic tags",
 			},
 			&cli.DurationFlag{
 				Name:  "accumulation-interval",
 				Usage: "Interval between sending accumulated samples to Pyroscope",
-				Value: 2 * time.Second,
+				Value: 10 * time.Second,
 			},
 		},
 		Action: func(context *cli.Context) error {
+			staticTags := make(map[string]string)
+			dynamicTags := make(map[string]string)
+
 			pyroscopeURL := context.String("pyroscope")
 			pyroscopeAuth := context.String("pyroscopeAuth")
-			tags := make(map[string]string)
-			for _, tag := range context.StringSlice("tag-from") {
-				parts := strings.SplitN(tag, "-", 2)
+			accumulationInterval := context.Duration("accumulation-interval")
+			app := context.String("app")
+			args := context.Args().Slice()
+
+			for _, tag := range context.StringSlice("tag") {
+				parts := strings.SplitN(tag, "=", 2)
 				if len(parts) == 2 {
-					tags[parts[0]] = parts[1]
+					key := parts[0]
+					value := parts[1]
+					lastCharPosition := len(value) - 1
+					if value[0:1] == "%" && value[lastCharPosition:] == "%" {
+						dynamicTags[value[1:lastCharPosition]] = key
+					} else {
+						staticTags[key] = value
+					}
 				}
 			}
-			accumulationInterval := context.Duration("accumulation-interval")
-			args := context.Args().Slice()
 
 			samplesChannel := make(chan SampleCollection)
 
 			go func() {
-				if err := runPhpspy(samplesChannel, args[1:], tags, accumulationInterval); err != nil {
+				if err := runPhpspy(samplesChannel, args[1:], dynamicTags, accumulationInterval); err != nil {
 					log.Fatalf("Ошибка запуска phpspy: %v", err)
 				}
 			}()
 
-			sendToPyroscope(samplesChannel, pyroscopeURL, pyroscopeAuth)
+			sendToPyroscope(samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth)
 
 			return nil
 		},
