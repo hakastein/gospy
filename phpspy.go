@@ -5,37 +5,54 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-func parseMeta(str string, tags map[string]string) map[string]string {
-	data := make(map[string]string)
-	lines := strings.Split(str, "\n")
+func parseMeta(line string, tags map[string]string) (string, bool) {
+	line = strings.TrimSpace(line)
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+	replacer := strings.NewReplacer(
+		"# glopeek ", "",
+		"# peek ", "",
+		"# ", "",
+	)
 
-		replacer := strings.NewReplacer(
-			"# glopeek ", "",
-			"# peek ", "",
-			"# ", "",
-		)
+	line = replacer.Replace(line)
 
-		line = replacer.Replace(line)
+	keyval := strings.Split(line, " = ")
 
-		keyval := strings.Split(line, " = ")
+	if key, exists := tags[keyval[0]]; exists && len(keyval) == 2 {
+		return fmt.Sprintf("%s=%s", key, keyval[1]), true
+	}
 
-		if len(keyval) != 2 {
-			continue
+	return "", false
+}
+
+func makeSample(sampleArr []string) string {
+	lastChar := len(sampleArr) - 1
+	var sample strings.Builder
+	for i := lastChar; i >= 0; i -= 1 {
+		strArr := strings.Split(sampleArr[i], " ")
+
+		sample.WriteString(strArr[1])
+		if i == lastChar {
+			fileName := filepath.Base(strings.Split(strArr[2], ":")[0])
+			sample.WriteString(" (")
+			sample.WriteString(fileName)
+			sample.WriteString(")")
 		}
-
-		if key, exists := tags[keyval[0]]; exists {
-			data[key] = keyval[1]
+		if i != 1 {
+			sample.WriteString(";")
 		}
 	}
 
-	return data
+	return sample.String()
+}
+
+func makeTags(tagsArr []string) string {
+	return strings.Join(tagsArr, ",")
 }
 
 // runPhpspy запускает phpspy и обрабатывает его вывод
@@ -54,8 +71,9 @@ func runPhpspy(channel chan SampleCollection, args []string, tags map[string]str
 
 		scanner := bufio.NewScanner(stdout)
 		collection := newSampleCollection()
-		var currentTrace strings.Builder
-		var currentMeta strings.Builder
+
+		var currentTrace []string
+		var currentTags []string
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -74,14 +92,16 @@ func runPhpspy(channel chan SampleCollection, args []string, tags map[string]str
 
 				switch {
 				case len(strings.TrimSpace(line)) == 0:
-					collection.addSample(
-						currentTrace.String(),
-						parseMeta(currentMeta.String(), tags),
-					)
+					collection.addSample(makeSample(currentTrace), makeTags(currentTags))
+					currentTags = nil
+					currentTrace = nil
 				case line[0] == '#':
-					currentMeta.WriteString(line + "\n")
+					tag, exists := parseMeta(line, tags)
+					if exists {
+						currentTags = append(currentTags, tag)
+					}
 				default:
-					currentTrace.WriteString(line + "\n")
+					currentTrace = append(currentTrace, line)
 				}
 			}
 		}()
