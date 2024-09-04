@@ -62,11 +62,11 @@ func runPhpspy(channel chan SampleCollection, args []string, tags map[string]str
 		stdout, err := cmd.StdoutPipe()
 
 		if err != nil {
-			return fmt.Errorf("ошибка получения stdout: %w", err)
+			return fmt.Errorf("phpspy stdout error: %w", err)
 		}
 
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("ошибка получения stdout: %w", err)
+			return fmt.Errorf("phpspy stdout error: %w", err)
 		}
 
 		scanner := bufio.NewScanner(stdout)
@@ -107,7 +107,7 @@ func runPhpspy(channel chan SampleCollection, args []string, tags map[string]str
 		}()
 
 		if err := cmd.Wait(); err != nil {
-			log.Printf("phpspy завершился с ошибкой: %v", err)
+			log.Printf("phpspy exited with: %v", err)
 			time.Sleep(1 * time.Second)
 			continue
 		}

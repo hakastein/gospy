@@ -16,17 +16,17 @@ type Sample struct {
 	count  int
 }
 
+type SampleCollection struct {
+	from    time.Time
+	to      time.Time
+	samples map[uint32]Sample
+}
+
 func sampleHash(s string, tags string) uint32 {
 	h := fnv.New32a()
 	h.Write([]byte(s))
 	h.Write([]byte(tags))
 	return h.Sum32()
-}
-
-type SampleCollection struct {
-	from    time.Time
-	to      time.Time
-	samples map[uint32]Sample
 }
 
 func newSampleCollection() *SampleCollection {
