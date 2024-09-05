@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-// parseMeta обрабатывает строки метаданных и сопоставляет их с тегами
 func parseMeta(line string, tags map[string]string) (string, bool) {
 	line = strings.TrimPrefix(line, "# glopeek ")
 	line = strings.TrimPrefix(line, "# peek ")
@@ -30,7 +29,6 @@ func parseMeta(line string, tags map[string]string) (string, bool) {
 	return "", false
 }
 
-// makeSample создает строку-сэмпл на основе переданного трейсинга
 func makeSample(sampleArr []string) string {
 	var sample strings.Builder
 	lastChar := len(sampleArr) - 1
@@ -61,7 +59,6 @@ func makeTags(tagsArr []string) string {
 	return strings.Join(tagsArr, ",")
 }
 
-// extractFlagValue извлекает значение флага из списка флагов
 func extractFlagValue[T any](flags *[]string, longKey string, shortKey string, defaultValue T) T {
 	var value T
 	var found bool
@@ -79,7 +76,7 @@ func extractFlagValue[T any](flags *[]string, longKey string, shortKey string, d
 		} else if flag == shortKey && i+1 < flaglen {
 			value = convertTo[T]((*flags)[i+1])
 			found = true
-			i++ // пропускаем следующий элемент
+			i++
 		} else if flag == longKey || flag == shortKey {
 			if _, ok := any(value).(bool); ok {
 				value = convertTo[T]("true")
@@ -97,7 +94,6 @@ func extractFlagValue[T any](flags *[]string, longKey string, shortKey string, d
 	return value
 }
 
-// convertTo преобразует строку в тип T
 func convertTo[T any](value string) T {
 	var result T
 	switch any(result).(type) {
@@ -115,13 +111,11 @@ func convertTo[T any](value string) T {
 	return result
 }
 
-// runPhpspy запускает phpspy и обрабатывает его вывод
 func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]string, interval time.Duration) error {
 	for {
 		argsCopy := make([]string, len(args))
 		copy(argsCopy, args)
 
-		// Извлечение значений флагов
 		rateHz := extractFlagValue[int](&argsCopy, "rate-hz", "H", 99)
 
 		isTop := extractFlagValue[bool](&argsCopy, "top", "t", false)
