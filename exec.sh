@@ -5,15 +5,16 @@ cd /home/hakastein/work/macrocrm
 docker compose exec php /gospy/gospy \
   --pyroscope=https://monitoring.macrodom.ru:4040 \
   --tag="env=development" \
-  --tag="test=1" \
+  --tag="host=macrocrm.loc" \
   --tag="uri=%server.REQUEST_URI%" \
   --app=test-app \
     phpspy --max-depth=-1 \
     --threads=100 \
-    --rate-hz=25 \
+    -H 25 \
     --buffer-size=65536 \
     --php-version=74 \
     --continue-on-error \
-    --request-info=qcup \
+    --top \
+    -r qcup \
     --peek-global=server.REQUEST_URI \
     -P '-x "php-fpm" '
