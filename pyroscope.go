@@ -7,7 +7,6 @@ import (
 	"net/http"
 )
 
-// combineTags объединяет статические и динамические теги в одну строку
 func combineTags(staticTags, dynamicTags string) string {
 	if dynamicTags == "" {
 		return staticTags
@@ -31,16 +30,15 @@ func sendToPyroscope(
 	for {
 		val, ok := <-channel
 		if !ok {
-			break // Выходим из цикла, если канал закрыт
+			break
 		}
 
-		val.RLock()         // блокируем для чтения
-		defer val.RUnlock() // не забываем разблокировать
+		val.RLock()
+		defer val.RUnlock()
 
-		// Форматируем данные профилирования в формате folded
 		var buffer bytes.Buffer
 		for dynamicTags, tagSamples := range val.samples {
-			// Объединяем статические и динамические теги
+
 			fullTags := combineTags(staticTags, dynamicTags)
 
 			for _, sample := range tagSamples {
@@ -48,20 +46,17 @@ func sendToPyroscope(
 				buffer.WriteString(line)
 			}
 
-			// Создаем запрос
 			req, err := http.NewRequest("POST", pyroscopeURL+"/ingest", &buffer)
 			if err != nil {
 				log.Printf("Error creating request: %v", err)
 				continue
 			}
 
-			// Устанавливаем заголовки
 			req.Header.Set("Content-Type", "text/plain")
 			if pyroscopeAuth != "" {
 				req.Header.Set("Authorization", pyroscopeAuth)
 			}
 
-			// Устанавливаем параметры запроса
 			q := req.URL.Query()
 			q.Add("name", fmt.Sprintf("%s{%s}", app, fullTags))
 			q.Add("from", fmt.Sprintf("%d", val.from.Unix()))
@@ -70,7 +65,6 @@ func sendToPyroscope(
 			q.Add("format", "folded")
 			req.URL.RawQuery = q.Encode()
 
-			// Отправляем запрос
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Printf("Error sending request: %v", err)
