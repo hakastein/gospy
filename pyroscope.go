@@ -66,6 +66,7 @@ func sendToPyroscope(
 			q.Add("name", fmt.Sprintf("%s{%s}", app, fullTags))
 			q.Add("from", fmt.Sprintf("%d", val.from.Unix()))
 			q.Add("until", fmt.Sprintf("%d", val.to.Unix()))
+			q.Add("sampleRate", fmt.Sprintf("%d", val.rateHz))
 			q.Add("format", "folded")
 			req.URL.RawQuery = q.Encode()
 
