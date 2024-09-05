@@ -19,15 +19,16 @@ type Sample struct {
 
 // samples grouped by tags
 type SampleCollection struct {
-	from         time.Time
-	to           time.Time
-	samples      map[string]map[uint64]*Sample
-	sync.RWMutex // Mutex for concurrent access management
+	from       time.Time
+	to         time.Time
+	samples    map[string]map[uint64]*Sample
+	sampleRate int
+	sync.RWMutex
 }
 
 // Function for generating a hash from string and tags
 func sampleHash(s, tags string) uint64 {
-	h := xxhash.Sum64String(s + tags) // Using xxhash for faster hashing
+	h := xxhash.Sum64String(s + tags)
 	return h
 }
 
@@ -91,6 +92,7 @@ func getTags(tagsInput []string) (string, map[string]string, error) {
 }
 
 func main() {
+
 	app := &cli.App{
 		Name:  "gospy",
 		Usage: "A Go wrapper for phpspy that sends traces to Pyroscope",
@@ -126,7 +128,7 @@ func main() {
 			pyroscopeAuth := context.String("pyroscopeAuth")
 			accumulationInterval := context.Duration("accumulation-interval")
 			app := context.String("app")
-			args := context.Args().Slice()
+			arguments := context.Args().Slice()
 			staticTags, dynamicTags, tagsErr := getTags(context.StringSlice("tag"))
 
 			if tagsErr != nil {
@@ -134,7 +136,7 @@ func main() {
 			}
 
 			go func() {
-				if err := runPhpspy(samplesChannel, args[1:], dynamicTags, accumulationInterval); err != nil {
+				if err := runPhpspy(samplesChannel, arguments[1:], dynamicTags, accumulationInterval); err != nil {
 					log.Fatalf("Ошибка запуска phpspy: %v", err)
 				}
 			}()
