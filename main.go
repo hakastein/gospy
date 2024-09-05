@@ -19,10 +19,10 @@ type Sample struct {
 
 // samples grouped by tags
 type SampleCollection struct {
-	from       time.Time
-	to         time.Time
-	samples    map[string]map[uint64]*Sample
-	sampleRate int
+	from    time.Time
+	to      time.Time
+	samples map[string]map[uint64]*Sample
+	rateHz  int
 	sync.RWMutex
 }
 
@@ -32,10 +32,11 @@ func sampleHash(s, tags string) uint64 {
 	return h
 }
 
-func newSampleCollection() *SampleCollection {
+func newSampleCollection(rateHz int) *SampleCollection {
 	return &SampleCollection{
 		from:    time.Now(),
 		samples: make(map[string]map[uint64]*Sample),
+		rateHz:  rateHz,
 	}
 }
 

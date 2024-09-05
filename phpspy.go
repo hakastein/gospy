@@ -2,9 +2,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -65,29 +65,32 @@ func makeTags(tagsArr []string) string {
 func extractFlagValue[T any](flags *[]string, longKey string, shortKey string, defaultValue T) T {
 	var value T
 	var found bool
-	updatedFlags := (*flags)[:0]
-	fmt.Printf("%#v\n", *flags)
+	missedFlags := []string{}
+	flaglen := len(*flags)
 
-	for i := 0; i < len(*flags); i++ {
+	shortKey = "-" + shortKey
+	longKey = "--" + longKey
+
+	for i := 0; i < flaglen; i++ {
 		flag := (*flags)[i]
-		if strings.HasPrefix(flag, "--"+longKey+"=") {
-			value = convertTo[T](strings.TrimPrefix(flag, "--"+longKey+"="))
+		if strings.HasPrefix(flag, longKey+"=") {
+			value = convertTo[T](strings.TrimPrefix(flag, longKey+"="))
 			found = true
-		} else if flag == shortKey && i+1 < len(*flags) {
+		} else if flag == shortKey && i+1 < flaglen {
 			value = convertTo[T]((*flags)[i+1])
 			found = true
 			i++ // пропускаем следующий элемент
-		} else if flag == "--"+longKey || flag == shortKey {
+		} else if flag == longKey || flag == shortKey {
 			if _, ok := any(value).(bool); ok {
 				value = convertTo[T]("true")
 				found = true
 			}
 		} else {
-			updatedFlags = append(updatedFlags, flag)
+			missedFlags = append(missedFlags, flag)
 		}
 	}
 
-	*flags = updatedFlags
+	*flags = missedFlags
 	if !found {
 		return defaultValue
 	}
@@ -119,17 +122,33 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 		copy(argsCopy, args)
 
 		// Извлечение значений флагов
-		rateHz := extractFlagValue[int](&argsCopy, "rate-hz", "-H", 99)
-		isTop := extractFlagValue[bool](&argsCopy, "top", "-t", false)
-		info := extractFlagValue[string](&argsCopy, "request-info", "-r", "")
-		pgrep := extractFlagValue[string](&argsCopy, "pgrep", "-P", "")
+		rateHz := extractFlagValue[int](&argsCopy, "rate-hz", "H", 99)
 
-		// Печать результатов
-		fmt.Printf("Rate Hz: %#v\n", rateHz)
-		fmt.Printf("isTop: %#v\n", isTop)
-		fmt.Printf("info: %#v\n", info)
-		fmt.Printf("pgrep: %#v\n", pgrep)
-		os.Exit(1)
+		isTop := extractFlagValue[bool](&argsCopy, "top", "t", false)
+		isHelp := extractFlagValue[bool](&argsCopy, "help", "h", false)
+		isVersion := extractFlagValue[bool](&argsCopy, "version", "v", false)
+		output := extractFlagValue[string](&argsCopy, "output", "o", "stdout")
+		isSingleLine := extractFlagValue[bool](&argsCopy, "single-line", "1", false)
+
+		if isTop {
+			return errors.New("-t, --top flag of phpspy is unsupported by gospy")
+		}
+
+		if isHelp {
+			return errors.New("-h, --help flag of phpspy is unsupported by gospy")
+		}
+
+		if isSingleLine {
+			return errors.New("-v, --version flag of phpspy is unsupported by gospy")
+		}
+
+		if isVersion {
+			return errors.New("-1, --signle-line flag of phpspy is unsupported by gospy")
+		}
+
+		if output != "stdout" && output != "-" {
+			return errors.New("output must be set in stdout")
+		}
 
 		cmd := exec.Command("phpspy", args...)
 		stdout, err := cmd.StdoutPipe()
@@ -142,7 +161,7 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 		}
 
 		scanner := bufio.NewScanner(stdout)
-		collection := newSampleCollection()
+		collection := newSampleCollection(rateHz)
 
 		var currentTrace []string
 		var currentTags []string
@@ -154,7 +173,7 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 			for range ticker.C {
 				collection.to = time.Now()
 				channel <- collection
-				collection = newSampleCollection()
+				collection = newSampleCollection(rateHz)
 			}
 		}()
 
