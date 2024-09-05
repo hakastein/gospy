@@ -1,53 +1,93 @@
 package main
 
 import (
-	"hash/fnv"
+	"fmt"
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/urfave/cli/v2"
 )
 
 type Sample struct {
 	sample string
-	tags   string
 	count  int
 }
 
+// samples grouped by tags
 type SampleCollection struct {
-	from    time.Time
-	to      time.Time
-	samples map[uint32]Sample
+	from         time.Time
+	to           time.Time
+	samples      map[string]map[uint64]*Sample
+	sync.RWMutex // Mutex for concurrent access management
 }
 
-func sampleHash(s string, tags string) uint32 {
-	h := fnv.New32a()
-	h.Write([]byte(s))
-	h.Write([]byte(tags))
-	return h.Sum32()
+// Function for generating a hash from string and tags
+func sampleHash(s, tags string) uint64 {
+	h := xxhash.Sum64String(s + tags) // Using xxhash for faster hashing
+	return h
 }
 
 func newSampleCollection() *SampleCollection {
 	return &SampleCollection{
 		from:    time.Now(),
-		samples: make(map[uint32]Sample),
+		samples: make(map[string]map[uint64]*Sample),
 	}
 }
 
-func (sc *SampleCollection) addSample(str string, tags string) {
+func (sc *SampleCollection) addSample(str, tags string) {
+	sc.Lock() // Locking to ensure safe concurrent access
+	defer sc.Unlock()
+
 	hash := sampleHash(str, tags)
-	if sample, exists := sc.samples[hash]; !exists {
-		sc.samples[hash] = Sample{
+
+	tagSamples, exists := sc.samples[tags]
+	if !exists {
+		tagSamples = make(map[uint64]*Sample)
+		sc.samples[tags] = tagSamples
+	}
+
+	if sample, exists := tagSamples[hash]; exists {
+		sample.count++
+	} else {
+		tagSamples[hash] = &Sample{
 			sample: str,
 			count:  1,
-			tags:   tags,
 		}
-	} else {
-		sample.count++
-		sc.samples[hash] = sample
 	}
+}
+
+// Function for processing tags and separating static and dynamic tags
+func getTags(tagsInput []string) (string, map[string]string, error) {
+	dynamicTags := make(map[string]string)
+	var st strings.Builder
+	st.Grow(64) // Preallocate memory for performance
+
+	for _, tag := range tagsInput {
+		idx := strings.Index(tag, "=")
+		if idx != -1 {
+			key := tag[:idx]
+			value := tag[idx+1:]
+			if len(value) > 1 && value[0] == '%' && value[len(value)-1] == '%' {
+				dynamicTags[value[1:len(value)-1]] = key
+			} else {
+				st.WriteString(tag)
+				st.WriteString(",")
+			}
+		} else {
+			return "", dynamicTags, fmt.Errorf("unexpected tag format %s", tag)
+		}
+	}
+
+	staticTags := st.String()
+	if len(staticTags) > 0 {
+		staticTags = staticTags[:len(staticTags)-1] // Removing trailing comma
+	}
+
+	return staticTags, dynamicTags, nil
 }
 
 func main() {
@@ -79,30 +119,19 @@ func main() {
 			},
 		},
 		Action: func(context *cli.Context) error {
-			staticTags := make(map[string]string)
-			dynamicTags := make(map[string]string)
+
+			samplesChannel := make(chan *SampleCollection, 100) // Buffered channel to avoid blocking
 
 			pyroscopeURL := context.String("pyroscope")
 			pyroscopeAuth := context.String("pyroscopeAuth")
 			accumulationInterval := context.Duration("accumulation-interval")
 			app := context.String("app")
 			args := context.Args().Slice()
+			staticTags, dynamicTags, tagsErr := getTags(context.StringSlice("tag"))
 
-			for _, tag := range context.StringSlice("tag") {
-				parts := strings.SplitN(tag, "=", 2)
-				if len(parts) == 2 {
-					key := parts[0]
-					value := parts[1]
-					lastCharPosition := len(value) - 1
-					if value[0:1] == "%" && value[lastCharPosition:] == "%" {
-						dynamicTags[value[1:lastCharPosition]] = key
-					} else {
-						staticTags[key] = value
-					}
-				}
+			if tagsErr != nil {
+				return tagsErr
 			}
-
-			samplesChannel := make(chan SampleCollection)
 
 			go func() {
 				if err := runPhpspy(samplesChannel, args[1:], dynamicTags, accumulationInterval); err != nil {

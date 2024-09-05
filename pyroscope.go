@@ -5,72 +5,71 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 )
 
-func toTagString(tags map[string]string) string {
-	if len(tags) == 0 {
-		return ""
+// combineTags объединяет статические и динамические теги в одну строку
+func combineTags(staticTags, dynamicTags string) string {
+	if dynamicTags == "" {
+		return staticTags
 	}
-
-	first := true
-
-	var sb strings.Builder
-	for key, value := range tags {
-		if !first {
-			sb.WriteString(",")
-		}
-		sb.WriteString(fmt.Sprintf("%s=%s", key, value))
-		first = false
+	if staticTags == "" {
+		return dynamicTags
 	}
-
-	return sb.String()
+	return staticTags + "," + dynamicTags
 }
 
 func sendToPyroscope(
-	channel chan SampleCollection,
+	channel chan *SampleCollection,
 	app string,
-	staticTags map[string]string,
-	pyroscopeUrl string,
+	staticTags string,
+	pyroscopeURL string,
 	pyroscopeAuth string,
 ) {
-	log.Print("send to pyroscope")
+	log.Print("Sending data to Pyroscope...")
 	client := &http.Client{}
 
 	for {
 		val, ok := <-channel
-		if ok {
-			// Prepare the profiling data in the folded format
-			var buffer bytes.Buffer
-			for _, sample := range val.samples {
-				line := fmt.Sprintf("%.30s %d\n", sample.sample, sample.count)
-				fmt.Println(line)
+		if !ok {
+			break // Выходим из цикла, если канал закрыт
+		}
+
+		val.RLock()         // блокируем для чтения
+		defer val.RUnlock() // не забываем разблокировать
+
+		// Форматируем данные профилирования в формате folded
+		var buffer bytes.Buffer
+		for dynamicTags, tagSamples := range val.samples {
+			// Объединяем статические и динамические теги
+			fullTags := combineTags(staticTags, dynamicTags)
+
+			for _, sample := range tagSamples {
+				line := fmt.Sprintf("%s %d\n", sample.sample, sample.count)
 				buffer.WriteString(line)
 			}
 
-			// Prepare the request
-			req, err := http.NewRequest("POST", pyroscopeUrl+"/ingest", &buffer)
+			// Создаем запрос
+			req, err := http.NewRequest("POST", pyroscopeURL+"/ingest", &buffer)
 			if err != nil {
 				log.Printf("Error creating request: %v", err)
 				continue
 			}
 
-			// Add headers
+			// Устанавливаем заголовки
 			req.Header.Set("Content-Type", "text/plain")
-
 			if pyroscopeAuth != "" {
 				req.Header.Set("Authorization", pyroscopeAuth)
 			}
 
-			// Add query parameters
+			// Устанавливаем параметры запроса
 			q := req.URL.Query()
-			q.Add("name", fmt.Sprintf("%s{%s}", app, toTagString(staticTags)))
+			q.Add("name", fmt.Sprintf("%s{%s}", app, fullTags))
 			q.Add("from", fmt.Sprintf("%d", val.from.Unix()))
 			q.Add("until", fmt.Sprintf("%d", val.to.Unix()))
 			q.Add("format", "folded")
 			req.URL.RawQuery = q.Encode()
 
-			// Send the request
+			// Отправляем запрос
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Printf("Error sending request: %v", err)
@@ -83,8 +82,6 @@ func sendToPyroscope(
 			} else {
 				log.Print("Data successfully sent to Pyroscope")
 			}
-		} else {
-			break // exit break loop
 		}
 	}
 }

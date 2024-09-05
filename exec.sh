@@ -3,9 +3,9 @@ CGO_ENABLED=0 go build
 
 cd /home/hakastein/work/macrocrm
 docker compose exec php /gospy/gospy \
-  --pyroscope=exemaple.com \
-  --tag="test=123" \
-  --tag="env=production" \
+  --pyroscope=https://monitoring.macrodom.ru:4040 \
+  --tag="env=development" \
+  --tag="test=1" \
   --tag="uri=%server.REQUEST_URI%" \
   --app=test-app \
     phpspy --max-depth=-1 \
