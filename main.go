@@ -41,7 +41,7 @@ func newSampleCollection(rateHz int) *SampleCollection {
 }
 
 func (sc *SampleCollection) addSample(str, tags string) {
-	sc.Lock() // Locking to ensure safe concurrent access
+	sc.Lock()
 	defer sc.Unlock()
 
 	hash := sampleHash(str, tags)
