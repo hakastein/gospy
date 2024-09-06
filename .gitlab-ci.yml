@@ -34,7 +34,8 @@ upload_to_registry:
   image: curlimages/curl:latest
   script:
     - echo "Uploading gospy to GitLab Package Registry"
-    - curl --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file gospy "${PACKAGE_URL}"
+    - |
+      curl --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file gospy "${PACKAGE_URL}"
   dependencies:
     - build_app
   only:
