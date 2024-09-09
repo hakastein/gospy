@@ -3,8 +3,9 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"net/http"
+
+	"go.uber.org/zap"
 )
 
 func combineTags(staticTags, dynamicTags string) string {
@@ -23,8 +24,8 @@ func sendToPyroscope(
 	staticTags string,
 	pyroscopeURL string,
 	pyroscopeAuth string,
+	logger *zap.Logger,
 ) {
-	log.Print("Sending data to Pyroscope...")
 	client := &http.Client{}
 
 	for {
@@ -48,7 +49,7 @@ func sendToPyroscope(
 
 			req, err := http.NewRequest("POST", pyroscopeURL+"/ingest", &buffer)
 			if err != nil {
-				log.Printf("Error creating request: %v", err)
+				logger.Error("Error creating request", zap.Error(err))
 				continue
 			}
 
@@ -67,15 +68,13 @@ func sendToPyroscope(
 
 			resp, err := client.Do(req)
 			if err != nil {
-				log.Printf("Error sending request: %v", err)
+				logger.Error("Error sending request", zap.Error(err))
 				continue
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				log.Printf("Received non-OK response: %s", resp.Status)
-			} else {
-				log.Print("Data successfully sent to Pyroscope")
+				logger.Warn("Received non-OK response", zap.String("status", resp.Status))
 			}
 		}
 	}

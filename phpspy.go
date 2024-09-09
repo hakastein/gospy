@@ -4,54 +4,43 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"log"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 func parseMeta(line string, tags map[string]string) (string, bool) {
-	line = strings.TrimPrefix(line, "# glopeek ")
-	line = strings.TrimPrefix(line, "# peek ")
-	line = strings.TrimPrefix(line, "# ")
-
-	keyval := strings.SplitN(line, " = ", 2)
-	if len(keyval) != 2 {
+	line = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(line, "# glopeek "), "# peek "), "# "))
+	keyVal := strings.SplitN(line, " = ", 2)
+	if len(keyVal) != 2 {
 		return "", false
 	}
-
-	if key, exists := tags[keyval[0]]; exists {
-		return fmt.Sprintf("%s=%s", key, keyval[1]), true
+	if key, exists := tags[keyVal[0]]; exists {
+		return fmt.Sprintf("%s=%s", key, keyVal[1]), true
 	}
-
 	return "", false
 }
 
 func makeSample(sampleArr []string) string {
 	var sample strings.Builder
-	lastChar := len(sampleArr) - 1
-
-	for i := lastChar; i >= 0; i-- {
-		strArr := strings.Fields(sampleArr[i])
-		if len(strArr) < 3 {
+	for i := len(sampleArr) - 1; i >= 0; i-- {
+		fields := strings.Fields(sampleArr[i])
+		if len(fields) < 3 {
 			continue
 		}
-
-		sample.WriteString(strArr[1])
-		if i == lastChar {
-			fileName := filepath.Base(strings.Split(strArr[2], ":")[0])
-			sample.WriteString(" (")
-			sample.WriteString(fileName)
-			sample.WriteString(")")
+		sample.WriteString(fields[1])
+		if i == len(sampleArr)-1 {
+			fileName := filepath.Base(strings.Split(fields[2], ":")[0])
+			sample.WriteString(" (" + fileName + ")")
 		}
-
 		if i > 0 {
 			sample.WriteString(";")
 		}
 	}
-
 	return sample.String()
 }
 
@@ -59,30 +48,28 @@ func makeTags(tagsArr []string) string {
 	return strings.Join(tagsArr, ",")
 }
 
-func extractFlagValue[T any](flags *[]string, longKey string, shortKey string, defaultValue T) T {
-	var value T
-	var found bool
-	missedFlags := []string{}
-	flaglen := len(*flags)
+func extractFlagValue[T any](flags *[]string, longKey, shortKey string, defaultValue T) T {
+	shortKey, longKey = "-"+shortKey, "--"+longKey
+	found := false
+	var missedFlags []string
+	flagLen := len(*flags)
 
-	shortKey = "-" + shortKey
-	longKey = "--" + longKey
-
-	for i := 0; i < flaglen; i++ {
+	for i := 0; i < flagLen; i++ {
 		flag := (*flags)[i]
-		if strings.HasPrefix(flag, longKey+"=") {
-			value = convertTo[T](strings.TrimPrefix(flag, longKey+"="))
+		switch {
+		case strings.HasPrefix(flag, longKey+"="):
 			found = true
-		} else if flag == shortKey && i+1 < flaglen {
-			value = convertTo[T]((*flags)[i+1])
+			return convertTo[T](strings.TrimPrefix(flag, longKey+"="))
+		case flag == shortKey && i+1 < flagLen:
 			found = true
 			i++
-		} else if flag == longKey || flag == shortKey {
-			if _, ok := any(value).(bool); ok {
-				value = convertTo[T]("true")
+			return convertTo[T]((*flags)[i])
+		case flag == longKey || flag == shortKey:
+			if _, ok := any(defaultValue).(bool); ok {
 				found = true
+				return convertTo[T]("true")
 			}
-		} else {
+		default:
 			missedFlags = append(missedFlags, flag)
 		}
 	}
@@ -91,112 +78,101 @@ func extractFlagValue[T any](flags *[]string, longKey string, shortKey string, d
 	if !found {
 		return defaultValue
 	}
-	return value
+	return defaultValue
 }
 
 func convertTo[T any](value string) T {
 	var result T
 	switch any(result).(type) {
 	case string:
-		result = any(value).(T)
+		return any(value).(T)
 	case int:
 		if intValue, err := strconv.Atoi(value); err == nil {
-			result = any(intValue).(T)
+			return any(intValue).(T)
 		}
 	case bool:
 		if boolValue, err := strconv.ParseBool(value); err == nil {
-			result = any(boolValue).(T)
+			return any(boolValue).(T)
 		}
 	}
 	return result
 }
 
-func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]string, interval time.Duration) error {
-	for {
-		argsCopy := make([]string, len(args))
-		copy(argsCopy, args)
+func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]string, interval time.Duration, logger *zap.Logger) error {
 
-		rateHz := extractFlagValue[int](&argsCopy, "rate-hz", "H", 99)
+	argsCopy := append([]string(nil), args...)
+	rateHz := extractFlagValue[int](&argsCopy, "rate-hz", "H", 99)
 
-		isTop := extractFlagValue[bool](&argsCopy, "top", "t", false)
-		isHelp := extractFlagValue[bool](&argsCopy, "help", "h", false)
-		isVersion := extractFlagValue[bool](&argsCopy, "version", "v", false)
-		output := extractFlagValue[string](&argsCopy, "output", "o", "stdout")
-		isSingleLine := extractFlagValue[bool](&argsCopy, "single-line", "1", false)
-
-		if isTop {
-			return errors.New("-t, --top flag of phpspy is unsupported by gospy")
-		}
-
-		if isHelp {
-			return errors.New("-h, --help flag of phpspy is unsupported by gospy")
-		}
-
-		if isSingleLine {
-			return errors.New("-v, --version flag of phpspy is unsupported by gospy")
-		}
-
-		if isVersion {
-			return errors.New("-1, --signle-line flag of phpspy is unsupported by gospy")
-		}
-
-		if output != "stdout" && output != "-" {
-			return errors.New("output must be set in stdout")
-		}
-
-		cmd := exec.Command("phpspy", args...)
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			return fmt.Errorf("phpspy stdout error: %w", err)
-		}
-
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("phpspy start error: %w", err)
-		}
-
-		scanner := bufio.NewScanner(stdout)
-		collection := newSampleCollection(rateHz)
-
-		var currentTrace []string
-		var currentTags []string
-
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		go func() {
-			for range ticker.C {
-				collection.to = time.Now()
-				channel <- collection
-				collection = newSampleCollection(rateHz)
-			}
-		}()
-
-		for scanner.Scan() {
-			line := scanner.Text()
-
-			switch {
-			case strings.TrimSpace(line) == "":
-				if len(currentTrace) > 0 {
-					collection.addSample(makeSample(currentTrace), makeTags(currentTags))
-				}
-				currentTags = nil
-				currentTrace = nil
-			case line[0] == '#':
-				tag, exists := parseMeta(line, tags)
-				if exists {
-					currentTags = append(currentTags, tag)
-				}
-			default:
-				currentTrace = append(currentTrace, line)
-			}
-		}
-
-		if err := cmd.Wait(); err != nil {
-			log.Printf("phpspy exited with: %v", err)
-			time.Sleep(time.Second)
-			continue
-		}
-
-		return nil
+	unsupportedFlags := [][2]string{
+		{"version", "v"},
+		{"top", "t"},
+		{"help", "h"},
+		{"single-line", "1"},
 	}
+
+	for _, keys := range unsupportedFlags {
+		if extractFlagValue[bool](&argsCopy, keys[0], keys[1], false) {
+			return fmt.Errorf("-%s, --%s flag of phpspy is unsupported by gospy", keys[1], keys[0])
+		}
+	}
+
+	output := extractFlagValue[string](&argsCopy, "output", "o", "stdout")
+	if output != "stdout" && output != "-" {
+		return errors.New("output must be set to stdout")
+	}
+
+	cmd := exec.Command("phpspy", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("phpspy stdout error: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("phpspy start error: %w", err)
+	}
+
+	logger.Info("phpspy started")
+
+	scanner := bufio.NewScanner(stdout)
+	collection := newSampleCollection(rateHz)
+
+	var currentTrace, currentTags []string
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	go func() {
+		for range ticker.C {
+			collection.to = time.Now()
+			channel <- collection
+			collection = newSampleCollection(rateHz)
+		}
+	}()
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			if len(currentTrace) > 0 {
+				collection.addSample(makeSample(currentTrace), makeTags(currentTags))
+				logger.Debug("phpspy: sample collected")
+			}
+			currentTrace, currentTags = nil, nil
+		} else if line[0] == '#' {
+			if tag, exists := parseMeta(line, tags); exists {
+				currentTags = append(currentTags, tag)
+			}
+		} else {
+			currentTrace = append(currentTrace, line)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading phpspy output: %s", err)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("phpspy exited with error: %s", err)
+	}
+
+	logger.Info("phpspy exited successfully")
+	return nil
 }
