@@ -10,6 +10,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/urfave/cli/v2"
+	"go.uber.org/zap"
 )
 
 type Sample struct {
@@ -93,7 +94,6 @@ func getTags(tagsInput []string) (string, map[string]string, error) {
 }
 
 func main() {
-
 	app := &cli.App{
 		Name:  "gospy",
 		Usage: "A Go wrapper for phpspy that sends traces to Pyroscope",
@@ -103,6 +103,10 @@ func main() {
 				Usage:    "Pyroscope server URL",
 				Required: true,
 			},
+			&cli.BoolFlag{
+				Name:  "debug",
+				Value: false,
+			},
 			&cli.StringFlag{
 				Name:  "pyroscopeAuth",
 				Usage: "Pyroscope authentication token",
@@ -111,18 +115,22 @@ func main() {
 				Name:  "app",
 				Usage: "App Name for pyroscope",
 			},
+			&cli.StringFlag{
+				Name:  "restart",
+				Usage: "Restart phpspy if it exited? Allowed values: always, onerror, onsuccess, no. Default: no",
+				Value: "no",
+			},
 			&cli.StringSliceFlag{
 				Name:  "tag",
 				Usage: "key=value for static tags, key=%value% for dynamic tags",
 			},
 			&cli.DurationFlag{
 				Name:  "accumulation-interval",
-				Usage: "Interval between sending accumulated samples to Pyroscope",
+				Usage: "Interval between sending accumulated samples to pyroscope",
 				Value: 10 * time.Second,
 			},
 		},
 		Action: func(context *cli.Context) error {
-
 			samplesChannel := make(chan *SampleCollection, 100) // Buffered channel to avoid blocking
 
 			pyroscopeURL := context.String("pyroscope")
@@ -130,19 +138,57 @@ func main() {
 			accumulationInterval := context.Duration("accumulation-interval")
 			app := context.String("app")
 			arguments := context.Args().Slice()
+			debug := context.Bool("debug")
+			restart := context.String("restart")
 			staticTags, dynamicTags, tagsErr := getTags(context.StringSlice("tag"))
 
 			if tagsErr != nil {
 				return tagsErr
 			}
 
+			var logger *zap.Logger
+			var err error
+			if debug {
+				cfg := zap.NewDevelopmentConfig()
+				logger, err = cfg.Build()
+			} else {
+				cfg := zap.NewProductionConfig()
+				logger, err = cfg.Build()
+			}
+
+			if err != nil {
+				log.Fatalf("logger subsystem error: %s", err)
+			}
+			defer logger.Sync()
+
+			logger.Info("gospy started")
+			logger.Debug("gospy params",
+				zap.String("pyroscope url", pyroscopeURL),
+				zap.String("pyroscope auth token", pyroscopeAuth),
+				zap.Duration("phpspy accumulation-interval", accumulationInterval),
+			)
+
 			go func() {
-				if err := runPhpspy(samplesChannel, arguments[1:], dynamicTags, accumulationInterval); err != nil {
-					log.Fatalf("Ошибка запуска phpspy: %v", err)
+				for {
+					err := runPhpspy(samplesChannel, arguments[1:], dynamicTags, accumulationInterval, logger)
+					if err != nil {
+						logger.Error("phpspy exited with error", zap.Error(err))
+					}
+
+					switch {
+					case restart == "always":
+						continue
+					case restart == "onerror" && err != nil:
+						continue
+					case restart == "onsuccess" && err == nil:
+						continue
+					default:
+						break
+					}
 				}
 			}()
 
-			sendToPyroscope(samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth)
+			sendToPyroscope(samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, logger)
 
 			return nil
 		},
