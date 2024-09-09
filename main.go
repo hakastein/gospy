@@ -124,8 +124,7 @@ func runGoSpy(context *cli.Context) error {
 	}
 	defer logger.Sync()
 
-	logger.Info("gospy started")
-	logger.Debug("gospy params",
+	logger.Info("gospy started",
 		zap.String("pyroscope url", pyroscopeURL),
 		zap.String("pyroscope auth token", pyroscopeAuth),
 		zap.Duration("phpspy accumulation-interval", accumulationInterval),
