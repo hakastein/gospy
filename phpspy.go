@@ -48,36 +48,25 @@ func makeTags(tagsArr []string) string {
 	return strings.Join(tagsArr, ",")
 }
 
-func extractFlagValue[T any](flags *[]string, longKey, shortKey string, defaultValue T) T {
+func extractFlagValue[T any](flags []string, longKey, shortKey string, defaultValue T) T {
 	shortKey, longKey = "-"+shortKey, "--"+longKey
-	found := false
-	var missedFlags []string
-	flagLen := len(*flags)
+
+	flagLen := len(flags)
 
 	for i := 0; i < flagLen; i++ {
-		flag := (*flags)[i]
+		flag := (flags)[i]
 		switch {
 		case strings.HasPrefix(flag, longKey+"="):
-			found = true
 			return convertTo[T](strings.TrimPrefix(flag, longKey+"="))
 		case flag == shortKey && i+1 < flagLen:
-			found = true
-			i++
-			return convertTo[T]((*flags)[i])
+			return convertTo[T]((flags)[i+1])
 		case flag == longKey || flag == shortKey:
 			if _, ok := any(defaultValue).(bool); ok {
-				found = true
 				return convertTo[T]("true")
 			}
-		default:
-			missedFlags = append(missedFlags, flag)
 		}
 	}
 
-	*flags = missedFlags
-	if !found {
-		return defaultValue
-	}
 	return defaultValue
 }
 
@@ -100,26 +89,23 @@ func convertTo[T any](value string) T {
 
 func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]string, interval time.Duration, logger *zap.Logger) error {
 
-	argsCopy := append([]string(nil), args...)
-	rateHz := extractFlagValue[int](&argsCopy, "rate-hz", "H", 99)
-
-	unsupportedFlags := [][2]string{
+	for _, keys := range [][2]string{
 		{"version", "v"},
 		{"top", "t"},
 		{"help", "h"},
 		{"single-line", "1"},
-	}
-
-	for _, keys := range unsupportedFlags {
-		if extractFlagValue[bool](&argsCopy, keys[0], keys[1], false) {
+	} {
+		if extractFlagValue[bool](args, keys[0], keys[1], false) {
 			return fmt.Errorf("-%s, --%s flag of phpspy is unsupported by gospy", keys[1], keys[0])
 		}
 	}
 
-	output := extractFlagValue[string](&argsCopy, "output", "o", "stdout")
+	output := extractFlagValue[string](args, "output", "o", "stdout")
 	if output != "stdout" && output != "-" {
 		return errors.New("output must be set to stdout")
 	}
+
+	rateHz := extractFlagValue[int](args, "rate-hz", "H", 99)
 
 	cmd := exec.Command("phpspy", args...)
 	stdout, err := cmd.StdoutPipe()
@@ -135,6 +121,7 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 
 	scanner := bufio.NewScanner(stdout)
 	collection := newSampleCollection(rateHz)
+	sampleCount := 0
 
 	var currentTrace, currentTags []string
 	ticker := time.NewTicker(interval)
@@ -145,6 +132,8 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 			collection.to = time.Now()
 			channel <- collection
 			collection = newSampleCollection(rateHz)
+			logger.Info("phpspy samples collected: ", zap.Int("count", sampleCount))
+			sampleCount = 0
 		}
 	}()
 
@@ -152,8 +141,10 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 		line := scanner.Text()
 		if strings.TrimSpace(line) == "" {
 			if len(currentTrace) > 0 {
-				collection.addSample(makeSample(currentTrace), makeTags(currentTags))
-				logger.Debug("phpspy: sample collected")
+				sample := makeSample(currentTrace)
+				collection.addSample(sample, makeTags(currentTags))
+				sampleCount++
+				logger.Debug("phpspy collected sample", zap.String("sample", sample))
 			}
 			currentTrace, currentTags = nil, nil
 		} else if line[0] == '#' {
