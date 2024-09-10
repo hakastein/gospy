@@ -13,12 +13,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// Sample - sample with count
 type Sample struct {
 	sample string
 	count  int
 }
 
-// samples grouped by tags
+// SampleCollection - samples grouped by tags
 type SampleCollection struct {
 	from    time.Time
 	to      time.Time
@@ -27,7 +28,6 @@ type SampleCollection struct {
 	sync.RWMutex
 }
 
-// Function for generating a hash from string and tags
 func sampleHash(s, tags string) uint64 {
 	h := xxhash.Sum64String(s + tags)
 	return h
@@ -93,6 +93,80 @@ func getTags(tagsInput []string) (string, map[string]string, error) {
 	return staticTags, dynamicTags, nil
 }
 
+func runGoSpy(context *cli.Context) error {
+	samplesChannel := make(chan *SampleCollection, 100) // Buffered channel to avoid blocking
+
+	pyroscopeURL := context.String("pyroscope")
+	pyroscopeAuth := context.String("pyroscopeAuth")
+	accumulationInterval := context.Duration("accumulation-interval")
+	app := context.String("app")
+	arguments := context.Args().Slice()
+	debug := context.Bool("debug")
+	restart := context.String("restart")
+	staticTags, dynamicTags, tagsErr := getTags(context.StringSlice("tag"))
+
+	if tagsErr != nil {
+		return tagsErr
+	}
+
+	var logger *zap.Logger
+	var err error
+	if debug {
+		cfg := zap.NewDevelopmentConfig()
+		logger, err = cfg.Build()
+	} else {
+		cfg := zap.NewProductionConfig()
+		logger, err = cfg.Build()
+	}
+
+	if err != nil {
+		log.Fatalf("logger subsystem error: %s", err)
+	}
+	defer logger.Sync()
+
+	logger.Info("gospy started",
+		zap.String("pyroscope url", pyroscopeURL),
+		zap.String("pyroscope auth token", pyroscopeAuth),
+		zap.Duration("phpspy accumulation-interval", accumulationInterval),
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		defer close(samplesChannel)
+
+		for {
+			err := runPhpspy(samplesChannel, arguments[1:], dynamicTags, accumulationInterval, logger)
+			if err != nil {
+				logger.Error("phpspy exited with error", zap.Error(err))
+			}
+
+			switch {
+			case restart == "always":
+				continue
+			case restart == "onerror" && err != nil:
+				continue
+			case restart == "onsuccess" && err == nil:
+				continue
+			default:
+				return
+			}
+		}
+
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		go sendToPyroscope(samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, logger)
+	}()
+
+	wg.Wait()
+	return nil
+}
+
 func main() {
 	app := &cli.App{
 		Name:  "gospy",
@@ -103,13 +177,13 @@ func main() {
 				Usage:    "Pyroscope server URL",
 				Required: true,
 			},
-			&cli.BoolFlag{
-				Name:  "debug",
-				Value: false,
-			},
 			&cli.StringFlag{
 				Name:  "pyroscopeAuth",
 				Usage: "Pyroscope authentication token",
+			},
+			&cli.BoolFlag{
+				Name:  "debug",
+				Value: false,
 			},
 			&cli.StringFlag{
 				Name:  "app",
@@ -130,68 +204,7 @@ func main() {
 				Value: 10 * time.Second,
 			},
 		},
-		Action: func(context *cli.Context) error {
-			samplesChannel := make(chan *SampleCollection, 100) // Buffered channel to avoid blocking
-
-			pyroscopeURL := context.String("pyroscope")
-			pyroscopeAuth := context.String("pyroscopeAuth")
-			accumulationInterval := context.Duration("accumulation-interval")
-			app := context.String("app")
-			arguments := context.Args().Slice()
-			debug := context.Bool("debug")
-			restart := context.String("restart")
-			staticTags, dynamicTags, tagsErr := getTags(context.StringSlice("tag"))
-
-			if tagsErr != nil {
-				return tagsErr
-			}
-
-			var logger *zap.Logger
-			var err error
-			if debug {
-				cfg := zap.NewDevelopmentConfig()
-				logger, err = cfg.Build()
-			} else {
-				cfg := zap.NewProductionConfig()
-				logger, err = cfg.Build()
-			}
-
-			if err != nil {
-				log.Fatalf("logger subsystem error: %s", err)
-			}
-			defer logger.Sync()
-
-			logger.Info("gospy started")
-			logger.Debug("gospy params",
-				zap.String("pyroscope url", pyroscopeURL),
-				zap.String("pyroscope auth token", pyroscopeAuth),
-				zap.Duration("phpspy accumulation-interval", accumulationInterval),
-			)
-
-			go func() {
-				for {
-					err := runPhpspy(samplesChannel, arguments[1:], dynamicTags, accumulationInterval, logger)
-					if err != nil {
-						logger.Error("phpspy exited with error", zap.Error(err))
-					}
-
-					switch {
-					case restart == "always":
-						continue
-					case restart == "onerror" && err != nil:
-						continue
-					case restart == "onsuccess" && err == nil:
-						continue
-					default:
-						break
-					}
-				}
-			}()
-
-			sendToPyroscope(samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, logger)
-
-			return nil
-		},
+		Action: runGoSpy,
 	}
 
 	if err := app.Run(os.Args); err != nil {
