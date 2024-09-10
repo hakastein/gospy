@@ -92,12 +92,14 @@ func makeRequest(
 
 		select {
 		case <-ticker.C:
-			logger.Info("data sent",
-				zap.Int("queries", queries),
-				zap.Int("bytes", req.bytes),
-			)
-			bytesSent = 0
-			queries = 0
+			if queries > 0 {
+				logger.Info("data sent",
+					zap.Int("queries", queries),
+					zap.Int("bytes", bytesSent),
+				)
+				bytesSent = 0
+				queries = 0
+			}
 		default:
 			if bytesSent+req.bytes > rateBytes {
 				logger.Warn("sending too fast, consider rising rate-mb parameter in go spy or ingestion_rate_mb in pyroscope")
