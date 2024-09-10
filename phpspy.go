@@ -133,7 +133,7 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 				collection.until = time.Now()
 				channel <- collection
 				collection = newSampleCollection(rateHz)
-				logger.Info("phpspy samples collected: ", zap.Int("count", sampleCount))
+				logger.Info("phpspy samples collected", zap.Int("count", sampleCount))
 				sampleCount = 0
 			}
 		}

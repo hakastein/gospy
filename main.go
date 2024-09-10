@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	DefaultRateMB             = 4
-	DefaultAccumulationPeriod = 10
-	Megabyte                  = 1048576
+	DefaultRateMB             = 4       // default rate-mb in pyroscope
+	DefaultAccumulationPeriod = 10      // period of collecting samples
+	Megabyte                  = 1048576 // bytes in megabyte
+	RetryCount                = 2       // how many times attempt to resend
 )
 
 // Sample - sample with count
