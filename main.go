@@ -127,11 +127,12 @@ func runGoSpy(context *cli.Context) error {
 	logger.Info("gospy started",
 		zap.String("pyroscope url", pyroscopeURL),
 		zap.String("pyroscope auth token", pyroscopeAuth),
+		zap.String("static tags", staticTags),
 		zap.Duration("phpspy accumulation-interval", accumulationInterval),
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 
 	go func() {
 		defer wg.Done()
@@ -157,11 +158,7 @@ func runGoSpy(context *cli.Context) error {
 
 	}()
 
-	go func() {
-		defer wg.Done()
-
-		go sendToPyroscope(samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, logger)
-	}()
+	go sendToPyroscope(samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, logger)
 
 	wg.Wait()
 	return nil
