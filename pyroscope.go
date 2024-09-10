@@ -5,8 +5,20 @@ import (
 	"fmt"
 	"go.uber.org/zap"
 	"net/http"
-	"net/http/httputil"
+	"sync"
+	"time"
 )
+
+type Request struct {
+	data       bytes.Buffer
+	name       string
+	from       int64
+	until      int64
+	sampleRate int
+	bytes      int
+	retries    int
+	sync.RWMutex
+}
 
 func combineTags(staticTags, dynamicTags string) string {
 	if dynamicTags == "" {
@@ -18,21 +30,125 @@ func combineTags(staticTags, dynamicTags string) string {
 	return staticTags + "," + dynamicTags
 }
 
+func sendSample(
+	pyroscopeURL string,
+	pyroscopeAuth string,
+	data bytes.Buffer,
+	name string,
+	from int64,
+	until int64,
+	sampleRate int,
+) (int, error) {
+	client := &http.Client{}
+
+	req, err := http.NewRequest("POST", pyroscopeURL+"/ingest", &data)
+	if err != nil {
+		return 0, fmt.Errorf("error creating request: %s", err)
+	}
+
+	req.Header.Set("Content-Type", "text/plain")
+	if pyroscopeAuth != "" {
+		req.Header.Set("Authorization", pyroscopeAuth)
+	}
+
+	q := req.URL.Query()
+	q.Add("name", fmt.Sprintf("%s", name))
+	q.Add("from", fmt.Sprintf("%d", from))
+	q.Add("until", fmt.Sprintf("%d", until))
+	q.Add("sampleRate", fmt.Sprintf("%d", sampleRate))
+	q.Add("format", "folded")
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("error sending request: %s", err)
+	}
+
+	if resp.Body.Close() != nil {
+		return 0, fmt.Errorf("got error while closing response body: %s", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, fmt.Errorf("received non-OK response: %s", resp.Status)
+	}
+
+	return resp.StatusCode, nil
+}
+
+func makeRequest(
+	channel chan *Request,
+	pyroscopeURL string,
+	pyroscopeAuth string,
+	rateBytes int,
+	logger *zap.Logger,
+) {
+	var bytesSent int
+	var queries int
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for req := range channel {
+		req.Lock()
+
+		select {
+		case <-ticker.C:
+			logger.Info("data sent",
+				zap.Int("queries", queries),
+				zap.Int("bytes", req.bytes),
+			)
+			bytesSent = 0
+			queries = 0
+		default:
+			if bytesSent+req.bytes > rateBytes {
+				logger.Warn("sending too fast, consider rising rate-mb parameter in go spy or ingestion_rate_mb in pyroscope")
+				<-ticker.C
+			}
+		}
+
+		code, err := sendSample(pyroscopeURL, pyroscopeAuth, req.data, req.name, req.from, req.until, req.sampleRate)
+
+		if code == http.StatusOK {
+			bytesSent += req.bytes
+			queries++
+		}
+
+		if err != nil {
+			logger.Warn("got error while sending request", zap.Error(err))
+		}
+
+		if code != http.StatusOK && code != 0 {
+			if req.retries < 2 {
+				req.retries++
+				go func(r *Request) {
+					channel <- r
+				}(req)
+			} else {
+				logger.Error("failed to send request", zap.Int("retries", req.retries))
+			}
+		}
+
+		req.Unlock()
+	}
+}
+
 func sendToPyroscope(
 	channel chan *SampleCollection,
 	app string,
 	staticTags string,
 	pyroscopeURL string,
 	pyroscopeAuth string,
+	rateBytes int,
 	logger *zap.Logger,
 ) {
-	client := &http.Client{}
-	var buffer bytes.Buffer
+	requestQueue := make(chan *Request)
+
+	go makeRequest(requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, logger)
 
 	for val := range channel {
 		val.RLock()
 
 		for dynamicTags, tagSamples := range val.samples {
+			var buffer bytes.Buffer
 
 			fullTags := combineTags(staticTags, dynamicTags)
 
@@ -43,52 +159,16 @@ func sendToPyroscope(
 
 			buffLen := buffer.Len()
 
-			req, err := http.NewRequest("POST", pyroscopeURL+"/ingest", &buffer)
-			if err != nil {
-				logger.Error("Error creating request", zap.Error(err))
-				continue
+			requestQueue <- &Request{
+				data:       buffer,
+				name:       fmt.Sprintf("%s{%s}", app, fullTags),
+				from:       val.from.Unix(),
+				until:      val.until.Unix(),
+				sampleRate: val.rateHz,
+				bytes:      buffLen,
 			}
 
-			req.Header.Set("Content-Type", "text/plain")
-			if pyroscopeAuth != "" {
-				req.Header.Set("Authorization", pyroscopeAuth)
-			}
-
-			q := req.URL.Query()
-			q.Add("name", fmt.Sprintf("%s{%s}", app, fullTags))
-			q.Add("from", fmt.Sprintf("%d", val.from.Unix()))
-			q.Add("until", fmt.Sprintf("%d", val.to.Unix()))
-			q.Add("sampleRate", fmt.Sprintf("%d", val.rateHz))
-			q.Add("format", "folded")
-			req.URL.RawQuery = q.Encode()
-
-			resp, err := client.Do(req)
-			if err != nil {
-				logger.Error("Error sending request", zap.Error(err))
-				continue
-			}
-
-			if resp.Body.Close() != nil {
-				logger.Fatal("Got error while closing response body", zap.Error(err))
-			}
-
-			logger.Info("samples sent",
-				zap.String("tags", fullTags),
-				zap.Int("bytes", buffLen),
-			)
-
-			if logger.Level() == zap.DebugLevel {
-				reqDump, _ := httputil.DumpRequest(req, true)
-				resDump, _ := httputil.DumpResponse(resp, true)
-				logger.Debug("samples query",
-					zap.String("request", string(reqDump)),
-					zap.String("response", string(resDump)),
-				)
-			}
-
-			if resp.StatusCode != http.StatusOK {
-				logger.Warn("Received non-OK response", zap.String("status", resp.Status))
-			}
+			buffer.Reset()
 		}
 
 		val.RUnlock()

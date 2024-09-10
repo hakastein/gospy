@@ -102,7 +102,7 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 
 	output := extractFlagValue[string](args, "output", "o", "stdout")
 	if output != "stdout" && output != "-" {
-		return errors.New("output must be set to stdout")
+		return errors.New("output must be set until stdout")
 	}
 
 	rateHz := extractFlagValue[int](args, "rate-hz", "H", 99)
@@ -129,11 +129,13 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 
 	go func() {
 		for range ticker.C {
-			collection.to = time.Now()
-			channel <- collection
-			collection = newSampleCollection(rateHz)
-			logger.Info("phpspy samples collected: ", zap.Int("count", sampleCount))
-			sampleCount = 0
+			if sampleCount > 0 {
+				collection.until = time.Now()
+				channel <- collection
+				collection = newSampleCollection(rateHz)
+				logger.Info("phpspy samples collected: ", zap.Int("count", sampleCount))
+				sampleCount = 0
+			}
 		}
 	}()
 
