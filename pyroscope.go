@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"go.uber.org/zap"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -184,8 +183,6 @@ func readSamples(
 
 			// Send any remaining data in the buffer as the final request
 			if requestSize > 0 {
-				log.Printf("len size %d", requestSize)
-				log.Printf("buffer size %d", buffer.Len())
 				requestQueue <- sampleCollection.makeRequest(name, buffer)
 			}
 		}
