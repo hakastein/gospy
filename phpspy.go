@@ -152,7 +152,9 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) == "" {
-			if traceLen := len(currentTrace); traceLen > 0 {
+			// ignoring traces that 1 line length as meaningless
+			// @TODO make flag
+			if traceLen := len(currentTrace); traceLen > 1 {
 				fields := strings.Fields(currentTrace[traceLen-1])
 				fileName := filepath.Base(strings.Split(fields[2], ":")[0])
 
