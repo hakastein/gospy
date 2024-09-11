@@ -13,6 +13,13 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	DefaultRateMB             = 4       // default rate-mb in pyroscope
+	DefaultAccumulationPeriod = 10      // period of collecting samples
+	Megabyte                  = 1048576 // bytes in megabyte
+	RetryCount                = 2       // how many times attempt to resend
+)
+
 // Sample - sample with count
 type Sample struct {
 	sample string
@@ -22,7 +29,7 @@ type Sample struct {
 // SampleCollection - samples grouped by tags
 type SampleCollection struct {
 	from    time.Time
-	to      time.Time
+	until   time.Time
 	samples map[string]map[uint64]*Sample
 	rateHz  int
 	sync.RWMutex
@@ -94,8 +101,6 @@ func getTags(tagsInput []string) (string, map[string]string, error) {
 }
 
 func runGoSpy(context *cli.Context) error {
-	samplesChannel := make(chan *SampleCollection, 100) // Buffered channel to avoid blocking
-
 	pyroscopeURL := context.String("pyroscope")
 	pyroscopeAuth := context.String("pyroscopeAuth")
 	accumulationInterval := context.Duration("accumulation-interval")
@@ -103,11 +108,14 @@ func runGoSpy(context *cli.Context) error {
 	arguments := context.Args().Slice()
 	debug := context.Bool("debug")
 	restart := context.String("restart")
+	rateMb := context.Int("rate-mb") * Megabyte
 	staticTags, dynamicTags, tagsErr := getTags(context.StringSlice("tag"))
 
 	if tagsErr != nil {
 		return tagsErr
 	}
+
+	samplesChannel := make(chan *SampleCollection) // Buffered channel until avoid blocking
 
 	var logger *zap.Logger
 	var err error
@@ -127,11 +135,12 @@ func runGoSpy(context *cli.Context) error {
 	logger.Info("gospy started",
 		zap.String("pyroscope url", pyroscopeURL),
 		zap.String("pyroscope auth token", pyroscopeAuth),
+		zap.String("static tags", staticTags),
 		zap.Duration("phpspy accumulation-interval", accumulationInterval),
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 
 	go func() {
 		defer wg.Done()
@@ -157,11 +166,15 @@ func runGoSpy(context *cli.Context) error {
 
 	}()
 
-	go func() {
-		defer wg.Done()
-
-		go sendToPyroscope(samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, logger)
-	}()
+	go sendToPyroscope(
+		samplesChannel,
+		app,
+		staticTags,
+		pyroscopeURL,
+		pyroscopeAuth,
+		rateMb,
+		logger,
+	)
 
 	wg.Wait()
 	return nil
@@ -201,7 +214,12 @@ func main() {
 			&cli.DurationFlag{
 				Name:  "accumulation-interval",
 				Usage: "Interval between sending accumulated samples to pyroscope",
-				Value: 10 * time.Second,
+				Value: DefaultAccumulationPeriod * time.Second,
+			},
+			&cli.IntFlag{
+				Name:  "rate-mb",
+				Usage: "Ingestion limit in mb",
+				Value: DefaultRateMB,
 			},
 		},
 		Action: runGoSpy,
