@@ -105,6 +105,17 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 		return errors.New("output must be set to stdout")
 	}
 
+	pgrepMode := extractFlagValue[string](args, "pgrep", "P", "")
+
+	if pgrepMode != "" {
+		bufferSize := extractFlagValue[int](args, "buffer-size", "b", 4096)
+		eventHandlerOpts := extractFlagValue[string](args, "event-handler-opts", "J", "")
+
+		if bufferSize > 4096 && !strings.Contains(eventHandlerOpts, "m") {
+			logger.Warn("You use big buffer size without mutex. Consider using -J m with -b greater than 4096")
+		}
+	}
+
 	rateHz := extractFlagValue[int](args, "rate-hz", "H", 99)
 
 	cmd := exec.Command("phpspy", args...)
@@ -129,11 +140,13 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 
 	go func() {
 		for range ticker.C {
-			collection.to = time.Now()
-			channel <- collection
-			collection = newSampleCollection(rateHz)
-			logger.Info("phpspy samples collected: ", zap.Int("count", sampleCount))
-			sampleCount = 0
+			if sampleCount > 0 {
+				collection.until = time.Now()
+				channel <- collection
+				collection = newSampleCollection(rateHz)
+				logger.Info("phpspy samples collected", zap.Int("count", sampleCount))
+				sampleCount = 0
+			}
 		}
 	}()
 
