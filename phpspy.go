@@ -102,7 +102,18 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 
 	output := extractFlagValue[string](args, "output", "o", "stdout")
 	if output != "stdout" && output != "-" {
-		return errors.New("output must be set until stdout")
+		return errors.New("output must be set to stdout")
+	}
+
+	pgrepMode := extractFlagValue[string](args, "pgrep", "P", "")
+
+	if pgrepMode != "" {
+		bufferSize := extractFlagValue[int](args, "buffer-size", "b", 4096)
+		eventHandlerOpts := extractFlagValue[string](args, "event-handler-opts", "J", "")
+
+		if bufferSize > 4096 && !strings.Contains(eventHandlerOpts, "m") {
+			logger.Warn("You use big buffer size without mutex. Consider using -J m with -b greater than 4096")
+		}
 	}
 
 	rateHz := extractFlagValue[int](args, "rate-hz", "H", 99)

@@ -183,7 +183,7 @@ func runGoSpy(context *cli.Context) error {
 func main() {
 	app := &cli.App{
 		Name:  "gospy",
-		Usage: "A Go wrapper for phpspy that sends traces until Pyroscope",
+		Usage: "A Go wrapper for phpspy that sends traces to Pyroscope",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:     "pyroscope",
@@ -213,7 +213,7 @@ func main() {
 			},
 			&cli.DurationFlag{
 				Name:  "accumulation-interval",
-				Usage: "Interval between sending accumulated samples until pyroscope",
+				Usage: "Interval between sending accumulated samples to pyroscope",
 				Value: DefaultAccumulationPeriod * time.Second,
 			},
 			&cli.IntFlag{
