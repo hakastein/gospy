@@ -25,7 +25,7 @@ func parseMeta(line string, tags map[string]string) (string, bool) {
 	return "", false
 }
 
-func makeSample(sampleArr []string) string {
+func makeSample(sampleArr []string, fileName string) string {
 	var sample strings.Builder
 	for i := len(sampleArr) - 1; i >= 0; i-- {
 		fields := strings.Fields(sampleArr[i])
@@ -34,7 +34,6 @@ func makeSample(sampleArr []string) string {
 		}
 		sample.WriteString(fields[1])
 		if i == len(sampleArr)-1 {
-			fileName := filepath.Base(strings.Split(fields[2], ":")[0])
 			sample.WriteString(" (" + fileName + ")")
 		}
 		if i > 0 {
@@ -87,7 +86,7 @@ func convertTo[T any](value string) T {
 	return result
 }
 
-func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]string, interval time.Duration, logger *zap.Logger) error {
+func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]string, interval time.Duration, entryPoints map[string]bool, logger *zap.Logger) error {
 
 	for _, keys := range [][2]string{
 		{"version", "v"},
@@ -153,10 +152,22 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) == "" {
-			if len(currentTrace) > 0 {
-				sample := makeSample(currentTrace)
+			if traceLen := len(currentTrace); traceLen > 0 {
+				fields := strings.Fields(currentTrace[traceLen-1])
+				fileName := filepath.Base(strings.Split(fields[2], ":")[0])
+
+				// ignore entrypoint if entrypoints is set and file not in it
+				if _, exists := entryPoints[fileName]; len(entryPoints) > 0 && !exists {
+					logger.Debug("trace entrypoint not in list. ignoring", zap.String("entrypoint", fileName))
+
+					currentTrace, currentTags = nil, nil
+					continue
+				}
+
+				sample := makeSample(currentTrace, fileName)
 				collection.addSample(sample, makeTags(currentTags))
 				sampleCount++
+
 				logger.Debug("phpspy collected sample", zap.String("sample", sample))
 			}
 			currentTrace, currentTags = nil, nil
