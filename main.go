@@ -100,6 +100,16 @@ func getTags(tagsInput []string) (string, map[string]string, error) {
 	return staticTags, dynamicTags, nil
 }
 
+func mapEntryPoints(entryPoints []string) map[string]bool {
+	entryMap := make(map[string]bool, len(entryPoints))
+
+	for _, entry := range entryPoints {
+		entryMap[entry] = true
+	}
+
+	return entryMap
+}
+
 func runGoSpy(context *cli.Context) error {
 	pyroscopeURL := context.String("pyroscope")
 	pyroscopeAuth := context.String("pyroscopeAuth")
@@ -110,6 +120,7 @@ func runGoSpy(context *cli.Context) error {
 	restart := context.String("restart")
 	rateMb := context.Int("rate-mb") * Megabyte
 	staticTags, dynamicTags, tagsErr := getTags(context.StringSlice("tag"))
+	entryPoints := mapEntryPoints(context.StringSlice("entrypoint"))
 
 	if tagsErr != nil {
 		return tagsErr
@@ -147,7 +158,7 @@ func runGoSpy(context *cli.Context) error {
 		defer close(samplesChannel)
 
 		for {
-			err := runPhpspy(samplesChannel, arguments[1:], dynamicTags, accumulationInterval, logger)
+			err := runPhpspy(samplesChannel, arguments[1:], dynamicTags, accumulationInterval, entryPoints, logger)
 			if err != nil {
 				logger.Error("phpspy exited with error", zap.Error(err))
 			}
@@ -220,6 +231,10 @@ func main() {
 				Name:  "rate-mb",
 				Usage: "Ingestion limit in mb",
 				Value: DefaultRateMB,
+			},
+			&cli.StringSliceFlag{
+				Name:  "entrypoint",
+				Usage: "Name of entrypoint file to collect data, example: index.php",
 			},
 		},
 		Action: runGoSpy,
