@@ -25,12 +25,12 @@ func parseMeta(line string, tags map[string]string) (string, bool) {
 	return "", false
 }
 
-func makeSample(sampleArr []string, fileName string) string {
+func makeSample(sampleArr []string, fileName string) (string, error) {
 	var sample strings.Builder
 	for i := len(sampleArr) - 1; i >= 0; i-- {
 		fields := strings.Fields(sampleArr[i])
 		if len(fields) < 3 {
-			continue
+			return "", errors.New("invalid traceline structure")
 		}
 		sample.WriteString(fields[1])
 		if i == len(sampleArr)-1 {
@@ -40,7 +40,7 @@ func makeSample(sampleArr []string, fileName string) string {
 			sample.WriteString(";")
 		}
 	}
-	return sample.String()
+	return sample.String(), nil
 }
 
 func makeTags(tagsArr []string) string {
@@ -106,7 +106,7 @@ func getSampleFromTrace(trace []string, entryPoints map[string]bool) (string, er
 		return "", fmt.Errorf("trace entrypoint '%s' not in list", fileName)
 	}
 
-	return makeSample(trace, fileName), nil
+	return makeSample(trace, fileName)
 }
 
 func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]string, interval time.Duration, entryPoints map[string]bool, logger *zap.Logger) error {
