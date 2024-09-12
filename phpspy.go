@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -109,50 +108,16 @@ func getSampleFromTrace(trace []string, entryPoints map[string]bool) (string, er
 	return makeSample(trace, fileName)
 }
 
-func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]string, interval time.Duration, entryPoints map[string]bool, logger *zap.Logger) error {
+func scanPhpSpyStdout(
+	scannerChannel chan *bufio.Scanner,
+	channel chan *SampleCollection,
+	rateHz int,
+	interval time.Duration,
+	entryPoints map[string]bool,
+	tags map[string]string,
+	logger *zap.Logger,
+) {
 
-	for _, keys := range [][2]string{
-		{"version", "v"},
-		{"top", "t"},
-		{"help", "h"},
-		{"single-line", "1"},
-	} {
-		if extractFlagValue[bool](args, keys[0], keys[1], false) {
-			return fmt.Errorf("-%s, --%s flag of phpspy is unsupported by gospy", keys[1], keys[0])
-		}
-	}
-
-	output := extractFlagValue[string](args, "output", "o", "stdout")
-	if output != "stdout" && output != "-" {
-		return errors.New("output must be set to stdout")
-	}
-
-	pgrepMode := extractFlagValue[string](args, "pgrep", "P", "")
-
-	if pgrepMode != "" {
-		bufferSize := extractFlagValue[int](args, "buffer-size", "b", 4096)
-		eventHandlerOpts := extractFlagValue[string](args, "event-handler-opts", "J", "")
-
-		if bufferSize > 4096 && !strings.Contains(eventHandlerOpts, "m") {
-			logger.Warn("You use big buffer size without mutex. Consider using -J m with -b greater than 4096")
-		}
-	}
-
-	rateHz := extractFlagValue[int](args, "rate-hz", "H", 99)
-
-	cmd := exec.Command("phpspy", args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("phpspy stdout error: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("phpspy start error: %w", err)
-	}
-
-	logger.Info("phpspy started")
-
-	scanner := bufio.NewScanner(stdout)
 	collection := newSampleCollection(rateHz)
 	sampleCount := 0
 
@@ -172,37 +137,65 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 		}
 	}()
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			// ignoring traces that 1 line length as meaningless
-			// @TODO make flag
-			sample, sampleError := getSampleFromTrace(currentTrace, entryPoints)
-			if sampleError == nil {
-				collection.addSample(sample, makeTags(currentTags))
-				sampleCount++
+	for scanner := range scannerChannel {
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.TrimSpace(line) == "" {
+				// ignoring traces that 1 line length as meaningless
+				// @TODO make flag
+				sample, sampleError := getSampleFromTrace(currentTrace, entryPoints)
+				if sampleError == nil {
+					collection.addSample(sample, makeTags(currentTags))
+					sampleCount++
+				} else {
+					// sampler produces reasonable number of trash lines, ignore them
+					logger.Debug("unable to get sample from trace", zap.Error(sampleError))
+				}
+				currentTrace, currentTags = nil, nil
+			} else if line[0] == '#' {
+				if tag, exists := parseMeta(line, tags); exists {
+					currentTags = append(currentTags, tag)
+				}
 			} else {
-				// sampler produces reasonable number of trash lines, ignore them
-				logger.Debug("unable to get sample from trace", zap.Error(sampleError))
+				currentTrace = append(currentTrace, line)
 			}
-			currentTrace, currentTags = nil, nil
-		} else if line[0] == '#' {
-			if tag, exists := parseMeta(line, tags); exists {
-				currentTags = append(currentTags, tag)
-			}
-		} else {
-			currentTrace = append(currentTrace, line)
+		}
+
+		if err := scanner.Err(); err != nil {
+			logger.Error("stdout scan error:", zap.Error(err))
+		}
+	}
+}
+
+func parsePhpSpyArguments(args []string, logger *zap.Logger) (int, error) {
+	for _, keys := range [][2]string{
+		{"version", "v"},
+		{"top", "t"},
+		{"help", "h"},
+		{"single-line", "1"},
+	} {
+		if extractFlagValue[bool](args, keys[0], keys[1], false) {
+			return -1, fmt.Errorf("-%s, --%s flag of phpspy is unsupported by gospy", keys[1], keys[0])
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading phpspy output: %s", err)
+	output := extractFlagValue[string](args, "output", "o", "stdout")
+	if output != "stdout" && output != "-" {
+		return -1, errors.New("output must be set to stdout")
 	}
 
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("phpspy exited with error: %s", err)
+	pgrepMode := extractFlagValue[string](args, "pgrep", "P", "")
+
+	if pgrepMode != "" {
+		bufferSize := extractFlagValue[int](args, "buffer-size", "b", 4096)
+		eventHandlerOpts := extractFlagValue[string](args, "event-handler-opts", "J", "")
+
+		if bufferSize > 4096 && !strings.Contains(eventHandlerOpts, "m") {
+			logger.Warn("You use big buffer size without mutex. Consider using -J m with -b greater than 4096")
+		}
 	}
 
-	logger.Info("phpspy exited successfully")
-	return nil
+	rateHz := extractFlagValue[int](args, "rate-hz", "H", 99)
+
+	return rateHz, nil
 }
