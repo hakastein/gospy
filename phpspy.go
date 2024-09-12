@@ -25,12 +25,12 @@ func parseMeta(line string, tags map[string]string) (string, bool) {
 	return "", false
 }
 
-func makeSample(sampleArr []string, fileName string) string {
+func makeSample(sampleArr []string, fileName string) (string, error) {
 	var sample strings.Builder
 	for i := len(sampleArr) - 1; i >= 0; i-- {
 		fields := strings.Fields(sampleArr[i])
 		if len(fields) < 3 {
-			continue
+			return "", errors.New("invalid traceline structure")
 		}
 		sample.WriteString(fields[1])
 		if i == len(sampleArr)-1 {
@@ -40,7 +40,7 @@ func makeSample(sampleArr []string, fileName string) string {
 			sample.WriteString(";")
 		}
 	}
-	return sample.String()
+	return sample.String(), nil
 }
 
 func makeTags(tagsArr []string) string {
@@ -84,6 +84,29 @@ func convertTo[T any](value string) T {
 		}
 	}
 	return result
+}
+
+func getSampleFromTrace(trace []string, entryPoints map[string]bool) (string, error) {
+
+	traceLen := len(trace)
+
+	if traceLen < 2 {
+		return "", errors.New("trace to small")
+	}
+
+	fields := strings.Fields(trace[traceLen-1])
+
+	if len(fields) != 3 {
+		return "", errors.New("incorrect trace format")
+	}
+
+	fileName := filepath.Base(strings.Split(fields[2], ":")[0])
+	// ignore entrypoint if entrypoints is set and file not in it
+	if _, exists := entryPoints[fileName]; len(entryPoints) > 0 && !exists {
+		return "", fmt.Errorf("trace entrypoint '%s' not in list", fileName)
+	}
+
+	return makeSample(trace, fileName)
 }
 
 func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]string, interval time.Duration, entryPoints map[string]bool, logger *zap.Logger) error {
@@ -154,23 +177,13 @@ func runPhpspy(channel chan *SampleCollection, args []string, tags map[string]st
 		if strings.TrimSpace(line) == "" {
 			// ignoring traces that 1 line length as meaningless
 			// @TODO make flag
-			if traceLen := len(currentTrace); traceLen > 1 {
-				fields := strings.Fields(currentTrace[traceLen-1])
-				fileName := filepath.Base(strings.Split(fields[2], ":")[0])
-
-				// ignore entrypoint if entrypoints is set and file not in it
-				if _, exists := entryPoints[fileName]; len(entryPoints) > 0 && !exists {
-					logger.Debug("trace entrypoint not in list. ignoring", zap.String("entrypoint", fileName))
-
-					currentTrace, currentTags = nil, nil
-					continue
-				}
-
-				sample := makeSample(currentTrace, fileName)
+			sample, sampleError := getSampleFromTrace(currentTrace, entryPoints)
+			if sampleError == nil {
 				collection.addSample(sample, makeTags(currentTags))
 				sampleCount++
-
-				logger.Debug("phpspy collected sample", zap.String("sample", sample))
+			} else {
+				// sampler produces reasonable number of trash lines, ignore them
+				logger.Debug("unable to get sample from trace", zap.Error(sampleError))
 			}
 			currentTrace, currentTags = nil, nil
 		} else if line[0] == '#' {
