@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// parseMeta extracts dynamic tags from phpspy output
 func parseMeta(line string, tags map[string]string) (string, bool) {
 	line = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(line, "# glopeek "), "# peek "), "# "))
 	keyVal := strings.SplitN(line, " = ", 2)
@@ -24,12 +25,13 @@ func parseMeta(line string, tags map[string]string) (string, bool) {
 	return "", false
 }
 
+// makeSample constructs a sample string from a trace
 func makeSample(sampleArr []string, fileName string) (string, error) {
 	var sample strings.Builder
 	for i := len(sampleArr) - 1; i >= 0; i-- {
 		fields := strings.Fields(sampleArr[i])
 		if len(fields) < 3 {
-			return "", errors.New("invalid traceline structure")
+			return "", errors.New("invalid trace line structure")
 		}
 		sample.WriteString(fields[1])
 		if i == len(sampleArr)-1 {
@@ -43,12 +45,14 @@ func makeSample(sampleArr []string, fileName string) (string, error) {
 }
 
 func makeTags(tagsArr []string) string {
+	if len(tagsArr) == 0 {
+		return ""
+	}
 	return strings.Join(tagsArr, ",")
 }
 
 func extractFlagValue[T any](flags []string, longKey, shortKey string, defaultValue T) T {
 	shortKey, longKey = "-"+shortKey, "--"+longKey
-
 	flagLen := len(flags)
 
 	for i := 0; i < flagLen; i++ {
@@ -85,24 +89,21 @@ func convertTo[T any](value string) T {
 	return result
 }
 
-func getSampleFromTrace(trace []string, entryPoints map[string]bool) (string, error) {
-
-	traceLen := len(trace)
-
-	if traceLen < 2 {
-		return "", errors.New("trace to small")
+func getSampleFromTrace(trace []string, entryPoints map[string]struct{}) (string, error) {
+	if len(trace) < 2 {
+		return "", errors.New("trace too small")
 	}
 
-	fields := strings.Fields(trace[traceLen-1])
-
+	fields := strings.Fields(trace[len(trace)-1])
 	if len(fields) != 3 {
 		return "", errors.New("incorrect trace format")
 	}
 
 	fileName := filepath.Base(strings.Split(fields[2], ":")[0])
-	// ignore entrypoint if entrypoints is set and file not in it
-	if _, exists := entryPoints[fileName]; len(entryPoints) > 0 && !exists {
-		return "", fmt.Errorf("trace entrypoint '%s' not in list", fileName)
+	if len(entryPoints) > 0 {
+		if _, exists := entryPoints[fileName]; !exists {
+			return "", fmt.Errorf("trace entrypoint '%s' not in list", fileName)
+		}
 	}
 
 	return makeSample(trace, fileName)
