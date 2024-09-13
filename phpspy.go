@@ -2,15 +2,127 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
 )
+
+// PhpspyProfiler implementation
+type PhpspyProfiler struct {
+	executable  string
+	args        []string
+	cmd         *exec.Cmd
+	mu          sync.Mutex
+	logger      *zap.Logger
+	rateHz      int
+	interval    time.Duration
+	entryPoints map[string]struct{}
+	tags        map[string]string
+}
+
+func NewPhpspyProfiler(
+	executable string,
+	args []string,
+	logger *zap.Logger,
+	interval time.Duration,
+	entryPoints map[string]struct{},
+	tags map[string]string,
+) (*PhpspyProfiler, error) {
+	rateHz, phpspyArgsErr := parsePhpSpyArguments(args, logger)
+	if phpspyArgsErr != nil {
+		return nil, phpspyArgsErr
+	}
+
+	return &PhpspyProfiler{
+		executable:  executable,
+		args:        args,
+		logger:      logger,
+		rateHz:      rateHz,
+		interval:    interval,
+		entryPoints: entryPoints,
+		tags:        tags,
+	}, nil
+}
+
+func (p *PhpspyProfiler) Start(ctx context.Context) (*bufio.Scanner, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	cmd := exec.CommandContext(ctx, p.executable, p.args...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe error: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	p.cmd = cmd
+	scanner := bufio.NewScanner(stdout)
+	return scanner, nil
+}
+
+func (p *PhpspyProfiler) Stop() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.cmd == nil {
+		return nil
+	}
+
+	// Check if process is already exited
+	if p.cmd.ProcessState != nil && p.cmd.ProcessState.Exited() {
+		return nil
+	}
+
+	err := p.cmd.Process.Signal(syscall.SIGTERM)
+	if err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			// Process already finished; no need to log an error
+			return nil
+		}
+		p.logger.Info("failed to terminate process", zap.Error(err))
+		killErr := p.cmd.Process.Kill()
+		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			p.logger.Info("failed to kill process", zap.Error(killErr))
+		}
+		return err
+	}
+
+	return nil
+}
+
+func (p *PhpspyProfiler) Wait() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.cmd == nil {
+		return errors.New("no command to wait for")
+	}
+
+	return p.cmd.Wait()
+}
+
+func (p *PhpspyProfiler) ParseOutput(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	scanner *bufio.Scanner,
+	samplesChannel chan<- *SampleCollection,
+) {
+	scanPhpSpyStdout(ctx, cancel, scanner, samplesChannel, p.rateHz, p.interval, p.entryPoints, p.tags, p.logger)
+}
 
 // parseMeta extracts dynamic tags from phpspy output
 func parseMeta(line string, tags map[string]string) (string, bool) {
@@ -56,19 +168,18 @@ func extractFlagValue[T any](flags []string, longKey, shortKey string, defaultVa
 	flagLen := len(flags)
 
 	for i := 0; i < flagLen; i++ {
-		flag := (flags)[i]
+		flag := flags[i]
 		switch {
 		case strings.HasPrefix(flag, longKey+"="):
 			return convertTo[T](strings.TrimPrefix(flag, longKey+"="))
 		case flag == shortKey && i+1 < flagLen:
-			return convertTo[T]((flags)[i+1])
+			return convertTo[T](flags[i+1])
 		case flag == longKey || flag == shortKey:
 			if _, ok := any(defaultValue).(bool); ok {
 				return convertTo[T]("true")
 			}
 		}
 	}
-
 	return defaultValue
 }
 
@@ -110,49 +221,90 @@ func getSampleFromTrace(trace []string, entryPoints map[string]struct{}) (string
 }
 
 func scanPhpSpyStdout(
-	scannerChannel chan *bufio.Scanner,
-	channel chan *SampleCollection,
+	ctx context.Context,
+	cancel context.CancelFunc,
+	scanner *bufio.Scanner,
+	samplesChannel chan<- *SampleCollection,
 	rateHz int,
 	interval time.Duration,
-	entryPoints map[string]bool,
+	entryPoints map[string]struct{},
 	tags map[string]string,
 	logger *zap.Logger,
 ) {
+	defer recoverAndLogPanic(logger, "panic recovered in scanPhpSpyStdout", cancel)
 
 	collection := newSampleCollection(rateHz)
 	sampleCount := 0
 
 	var currentTrace, currentTags []string
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 
+	lines := make(chan string)
+
+	// Goroutine to read lines from scanner
 	go func() {
-		for range ticker.C {
-			if sampleCount > 0 {
-				collection.until = time.Now()
-				channel <- collection
-				collection = newSampleCollection(rateHz)
-				logger.Info("phpspy samples collected", zap.Int("count", sampleCount))
-				sampleCount = 0
-			}
+		defer close(lines)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		if err := scanner.Err(); err != nil {
+			logger.Error("stdout scan error", zap.Error(err))
 		}
 	}()
 
-	for scanner := range scannerChannel {
-		for scanner.Scan() {
-			line := scanner.Text()
+	// Ticker to handle sample collection intervals
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Main loop to process lines and handle context cancellation
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if sampleCount > 0 {
+				collection.Lock()
+				collection.until = time.Now()
+				select {
+				case samplesChannel <- collection:
+					// Successfully sent the collection
+				case <-ctx.Done():
+					collection.Unlock()
+					return
+				}
+				collection.Unlock()
+				logger.Info("samples collected", zap.Int("count", sampleCount))
+				collection = newSampleCollection(rateHz)
+				sampleCount = 0
+			}
+		case line, ok := <-lines:
+			if !ok {
+				// Scanner has finished
+				if sampleCount > 0 {
+					collection.Lock()
+					collection.until = time.Now()
+					select {
+					case samplesChannel <- collection:
+						// Successfully sent the collection
+					case <-ctx.Done():
+						collection.Unlock()
+						return
+					}
+					collection.Unlock()
+					logger.Info("samples collected", zap.Int("count", sampleCount))
+				}
+				return
+			}
+			// Process the line
 			if strings.TrimSpace(line) == "" {
-				// ignoring traces that 1 line length as meaningless
-				// @TODO make flag
-				sample, sampleError := getSampleFromTrace(currentTrace, entryPoints)
-				if sampleError == nil {
+				sample, err := getSampleFromTrace(currentTrace, entryPoints)
+				if err == nil {
 					collection.addSample(sample, makeTags(currentTags))
 					sampleCount++
 				} else {
-					// sampler produces reasonable number of trash lines, ignore them
-					logger.Debug("unable to get sample from trace", zap.Error(sampleError))
+					logger.Debug("unable to get sample from trace", zap.Error(err))
 				}
-				currentTrace, currentTags = nil, nil
+				currentTrace = nil
+				currentTags = nil
 			} else if line[0] == '#' {
 				if tag, exists := parseMeta(line, tags); exists {
 					currentTags = append(currentTags, tag)
@@ -161,22 +313,22 @@ func scanPhpSpyStdout(
 				currentTrace = append(currentTrace, line)
 			}
 		}
-
-		if err := scanner.Err(); err != nil {
-			logger.Error("stdout scan error:", zap.Error(err))
-		}
 	}
 }
 
 func parsePhpSpyArguments(args []string, logger *zap.Logger) (int, error) {
-	for _, keys := range [][2]string{
+	unsupportedFlags := []struct {
+		longKey  string
+		shortKey string
+	}{
 		{"version", "v"},
 		{"top", "t"},
 		{"help", "h"},
 		{"single-line", "1"},
-	} {
-		if extractFlagValue[bool](args, keys[0], keys[1], false) {
-			return -1, fmt.Errorf("-%s, --%s flag of phpspy is unsupported by gospy", keys[1], keys[0])
+	}
+	for _, keys := range unsupportedFlags {
+		if extractFlagValue[bool](args, keys.longKey, keys.shortKey, false) {
+			return -1, fmt.Errorf("flag -%s/--%s is unsupported by gospy", keys.shortKey, keys.longKey)
 		}
 	}
 
@@ -186,17 +338,14 @@ func parsePhpSpyArguments(args []string, logger *zap.Logger) (int, error) {
 	}
 
 	pgrepMode := extractFlagValue[string](args, "pgrep", "P", "")
-
 	if pgrepMode != "" {
 		bufferSize := extractFlagValue[int](args, "buffer-size", "b", 4096)
 		eventHandlerOpts := extractFlagValue[string](args, "event-handler-opts", "J", "")
-
 		if bufferSize > 4096 && !strings.Contains(eventHandlerOpts, "m") {
-			logger.Warn("You use big buffer size without mutex. Consider using -J m with -b greater than 4096")
+			logger.Warn("using large buffer size without mutex; consider adding -J m with -b > 4096")
 		}
 	}
 
 	rateHz := extractFlagValue[int](args, "rate-hz", "H", 99)
-
 	return rateHz, nil
 }
