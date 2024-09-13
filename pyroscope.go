@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"go.uber.org/zap"
 	"net/http"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type Request struct {
@@ -17,7 +19,6 @@ type Request struct {
 	sampleRate int
 	bytes      int
 	retries    int
-	sync.RWMutex
 }
 
 func (sc *SampleCollection) makeRequest(name string, buffer bytes.Buffer) *Request {
@@ -42,19 +43,19 @@ func combineTags(staticTags, dynamicTags string) string {
 }
 
 func sendSample(
+	ctx context.Context,
+	client *http.Client,
 	pyroscopeURL string,
 	pyroscopeAuth string,
-	data bytes.Buffer,
+	data *bytes.Buffer,
 	name string,
 	from int64,
 	until int64,
 	sampleRate int,
 ) (int, error) {
-	client := &http.Client{}
-
-	req, err := http.NewRequest("POST", pyroscopeURL+"/ingest", &data)
-	if err != nil {
-		return 0, fmt.Errorf("error creating request: %s", err)
+	req, reqError := http.NewRequestWithContext(ctx, "POST", pyroscopeURL+"/ingest", data)
+	if reqError != nil {
+		return 0, fmt.Errorf("error creating request: %w", reqError)
 	}
 
 	req.Header.Set("Content-Type", "text/plain")
@@ -63,31 +64,32 @@ func sendSample(
 	}
 
 	q := req.URL.Query()
-	q.Add("name", fmt.Sprintf("%s", name))
+	q.Add("name", name)
 	q.Add("from", fmt.Sprintf("%d", from))
 	q.Add("until", fmt.Sprintf("%d", until))
 	q.Add("sampleRate", fmt.Sprintf("%d", sampleRate))
 	q.Add("format", "folded")
 	req.URL.RawQuery = q.Encode()
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("error sending request: %s", err)
-	}
-
-	if resp.Body.Close() != nil {
-		return 0, fmt.Errorf("got error while closing response body: %s", err)
+	resp, reqError := client.Do(req)
+	if reqError != nil {
+		return 0, fmt.Errorf("error sending request: %w", reqError)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return resp.StatusCode, fmt.Errorf("received non-OK response: %s", resp.Status)
+		return resp.StatusCode, fmt.Errorf("received unexpected response code: %s", resp.Status)
+	}
+
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		return 0, closeErr
 	}
 
 	return resp.StatusCode, nil
 }
 
 func makeRequest(
-	channel chan *Request,
+	ctx context.Context,
+	requestQueue chan *Request,
 	pyroscopeURL string,
 	pyroscopeAuth string,
 	rateBytes int,
@@ -97,114 +99,146 @@ func makeRequest(
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	go func() {
-		for range ticker.C {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req, ok := <-requestQueue:
+			if !ok {
+				return
+			}
+			if bytesSent+req.bytes > rateBytes {
+				logger.Warn("sending too fast, consider increasing rate limit")
+				// Wait for rate limit reset
+				<-ticker.C
+				continue
+			}
+
+			code, err := sendSample(ctx, client, pyroscopeURL, pyroscopeAuth, &req.data, req.name, req.from, req.until, req.sampleRate)
+			if err != nil {
+				logger.Warn("error sending request", zap.Error(err))
+			}
+
+			if code == http.StatusOK {
+				bytesSent += req.bytes
+				queries++
+			} else {
+				if req.retries < RetryCount {
+					req.retries++
+					// Retry the request
+					select {
+					case requestQueue <- req:
+						// Enqueued for retry
+					case <-ctx.Done():
+						// Context canceled; exit
+						return
+					}
+				} else {
+					logger.Error("failed to send request after retries", zap.Int("retries", req.retries))
+				}
+			}
+		case <-ticker.C:
 			if queries > 0 {
-				// showing sending info
-				logger.Info("data sent",
-					zap.Int("queries", queries),
-					zap.Int("bytes", bytesSent),
-				)
+				logger.Info("data sent", zap.Int("queries", queries), zap.Int("bytes", bytesSent))
 				bytesSent = 0
 				queries = 0
 			}
 		}
-	}()
-
-	for req := range channel {
-		req.Lock()
-
-		if bytesSent+req.bytes > rateBytes {
-			logger.Warn("sending too fast, consider increasing rate limit")
-			<-ticker.C // wait for ticker and then continue
-		}
-
-		// trying to send sample
-		code, err := sendSample(pyroscopeURL, pyroscopeAuth, req.data, req.name, req.from, req.until, req.sampleRate)
-
-		if err != nil {
-			logger.Warn("error sending request", zap.Error(err))
-		}
-
-		// samples successfully sent
-		if code == http.StatusOK {
-			bytesSent += req.bytes
-			queries++
-		}
-
-		if code != http.StatusOK && code != 0 {
-			if req.retries < RetryCount {
-				req.retries++
-				go func(r *Request) {
-					channel <- r
-				}(req)
-			} else {
-				logger.Error("failed to send request", zap.Int("retries", req.retries))
-			}
-		}
-
-		req.Unlock()
 	}
 }
 
 func readSamples(
-	channel chan *SampleCollection,
+	ctx context.Context,
+	samplesChannel <-chan *SampleCollection,
 	requestQueue chan *Request,
 	app string,
 	staticTags string,
 	rateBytes int,
 ) {
-	for sampleCollection := range channel {
-		sampleCollection.RLock()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case sampleCollection, ok := <-samplesChannel:
+			if !ok {
+				return
+			}
+			sampleCollection.RLock()
+			for dynamicTags, tagSamples := range sampleCollection.samples {
+				var buffer bytes.Buffer
+				requestSize := 0
+				name := fmt.Sprintf("%s{%s}", app, combineTags(staticTags, dynamicTags))
 
-		for dynamicTags, tagSamples := range sampleCollection.samples {
-			var buffer bytes.Buffer
-			requestSize := 0
-			name := fmt.Sprintf("%s{%s}", app, combineTags(staticTags, dynamicTags))
+				for _, sample := range tagSamples {
+					line := fmt.Sprintf("%s %d\n", sample.sample, sample.count)
+					lineSize := len(line)
 
-			for _, sample := range tagSamples {
-				line := fmt.Sprintf("%s %d\n", sample.sample, sample.count)
-				lineSize := len(line)
+					if requestSize+lineSize > rateBytes {
+						req := sampleCollection.makeRequest(name, buffer)
+						// Enqueue the request
+						select {
+						case requestQueue <- req:
+							// Successfully enqueued request
+						case <-ctx.Done():
+							sampleCollection.RUnlock()
+							return
+						}
+						buffer.Reset()
+						requestSize = 0
+					}
 
-				// Check if adding the new line would exceed the rateBytes
-				if requestSize+lineSize > rateBytes {
-					// push request to queue
-					requestQueue <- sampleCollection.makeRequest(name, buffer)
-
-					// Reset the buffer and requestSize for the new request
-					buffer.Reset()
-					requestSize = 0
+					buffer.WriteString(line)
+					requestSize += lineSize
 				}
 
-				// Write the line to the buffer
-				buffer.WriteString(line)
-				requestSize += lineSize
+				if requestSize > 0 {
+					req := sampleCollection.makeRequest(name, buffer)
+					// Enqueue the request
+					select {
+					case requestQueue <- req:
+						// Successfully enqueued request
+					case <-ctx.Done():
+						sampleCollection.RUnlock()
+						return
+					}
+				}
 			}
-
-			// Send any remaining data in the buffer as the final request
-			if requestSize > 0 {
-				requestQueue <- sampleCollection.makeRequest(name, buffer)
-			}
+			sampleCollection.RUnlock()
 		}
-
-		sampleCollection.RUnlock()
 	}
 }
 
 func sendToPyroscope(
-	samplesChannel chan *SampleCollection,
+	ctx context.Context,
+	logger *zap.Logger,
+	cancel context.CancelFunc,
+	samplesChannel <-chan *SampleCollection,
 	app string,
 	staticTags string,
 	pyroscopeURL string,
 	pyroscopeAuth string,
 	rateBytes int,
-	logger *zap.Logger,
 ) {
+	defer recoverAndLogPanic(logger, "panic recovered in sendToPyroscope", cancel)
+
 	requestQueue := make(chan *Request)
 
-	// read requestQueue and send data to pyroscope
-	go makeRequest(requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, logger)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		makeRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, logger)
+	}()
 
-	// read samples from samplesChannel and send it to requestQueue
-	readSamples(samplesChannel, requestQueue, app, staticTags, rateBytes)
+	readSamples(ctx, samplesChannel, requestQueue, app, staticTags, rateBytes)
+
+	// Close the requestQueue after readSamples returns
+	close(requestQueue)
+
+	// Wait for makeRequest to finish processing
+	wg.Wait()
 }

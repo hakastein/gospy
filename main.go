@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -115,71 +115,64 @@ func setupLogger(debug bool) (*zap.Logger, error) {
 	return cfg.Build()
 }
 
-func spawn(channel chan *bufio.Scanner, executable string, args []string) (*exec.Cmd, error) {
-	cmd := exec.Command(executable, args...)
-
-	stdout, stdoutErr := cmd.StdoutPipe()
-
-	if stdoutErr != nil {
-		return nil, fmt.Errorf("stdout pipe error: %s", stdoutErr)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	channel <- bufio.NewScanner(stdout)
-
-	return cmd, nil
-}
-
-func terminate(cmd *exec.Cmd, logger *zap.Logger) {
-	if cmd == nil {
-		return
-	}
-
-	if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-		return
-	}
-
-	termErr := cmd.Process.Signal(syscall.SIGTERM)
-	if termErr != nil {
-		logger.Error("failed to terminate process", zap.Error(termErr))
-
-		err := cmd.Process.Kill()
-		if err != nil {
-			logger.Error("failed to kill process", zap.Error(err))
-		}
-	}
-}
-
-func handlePanic(cmd *exec.Cmd, logger *zap.Logger) {
+func recoverAndLogPanic(logger *zap.Logger, message string, cancel context.CancelFunc) {
 	if r := recover(); r != nil {
-		var err error
-		switch x := r.(type) {
-		case string:
-			err = errors.New(x)
-		case error:
-			err = x
-		default:
-			err = errors.New("unknown panic")
+		if err, ok := r.(error); ok {
+			logger.Error(message, zap.Error(err))
+		} else {
+			logger.Error(message, zap.Any("error", r))
 		}
-		logger.Error("got panic", zap.Error(err))
-		terminate(cmd, logger)
+		cancel()
 	}
 }
 
-func runGoSpy(context *cli.Context) error {
-	pyroscopeURL := context.String("pyroscope")
-	pyroscopeAuth := context.String("pyroscopeAuth")
-	accumulationInterval := context.Duration("accumulation-interval")
-	app := context.String("app")
-	debug := context.Bool("debug")
-	restart := context.String("restart")
-	rateMb := context.Int("rate-mb") * Megabyte
-	staticTags, dynamicTags, tagsErr := getTags(context.StringSlice("tag"))
-	entryPoints := mapEntryPoints(context.StringSlice("entrypoint"))
-	arguments := context.Args().Slice()
+// Profiler interface
+type Profiler interface {
+	Start(ctx context.Context) (*bufio.Scanner, error)
+	Stop() error
+	Wait() error
+	ParseOutput(
+		ctx context.Context,
+		cancel context.CancelFunc,
+		scanner *bufio.Scanner,
+		samplesChannel chan<- *SampleCollection,
+	)
+}
+
+func runProfiler(
+	profilerApp string,
+	profilerArguments []string,
+	logger *zap.Logger,
+	accumulationInterval time.Duration,
+	entryPoints map[string]struct{},
+	dynamicTags map[string]string,
+) (Profiler, error) {
+	var profiler Profiler
+	switch profilerApp {
+	case "phpspy":
+		profilerInstance, err := NewPhpspyProfiler(profilerApp, profilerArguments, logger, accumulationInterval, entryPoints, dynamicTags)
+		if err != nil {
+			return nil, err
+		}
+		profiler = profilerInstance
+	default:
+		return nil, fmt.Errorf("unsupported profiler: %s", profilerApp)
+	}
+
+	return profiler, nil
+}
+
+func runGoSpy(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
+	pyroscopeURL := c.String("pyroscope")
+	pyroscopeAuth := c.String("pyroscopeAuth")
+	accumulationInterval := c.Duration("accumulation-interval")
+	app := c.String("app")
+	debug := c.Bool("debug")
+	restart := c.String("restart")
+	rateMb := c.Int("rate-mb") * Megabyte
+	staticTags, dynamicTags, tagsErr := getTags(c.StringSlice("tag"))
+	entryPoints := mapEntryPoints(c.StringSlice("entrypoint"))
+	arguments := c.Args().Slice()
 
 	if tagsErr != nil {
 		return tagsErr
@@ -192,118 +185,126 @@ func runGoSpy(context *cli.Context) error {
 	defer logger.Sync()
 
 	logger.Info("gospy started",
-		zap.String("pyroscope url", pyroscopeURL),
-		zap.String("pyroscope auth token", pyroscopeAuth),
-		zap.String("static tags", staticTags),
-		zap.Duration("phpspy accumulation-interval", accumulationInterval),
+		zap.String("pyroscope_url", pyroscopeURL),
+		zap.String("app_name", app),
+		zap.String("static_tags", staticTags),
+		zap.Duration("accumulation_interval", accumulationInterval),
 	)
 
 	samplesChannel := make(chan *SampleCollection)
-	defer close(samplesChannel)
 	signalsChannel := make(chan os.Signal, 1)
-	defer close(signalsChannel)
-	scannerChannel := make(chan *bufio.Scanner)
+	signal.Notify(signalsChannel, syscall.SIGTERM, syscall.SIGINT)
 
-	signal.Notify(signalsChannel,
-		syscall.SIGTERM,
-		syscall.SIGINT,
-	)
+	if len(arguments) == 0 {
+		return errors.New("no profiler application specified")
+	}
 
 	profilerApp := arguments[0]
 	profilerArguments := arguments[1:]
 
-	rateHz, phpspyArgsErr := parsePhpSpyArguments(profilerArguments, logger)
-	if phpspyArgsErr != nil {
-		return phpspyArgsErr
+	profilerName := filepath.Base(profilerApp)
+
+	profiler, profilerError := runProfiler(profilerName, profilerArguments, logger, accumulationInterval, entryPoints, dynamicTags)
+
+	if profilerError != nil {
+		return profilerError
 	}
 
-	var cmd *exec.Cmd
-
-	defer terminate(cmd, logger)
-
 	var wg sync.WaitGroup
-	wg.Add(3)
 
+	// Handle OS signals
 	go func() {
-		sig := <-signalsChannel
-		if sig == nil {
-			return
+		select {
+		case sig := <-signalsChannel:
+			logger.Info("signal received", zap.String("signal", sig.String()))
+			cancel()
+		case <-ctx.Done():
 		}
-		logger.Info("signal received", zap.String("signal", sig.String()))
-		if err := cmd.Process.Signal(sig); err != nil {
-			logger.Error("failed to send signal", zap.String("signal", sig.String()), zap.Error(err))
-		}
-		os.Exit(1)
 	}()
 
+	// Profiler management
+	wg.Add(1)
 	go func() {
-		defer close(scannerChannel)
 		defer wg.Done()
+		defer recoverAndLogPanic(logger, "panic recovered in profiler management goroutine", cancel)
 
 		for {
-			logger.Info("start phpspy")
-			var samplerError error
-
-			cmd, samplerError = spawn(scannerChannel, profilerApp, profilerArguments)
-
-			if samplerError == nil {
-				if exitError := cmd.Wait(); exitError != nil {
-					samplerError = exitError
+			select {
+			case <-ctx.Done():
+				if err := profiler.Stop(); err != nil {
+					logger.Warn("error stopping profiler", zap.Error(err))
 				}
-			}
-
-			if samplerError != nil {
-				logger.Error("error in phpspy", zap.Error(samplerError))
-			} else {
-				logger.Info("phpspy gracefully stopped")
-			}
-
-			switch {
-			case restart == "always":
-				continue
-			case restart == "onerror" && samplerError != nil:
-				continue
-			case restart == "onsuccess" && samplerError == nil:
-				continue
-			default:
 				return
+			default:
+				logger.Info("starting profiler")
+				scanner, err := profiler.Start(ctx)
+				if err != nil {
+					logger.Error("error starting profiler", zap.Error(err))
+					if restart == "always" || (restart == "onerror" && err != nil) {
+						continue
+					} else {
+						cancel()
+						return
+					}
+				}
+
+				// Parse profiler output
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer recoverAndLogPanic(logger, "panic recovered in profiler ParseOutput", cancel)
+					profiler.ParseOutput(ctx, cancel, scanner, samplesChannel)
+				}()
+
+				err = profiler.Wait()
+				if err != nil {
+					if ctx.Err() != nil {
+						logger.Info("profiler terminated")
+					} else {
+						logger.Error("profiler exited with error", zap.Error(err))
+					}
+				} else {
+					logger.Info("profiler exited gracefully")
+				}
+
+				if ctx.Err() != nil {
+					return
+				}
+
+				switch {
+				case restart == "always":
+					continue
+				case restart == "onerror" && err != nil:
+					continue
+				case restart == "onsuccess" && err == nil:
+					continue
+				default:
+					cancel()
+					return
+				}
 			}
 		}
 	}()
 
+	// Send samples to Pyroscope
+	wg.Add(1)
 	go func() {
-		defer handlePanic(cmd, logger)
 		defer wg.Done()
-
-		scanPhpSpyStdout(
-			scannerChannel,
-			samplesChannel,
-			rateHz,
-			accumulationInterval,
-			entryPoints,
-			dynamicTags,
-			logger,
-		)
+		defer recoverAndLogPanic(logger, "panic recovered in sendToPyroscope", cancel)
+		sendToPyroscope(ctx, logger, cancel, samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
 	}()
 
-	go func() {
-		defer handlePanic(cmd, logger)
-		defer wg.Done()
-
-		go sendToPyroscope(
-			samplesChannel,
-			app,
-			staticTags,
-			pyroscopeURL,
-			pyroscopeAuth,
-			rateMb,
-			logger,
-		)
-	}()
-
-	wg.Wait()
-
+	<-ctx.Done()
 	logger.Info("shutting down")
+
+	// Ensure profiler process is terminated
+	if err := profiler.Stop(); err != nil {
+		logger.Warn("error stopping profiler", zap.Error(err))
+	}
+
+	// Close channels and wait for goroutines
+	close(samplesChannel)
+	wg.Wait()
 
 	return nil
 }
@@ -311,7 +312,7 @@ func runGoSpy(context *cli.Context) error {
 func main() {
 	app := &cli.App{
 		Name:  "gospy",
-		Usage: "A Go wrapper for phpspy that sends traces to Pyroscope",
+		Usage: "A Go wrapper for sampling profilers that sends traces to Pyroscope",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:     "pyroscope",
@@ -332,7 +333,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:  "restart",
-				Usage: "Restart phpspy on exit (always, onerror, onsuccess, no). Default: no",
+				Usage: "Restart profiler on exit (always, onerror, onsuccess, no). Default: no",
 				Value: "no",
 			},
 			&cli.StringSliceFlag{
@@ -354,7 +355,11 @@ func main() {
 				Usage: "Entrypoint filenames to collect data from (e.g., index.php)",
 			},
 		},
-		Action: runGoSpy,
+		Action: func(c *cli.Context) error {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			return runGoSpy(ctx, cancel, c)
+		},
 	}
 
 	if err := app.Run(os.Args); err != nil {
