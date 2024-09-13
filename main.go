@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -19,19 +20,19 @@ import (
 )
 
 const (
-	DefaultRateMB             = 4       // default rate-mb in pyroscope
-	DefaultAccumulationPeriod = 10      // period of collecting samples
-	Megabyte                  = 1048576 // bytes in megabyte
-	RetryCount                = 2       // how many times attempt to resend
+	DefaultRateMB             = 4                // Default ingestion rate limit in MB for Pyroscope
+	DefaultAccumulationPeriod = 10 * time.Second // Period for collecting samples
+	Megabyte                  = 1048576          // Number of bytes in a megabyte
+	RetryCount                = 2                // Number of retries for sending data
 )
 
-// Sample - sample with count
+// Sample represents a profiling sample with its occurrence count
 type Sample struct {
 	sample string
 	count  int
 }
 
-// SampleCollection - samples grouped by tags
+// SampleCollection groups samples by tags and time intervals
 type SampleCollection struct {
 	from    time.Time
 	until   time.Time
@@ -41,8 +42,7 @@ type SampleCollection struct {
 }
 
 func sampleHash(s, tags string) uint64 {
-	h := xxhash.Sum64String(s + tags)
-	return h
+	return xxhash.Sum64String(s + tags)
 }
 
 func newSampleCollection(rateHz int) *SampleCollection {
@@ -75,11 +75,10 @@ func (sc *SampleCollection) addSample(str, tags string) {
 	}
 }
 
-// Function for processing tags and separating static and dynamic tags
+// getTags processes input tags and separates static and dynamic tags
 func getTags(tagsInput []string) (string, map[string]string, error) {
 	dynamicTags := make(map[string]string)
-	var st strings.Builder
-	st.Grow(64) // Preallocate memory for performance
+	var staticTags []string
 
 	for _, tag := range tagsInput {
 		idx := strings.Index(tag, "=")
@@ -89,45 +88,31 @@ func getTags(tagsInput []string) (string, map[string]string, error) {
 			if len(value) > 1 && value[0] == '%' && value[len(value)-1] == '%' {
 				dynamicTags[value[1:len(value)-1]] = key
 			} else {
-				st.WriteString(tag)
-				st.WriteString(",")
+				staticTags = append(staticTags, tag)
 			}
 		} else {
-			return "", dynamicTags, fmt.Errorf("unexpected tag format %s", tag)
+			return "", nil, fmt.Errorf("unexpected tag format %s", tag)
 		}
 	}
 
-	staticTags := st.String()
-	if len(staticTags) > 0 {
-		staticTags = staticTags[:len(staticTags)-1] // Removing trailing comma
-	}
-
-	return staticTags, dynamicTags, nil
+	return strings.Join(staticTags, ","), dynamicTags, nil
 }
 
-func mapEntryPoints(entryPoints []string) map[string]bool {
-	entryMap := make(map[string]bool, len(entryPoints))
-
+func mapEntryPoints(entryPoints []string) map[string]struct{} {
+	entryMap := make(map[string]struct{}, len(entryPoints))
 	for _, entry := range entryPoints {
-		entryMap[entry] = true
+		entryMap[entry] = struct{}{}
 	}
-
 	return entryMap
 }
 
 func setupLogger(debug bool) (*zap.Logger, error) {
-	var logger *zap.Logger
-	var logErr error
-
 	if debug {
 		cfg := zap.NewDevelopmentConfig()
-		logger, logErr = cfg.Build()
-	} else {
-		cfg := zap.NewProductionConfig()
-		logger, logErr = cfg.Build()
+		return cfg.Build()
 	}
-
-	return logger, logErr
+	cfg := zap.NewProductionConfig()
+	return cfg.Build()
 }
 
 func spawn(channel chan *bufio.Scanner, executable string, args []string) (*exec.Cmd, error) {
@@ -339,34 +324,34 @@ func main() {
 			},
 			&cli.BoolFlag{
 				Name:  "debug",
-				Value: false,
+				Usage: "Enable debug logging",
 			},
 			&cli.StringFlag{
 				Name:  "app",
-				Usage: "App Name for pyroscope",
+				Usage: "App name for Pyroscope",
 			},
 			&cli.StringFlag{
 				Name:  "restart",
-				Usage: "Restart phpspy if it exited? Allowed values: always, onerror, onsuccess, no. Default: no",
+				Usage: "Restart phpspy on exit (always, onerror, onsuccess, no). Default: no",
 				Value: "no",
 			},
 			&cli.StringSliceFlag{
 				Name:  "tag",
-				Usage: "key=value for static tags, key=%value% for dynamic tags",
+				Usage: "Static and dynamic tags (key=value or key=%value%)",
 			},
 			&cli.DurationFlag{
 				Name:  "accumulation-interval",
-				Usage: "Interval between sending accumulated samples to pyroscope",
-				Value: DefaultAccumulationPeriod * time.Second,
+				Usage: "Interval between sending accumulated samples to Pyroscope",
+				Value: DefaultAccumulationPeriod,
 			},
 			&cli.IntFlag{
 				Name:  "rate-mb",
-				Usage: "Ingestion limit in mb",
+				Usage: "Ingestion rate limit in MB",
 				Value: DefaultRateMB,
 			},
 			&cli.StringSliceFlag{
 				Name:  "entrypoint",
-				Usage: "Name of entrypoint file to collect data, example: index.php",
+				Usage: "Entrypoint filenames to collect data from (e.g., index.php)",
 			},
 		},
 		Action: runGoSpy,
