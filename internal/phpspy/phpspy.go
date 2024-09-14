@@ -1,10 +1,11 @@
-package main
+package phpspy
 
 import (
 	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"gospy/internal/sample"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,8 +18,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// PhpspyProfiler implementation
-type PhpspyProfiler struct {
+// Profiler implementation of profiler.Profiler
+type Profiler struct {
 	executable  string
 	args        []string
 	cmd         *exec.Cmd
@@ -30,20 +31,20 @@ type PhpspyProfiler struct {
 	tags        map[string]string
 }
 
-func NewPhpspyProfiler(
+func NewProfiler(
 	executable string,
 	args []string,
 	logger *zap.Logger,
 	interval time.Duration,
 	entryPoints map[string]struct{},
 	tags map[string]string,
-) (*PhpspyProfiler, error) {
+) (*Profiler, error) {
 	rateHz, phpspyArgsErr := parsePhpSpyArguments(args, logger)
 	if phpspyArgsErr != nil {
 		return nil, phpspyArgsErr
 	}
 
-	return &PhpspyProfiler{
+	return &Profiler{
 		executable:  executable,
 		args:        args,
 		logger:      logger,
@@ -54,7 +55,7 @@ func NewPhpspyProfiler(
 	}, nil
 }
 
-func (p *PhpspyProfiler) Start(ctx context.Context) (*bufio.Scanner, error) {
+func (p *Profiler) Start(ctx context.Context) (*bufio.Scanner, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -74,7 +75,7 @@ func (p *PhpspyProfiler) Start(ctx context.Context) (*bufio.Scanner, error) {
 	return scanner, nil
 }
 
-func (p *PhpspyProfiler) Stop() error {
+func (p *Profiler) Stop() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -104,7 +105,7 @@ func (p *PhpspyProfiler) Stop() error {
 	return nil
 }
 
-func (p *PhpspyProfiler) Wait() error {
+func (p *Profiler) Wait() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -115,11 +116,11 @@ func (p *PhpspyProfiler) Wait() error {
 	return p.cmd.Wait()
 }
 
-func (p *PhpspyProfiler) ParseOutput(
+func (p *Profiler) ParseOutput(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	scanner *bufio.Scanner,
-	samplesChannel chan<- *SampleCollection,
+	samplesChannel chan<- *sample.Collection,
 ) {
 	scanPhpSpyStdout(ctx, cancel, scanner, samplesChannel, p.rateHz, p.interval, p.entryPoints, p.tags, p.logger)
 }
@@ -139,21 +140,21 @@ func parseMeta(line string, tags map[string]string) (string, bool) {
 
 // makeSample constructs a sample string from a trace
 func makeSample(sampleArr []string, fileName string) (string, error) {
-	var sample strings.Builder
+	var smpl strings.Builder
 	for i := len(sampleArr) - 1; i >= 0; i-- {
 		fields := strings.Fields(sampleArr[i])
 		if len(fields) < 3 {
 			return "", errors.New("invalid trace line structure")
 		}
-		sample.WriteString(fields[1])
+		smpl.WriteString(fields[1])
 		if i == len(sampleArr)-1 {
-			sample.WriteString(" (" + fileName + ")")
+			smpl.WriteString(" (" + fileName + ")")
 		}
 		if i > 0 {
-			sample.WriteString(";")
+			smpl.WriteString(";")
 		}
 	}
-	return sample.String(), nil
+	return smpl.String(), nil
 }
 
 func makeTags(tagsArr []string) string {
@@ -207,7 +208,7 @@ func getSampleFromTrace(trace []string, entryPoints map[string]struct{}) (string
 
 	fields := strings.Fields(trace[len(trace)-1])
 	if len(fields) != 3 {
-		return "", errors.New("incorrect trace format")
+		return "", errors.New("invalid trace line structure")
 	}
 
 	fileName := filepath.Base(strings.Split(fields[2], ":")[0])
@@ -220,11 +221,22 @@ func getSampleFromTrace(trace []string, entryPoints map[string]struct{}) (string
 	return makeSample(trace, fileName)
 }
 
+func recoverAndLogPanic(logger *zap.Logger, message string, cancel context.CancelFunc) {
+	if r := recover(); r != nil {
+		if err, ok := r.(error); ok {
+			logger.Error(message, zap.Error(err))
+		} else {
+			logger.Error(message, zap.Any("error", r))
+		}
+		cancel()
+	}
+}
+
 func scanPhpSpyStdout(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	scanner *bufio.Scanner,
-	samplesChannel chan<- *SampleCollection,
+	samplesChannel chan<- *sample.Collection,
 	rateHz int,
 	interval time.Duration,
 	entryPoints map[string]struct{},
@@ -233,7 +245,7 @@ func scanPhpSpyStdout(
 ) {
 	defer recoverAndLogPanic(logger, "panic recovered in scanPhpSpyStdout", cancel)
 
-	collection := newSampleCollection(rateHz)
+	collection := sample.NewCollection(rateHz)
 	sampleCount := 0
 
 	var currentTrace, currentTags []string
@@ -262,46 +274,40 @@ func scanPhpSpyStdout(
 			return
 		case <-ticker.C:
 			if sampleCount > 0 {
-				collection.Lock()
-				collection.until = time.Now()
+				collection.Finish()
 				select {
 				case samplesChannel <- collection:
 					// Successfully sent the collection
 				case <-ctx.Done():
-					collection.Unlock()
 					return
 				}
-				collection.Unlock()
 				logger.Info("samples collected", zap.Int("count", sampleCount))
-				collection = newSampleCollection(rateHz)
+				collection = sample.NewCollection(rateHz)
 				sampleCount = 0
 			}
 		case line, ok := <-lines:
 			if !ok {
 				// Scanner has finished
 				if sampleCount > 0 {
-					collection.Lock()
-					collection.until = time.Now()
+					collection.Finish()
 					select {
 					case samplesChannel <- collection:
 						// Successfully sent the collection
 					case <-ctx.Done():
-						collection.Unlock()
 						return
 					}
-					collection.Unlock()
 					logger.Info("samples collected", zap.Int("count", sampleCount))
 				}
 				return
 			}
 			// Process the line
 			if strings.TrimSpace(line) == "" {
-				sample, err := getSampleFromTrace(currentTrace, entryPoints)
+				smpl, err := getSampleFromTrace(currentTrace, entryPoints)
 				if err == nil {
-					collection.addSample(sample, makeTags(currentTags))
+					collection.AddSample(smpl, makeTags(currentTags))
 					sampleCount++
 				} else {
-					logger.Debug("unable to get sample from trace", zap.Error(err))
+					logger.Debug("unable to get smpl from trace", zap.Error(err))
 				}
 				currentTrace = nil
 				currentTags = nil

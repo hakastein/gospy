@@ -1,10 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"gospy/internal/profiler"
+	"gospy/internal/pyroscope"
+	"gospy/internal/sample"
 	"log"
 	"os"
 	"os/signal"
@@ -14,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cespare/xxhash/v2"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 )
@@ -23,60 +24,10 @@ const (
 	DefaultRateMB             = 4                // Default ingestion rate limit in MB for Pyroscope
 	DefaultAccumulationPeriod = 10 * time.Second // Period for collecting samples
 	Megabyte                  = 1048576          // Number of bytes in a megabyte
-	RetryCount                = 2                // Number of retries for sending data
 )
 
-// Sample represents a profiling sample with its occurrence count
-type Sample struct {
-	sample string
-	count  int
-}
-
-// SampleCollection groups samples by tags and time intervals
-type SampleCollection struct {
-	from    time.Time
-	until   time.Time
-	samples map[string]map[uint64]*Sample
-	rateHz  int
-	sync.RWMutex
-}
-
-func sampleHash(s, tags string) uint64 {
-	return xxhash.Sum64String(s + tags)
-}
-
-func newSampleCollection(rateHz int) *SampleCollection {
-	return &SampleCollection{
-		from:    time.Now(),
-		samples: make(map[string]map[uint64]*Sample),
-		rateHz:  rateHz,
-	}
-}
-
-func (sc *SampleCollection) addSample(str, tags string) {
-	sc.Lock()
-	defer sc.Unlock()
-
-	hash := sampleHash(str, tags)
-
-	tagSamples, exists := sc.samples[tags]
-	if !exists {
-		tagSamples = make(map[uint64]*Sample)
-		sc.samples[tags] = tagSamples
-	}
-
-	if sample, exists := tagSamples[hash]; exists {
-		sample.count++
-	} else {
-		tagSamples[hash] = &Sample{
-			sample: str,
-			count:  1,
-		}
-	}
-}
-
-// getTags processes input tags and separates static and dynamic tags
-func getTags(tagsInput []string) (string, map[string]string, error) {
+// parseTags processes input tags and separates static and dynamic tags
+func parseTags(tagsInput []string) (string, map[string]string, error) {
 	dynamicTags := make(map[string]string)
 	var staticTags []string
 
@@ -126,43 +77,7 @@ func recoverAndLogPanic(logger *zap.Logger, message string, cancel context.Cance
 	}
 }
 
-// Profiler interface
-type Profiler interface {
-	Start(ctx context.Context) (*bufio.Scanner, error)
-	Stop() error
-	Wait() error
-	ParseOutput(
-		ctx context.Context,
-		cancel context.CancelFunc,
-		scanner *bufio.Scanner,
-		samplesChannel chan<- *SampleCollection,
-	)
-}
-
-func runProfiler(
-	profilerApp string,
-	profilerArguments []string,
-	logger *zap.Logger,
-	accumulationInterval time.Duration,
-	entryPoints map[string]struct{},
-	dynamicTags map[string]string,
-) (Profiler, error) {
-	var profiler Profiler
-	switch profilerApp {
-	case "phpspy":
-		profilerInstance, err := NewPhpspyProfiler(profilerApp, profilerArguments, logger, accumulationInterval, entryPoints, dynamicTags)
-		if err != nil {
-			return nil, err
-		}
-		profiler = profilerInstance
-	default:
-		return nil, fmt.Errorf("unsupported profiler: %s", profilerApp)
-	}
-
-	return profiler, nil
-}
-
-func runGoSpy(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
+func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	pyroscopeURL := c.String("pyroscope")
 	pyroscopeAuth := c.String("pyroscopeAuth")
 	accumulationInterval := c.Duration("accumulation-interval")
@@ -170,7 +85,7 @@ func runGoSpy(ctx context.Context, cancel context.CancelFunc, c *cli.Context) er
 	debug := c.Bool("debug")
 	restart := c.String("restart")
 	rateMb := c.Int("rate-mb") * Megabyte
-	staticTags, dynamicTags, tagsErr := getTags(c.StringSlice("tag"))
+	staticTags, dynamicTags, tagsErr := parseTags(c.StringSlice("tag"))
 	entryPoints := mapEntryPoints(c.StringSlice("entrypoint"))
 	arguments := c.Args().Slice()
 
@@ -191,7 +106,7 @@ func runGoSpy(ctx context.Context, cancel context.CancelFunc, c *cli.Context) er
 		zap.Duration("accumulation_interval", accumulationInterval),
 	)
 
-	samplesChannel := make(chan *SampleCollection)
+	samplesChannel := make(chan *sample.Collection)
 	signalsChannel := make(chan os.Signal, 1)
 	signal.Notify(signalsChannel, syscall.SIGTERM, syscall.SIGINT)
 
@@ -204,7 +119,7 @@ func runGoSpy(ctx context.Context, cancel context.CancelFunc, c *cli.Context) er
 
 	profilerName := filepath.Base(profilerApp)
 
-	profiler, profilerError := runProfiler(profilerName, profilerArguments, logger, accumulationInterval, entryPoints, dynamicTags)
+	prof, profilerError := profiler.Run(profilerName, profilerArguments, logger, accumulationInterval, entryPoints, dynamicTags)
 
 	if profilerError != nil {
 		return profilerError
@@ -231,13 +146,13 @@ func runGoSpy(ctx context.Context, cancel context.CancelFunc, c *cli.Context) er
 		for {
 			select {
 			case <-ctx.Done():
-				if err := profiler.Stop(); err != nil {
+				if err := prof.Stop(); err != nil {
 					logger.Warn("error stopping profiler", zap.Error(err))
 				}
 				return
 			default:
 				logger.Info("starting profiler")
-				scanner, err := profiler.Start(ctx)
+				scanner, err := prof.Start(ctx)
 				if err != nil {
 					logger.Error("error starting profiler", zap.Error(err))
 					if restart == "always" || (restart == "onerror" && err != nil) {
@@ -253,10 +168,10 @@ func runGoSpy(ctx context.Context, cancel context.CancelFunc, c *cli.Context) er
 				go func() {
 					defer wg.Done()
 					defer recoverAndLogPanic(logger, "panic recovered in profiler ParseOutput", cancel)
-					profiler.ParseOutput(ctx, cancel, scanner, samplesChannel)
+					prof.ParseOutput(ctx, cancel, scanner, samplesChannel)
 				}()
 
-				err = profiler.Wait()
+				err = prof.Wait()
 				if err != nil {
 					if ctx.Err() != nil {
 						logger.Info("profiler terminated")
@@ -291,14 +206,14 @@ func runGoSpy(ctx context.Context, cancel context.CancelFunc, c *cli.Context) er
 	go func() {
 		defer wg.Done()
 		defer recoverAndLogPanic(logger, "panic recovered in sendToPyroscope", cancel)
-		sendToPyroscope(ctx, logger, cancel, samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
+		pyroscope.SendToPyroscope(ctx, logger, cancel, samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
 	}()
 
 	<-ctx.Done()
 	logger.Info("shutting down")
 
 	// Ensure profiler process is terminated
-	if err := profiler.Stop(); err != nil {
+	if err := prof.Stop(); err != nil {
 		logger.Warn("error stopping profiler", zap.Error(err))
 	}
 
@@ -358,7 +273,7 @@ func main() {
 		Action: func(c *cli.Context) error {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			return runGoSpy(ctx, cancel, c)
+			return run(ctx, cancel, c)
 		},
 	}
 

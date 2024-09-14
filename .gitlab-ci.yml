@@ -1,10 +1,9 @@
-# Указываем stages для пайплайна
 stages:
   - build
   - upload
   - release
 
-# Переменные для Go и Docker
+
 variables:
   GO_VERSION: "1.20"
   CGO_ENABLED: "0"
@@ -14,7 +13,7 @@ variables:
   PACKAGE_VERSION: "$CI_COMMIT_TAG"
   PACKAGE_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${PACKAGE_VERSION}/gospy"
 
-# Job для сборки Go-приложения в статический бинарник
+
 build_app:
   stage: build
   image: golang:${GO_VERSION}-alpine
@@ -28,7 +27,6 @@ build_app:
   only:
     - /^v\d+\.\d+\.\d+$/
 
-# Job для загрузки бинарника в GitLab Package Registry
 upload_to_registry:
   stage: upload
   image: curlimages/curl:latest
@@ -41,7 +39,6 @@ upload_to_registry:
   only:
     - /^v\d+\.\d+\.\d+$/
 
-# Job для создания релиза в GitLab с добавлением ссылки на бинарник в Assets
 release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
