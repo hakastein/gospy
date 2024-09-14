@@ -1,9 +1,10 @@
-package main
+package pyroscope
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"gospy/internal/sample"
 	"net/http"
 	"sync"
 	"time"
@@ -21,11 +22,12 @@ type Request struct {
 	retries    int
 }
 
-func (sc *SampleCollection) makeRequest(name string, buffer bytes.Buffer) *Request {
+func makeRequest(sc *sample.Collection, name string, buffer bytes.Buffer) *Request {
+	from, until, rateHz := sc.Props()
 	return &Request{
-		from:       sc.from.Unix(),
-		until:      sc.until.Unix(),
-		sampleRate: sc.rateHz,
+		from:       from,
+		until:      until,
+		sampleRate: rateHz,
 		data:       buffer,
 		name:       name,
 		bytes:      buffer.Len(),
@@ -87,7 +89,7 @@ func sendSample(
 	return resp.StatusCode, nil
 }
 
-func makeRequest(
+func sendRequest(
 	ctx context.Context,
 	requestQueue chan *Request,
 	pyroscopeURL string,
@@ -127,7 +129,7 @@ func makeRequest(
 				bytesSent += req.bytes
 				queries++
 			} else {
-				if req.retries < RetryCount {
+				if req.retries < 2 {
 					req.retries++
 					// Retry the request
 					select {
@@ -153,7 +155,7 @@ func makeRequest(
 
 func readSamples(
 	ctx context.Context,
-	samplesChannel <-chan *SampleCollection,
+	samplesChannel <-chan *sample.Collection,
 	requestQueue chan *Request,
 	app string,
 	staticTags string,
@@ -167,24 +169,22 @@ func readSamples(
 			if !ok {
 				return
 			}
-			sampleCollection.RLock()
-			for dynamicTags, tagSamples := range sampleCollection.samples {
+			for dynamicTags, tagSamples := range sampleCollection.Samples() {
 				var buffer bytes.Buffer
 				requestSize := 0
 				name := fmt.Sprintf("%s{%s}", app, combineTags(staticTags, dynamicTags))
 
-				for _, sample := range tagSamples {
-					line := fmt.Sprintf("%s %d\n", sample.sample, sample.count)
+				for _, smpl := range tagSamples {
+					line := smpl.String()
 					lineSize := len(line)
 
 					if requestSize+lineSize > rateBytes {
-						req := sampleCollection.makeRequest(name, buffer)
+						req := makeRequest(sampleCollection, name, buffer)
 						// Enqueue the request
 						select {
 						case requestQueue <- req:
 							// Successfully enqueued request
 						case <-ctx.Done():
-							sampleCollection.RUnlock()
 							return
 						}
 						buffer.Reset()
@@ -192,31 +192,41 @@ func readSamples(
 					}
 
 					buffer.WriteString(line)
+					buffer.WriteString("\n")
 					requestSize += lineSize
 				}
 
 				if requestSize > 0 {
-					req := sampleCollection.makeRequest(name, buffer)
+					req := makeRequest(sampleCollection, name, buffer)
 					// Enqueue the request
 					select {
 					case requestQueue <- req:
 						// Successfully enqueued request
 					case <-ctx.Done():
-						sampleCollection.RUnlock()
 						return
 					}
 				}
 			}
-			sampleCollection.RUnlock()
 		}
 	}
 }
 
-func sendToPyroscope(
+func recoverAndLogPanic(logger *zap.Logger, message string, cancel context.CancelFunc) {
+	if r := recover(); r != nil {
+		if err, ok := r.(error); ok {
+			logger.Error(message, zap.Error(err))
+		} else {
+			logger.Error(message, zap.Any("error", r))
+		}
+		cancel()
+	}
+}
+
+func SendToPyroscope(
 	ctx context.Context,
 	logger *zap.Logger,
 	cancel context.CancelFunc,
-	samplesChannel <-chan *SampleCollection,
+	samplesChannel <-chan *sample.Collection,
 	app string,
 	staticTags string,
 	pyroscopeURL string,
@@ -231,7 +241,7 @@ func sendToPyroscope(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		makeRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, logger)
+		sendRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, logger)
 	}()
 
 	readSamples(ctx, samplesChannel, requestQueue, app, staticTags, rateBytes)
@@ -239,6 +249,6 @@ func sendToPyroscope(
 	// Close the requestQueue after readSamples returns
 	close(requestQueue)
 
-	// Wait for makeRequest to finish processing
+	// Wait for sendRequest to finish processing
 	wg.Wait()
 }
