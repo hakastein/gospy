@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"gospy/internal/sample"
 	"net/http"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -132,15 +131,11 @@ func sendRequest(
 				if req.retries < 2 {
 					req.retries++
 					// Retry the request
-					select {
-					case requestQueue <- req:
-						// Enqueued for retry
-					case <-ctx.Done():
-						// Context canceled; exit
-						return
-					}
+					go func() {
+						requestQueue <- req
+					}()
 				} else {
-					logger.Error("failed to send request after retries", zap.Int("retries", req.retries))
+					logger.Warn("failed to send request after retries", zap.Int("retries", req.retries))
 				}
 			}
 		case <-ticker.C:
@@ -237,18 +232,10 @@ func SendToPyroscope(
 
 	requestQueue := make(chan *Request)
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		sendRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, logger)
-	}()
+	go sendRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, logger)
 
 	readSamples(ctx, samplesChannel, requestQueue, app, staticTags, rateBytes)
 
 	// Close the requestQueue after readSamples returns
 	close(requestQueue)
-
-	// Wait for sendRequest to finish processing
-	wg.Wait()
 }
