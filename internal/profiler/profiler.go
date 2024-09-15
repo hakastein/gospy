@@ -17,7 +17,6 @@ type Profiler interface {
 	Wait() error
 	ParseOutput(
 		ctx context.Context,
-		cancel context.CancelFunc,
 		scanner *bufio.Scanner,
 		samplesChannel chan<- *sample.Collection,
 	)
