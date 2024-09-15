@@ -167,7 +167,6 @@ func readSamples(
 				var buffer bytes.Buffer
 				requestSize := 0
 				name := fmt.Sprintf("%s{%s}", app, combineTags(staticTags, dynamicTags))
-
 				for _, smpl := range tagSamples {
 					line := smpl.String()
 					lineSize := len(line)
@@ -205,20 +204,8 @@ func readSamples(
 	}
 }
 
-func recoverAndLogPanic(message string, cancel context.CancelFunc) {
-	if r := recover(); r != nil {
-		if err, ok := r.(error); ok {
-			log.Error().Err(err).Msg(message)
-		} else {
-			log.Error().Interface("error", r).Msg(message)
-		}
-		cancel()
-	}
-}
-
 func SendToPyroscope(
 	ctx context.Context,
-	cancel context.CancelFunc,
 	samplesChannel <-chan *sample.Collection,
 	app string,
 	staticTags string,
@@ -226,7 +213,6 @@ func SendToPyroscope(
 	pyroscopeAuth string,
 	rateBytes int,
 ) {
-	defer recoverAndLogPanic("panic recovered in sendToPyroscope", cancel)
 
 	requestQueue := make(chan *Request)
 

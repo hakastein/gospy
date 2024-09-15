@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"gospy/internal/sample"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -86,15 +85,6 @@ func (p *Profiler) Stop() error {
 
 	err := p.cmd.Process.Signal(syscall.SIGTERM)
 	if err != nil {
-		if errors.Is(err, os.ErrProcessDone) {
-			// Process already finished; no need to log an error
-			return nil
-		}
-		log.Info().Err(err).Msg("failed to terminate process")
-		killErr := p.cmd.Process.Kill()
-		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
-			log.Info().Err(killErr).Msg("failed to kill process")
-		}
 		return err
 	}
 
@@ -114,11 +104,10 @@ func (p *Profiler) Wait() error {
 
 func (p *Profiler) ParseOutput(
 	ctx context.Context,
-	cancel context.CancelFunc,
 	scanner *bufio.Scanner,
 	samplesChannel chan<- *sample.Collection,
 ) {
-	scanPhpSpyStdout(ctx, cancel, scanner, samplesChannel, p.rateHz, p.interval, p.entryPoints, p.tags)
+	scanPhpSpyStdout(ctx, scanner, samplesChannel, p.rateHz, p.interval, p.entryPoints, p.tags)
 }
 
 // parseMeta extracts dynamic tags from phpspy output
@@ -217,20 +206,8 @@ func getSampleFromTrace(trace []string, entryPoints map[string]struct{}) (string
 	return makeSample(trace, fileName)
 }
 
-func recoverAndLogPanic(message string, cancel context.CancelFunc) {
-	if r := recover(); r != nil {
-		if err, ok := r.(error); ok {
-			log.Error().Err(err).Msg(message)
-		} else {
-			log.Error().Interface("error", r).Msg(message)
-		}
-		cancel()
-	}
-}
-
 func scanPhpSpyStdout(
 	ctx context.Context,
-	cancel context.CancelFunc,
 	scanner *bufio.Scanner,
 	samplesChannel chan<- *sample.Collection,
 	rateHz int,
@@ -238,8 +215,6 @@ func scanPhpSpyStdout(
 	entryPoints map[string]struct{},
 	tags map[string]string,
 ) {
-	defer recoverAndLogPanic("panic recovered in scanPhpSpyStdout", cancel)
-
 	collection := sample.NewCollection(rateHz)
 	sampleCount := 0
 
@@ -302,7 +277,10 @@ func scanPhpSpyStdout(
 					collection.AddSample(smpl, makeTags(currentTags))
 					sampleCount++
 				} else {
-					log.Debug().Err(err).Msg("unable to get smpl from trace")
+					log.Debug().
+						Err(err).
+						Str("sample", strings.Join(currentTrace, "\n")).
+						Msg("unable to get smpl from trace")
 				}
 				currentTrace = nil
 				currentTags = nil
