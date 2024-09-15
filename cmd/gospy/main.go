@@ -9,8 +9,8 @@ import (
 	"gospy/internal/sample"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -56,13 +56,21 @@ func mapEntryPoints(entryPoints []string) map[string]struct{} {
 	return entryMap
 }
 
-func recoverAndLogPanic(message string, cancel context.CancelFunc) {
+func recoverAndCancel(message string, cancel context.CancelFunc) {
 	if r := recover(); r != nil {
-		if err, ok := r.(error); ok {
-			log.Error().Err(err).Msg(message)
-		} else {
-			log.Error().Interface("panic", r).Msg(message)
+		var err error
+		switch x := r.(type) {
+		case string:
+			err = errors.New(x)
+		case error:
+			err = x
+		default:
+			err = errors.New("unknown panic")
 		}
+		log.Err(err).
+			Stack().
+			Str("stack", string(debug.Stack())).
+			Msg(message)
 		cancel()
 	}
 }
@@ -80,7 +88,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	pyroscopeAuth := c.String("pyroscopeAuth")
 	accumulationInterval := c.Duration("accumulation-interval")
 	app := c.String("app")
-	debug := c.Bool("debug")
+	debugEnabled := c.Bool("debug")
 	restart := c.String("restart")
 	rateMb := c.Int("rate-mb") * Megabyte
 	staticTags, dynamicTags, tagsErr := parseTags(c.StringSlice("tag"))
@@ -91,7 +99,11 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		return tagsErr
 	}
 
-	setupLogger(debug)
+	setupLogger(debugEnabled)
+
+	if len(arguments) == 0 {
+		return errors.New("no profiler application specified")
+	}
 
 	log.Info().
 		Str("pyroscope_url", pyroscopeURL).
@@ -102,23 +114,15 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 
 	samplesChannel := make(chan *sample.Collection)
 	signalsChannel := make(chan os.Signal, 1)
-	signal.Notify(signalsChannel, syscall.SIGTERM, syscall.SIGINT)
-
-	if len(arguments) == 0 {
-		return errors.New("no profiler application specified")
-	}
-
 	profilerApp := arguments[0]
 	profilerArguments := arguments[1:]
-
 	prof, profilerError := profiler.Run(profilerApp, profilerArguments, accumulationInterval, entryPoints, dynamicTags)
 
 	if profilerError != nil {
 		return profilerError
 	}
 
-	var wg sync.WaitGroup
-
+	signal.Notify(signalsChannel, syscall.SIGTERM, syscall.SIGINT)
 	// Handle OS signals
 	go func() {
 		select {
@@ -130,17 +134,12 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	}()
 
 	// Profiler management
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		defer recoverAndLogPanic("panic recovered in profiler management goroutine", cancel)
+		defer recoverAndCancel("panic recovered in profiler management goroutine", cancel)
 
 		for {
 			select {
 			case <-ctx.Done():
-				if err := prof.Stop(); err != nil {
-					log.Warn().Err(err).Msg("error stopping profiler")
-				}
 				return
 			default:
 				log.Info().Msg("starting profiler")
@@ -156,12 +155,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 				}
 
 				// Parse profiler output
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					defer recoverAndLogPanic("panic recovered in profiler ParseOutput", cancel)
-					prof.ParseOutput(ctx, cancel, scanner, samplesChannel)
-				}()
+				prof.ParseOutput(ctx, scanner, samplesChannel)
 
 				err = prof.Wait()
 				if err != nil {
@@ -194,11 +188,9 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	}()
 
 	// Send samples to Pyroscope
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		defer recoverAndLogPanic("panic recovered in sendToPyroscope", cancel)
-		pyroscope.SendToPyroscope(ctx, cancel, samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
+		defer recoverAndCancel("panic recovered in sendToPyroscope", cancel)
+		pyroscope.SendToPyroscope(ctx, samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
 	}()
 
 	<-ctx.Done()
@@ -207,11 +199,12 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	// Ensure profiler process is terminated
 	if err := prof.Stop(); err != nil {
 		log.Warn().Err(err).Msg("error stopping profiler")
+	} else {
+		log.Info().Msg("profiler process terminated")
 	}
 
 	// Close channels and wait for goroutines
 	close(samplesChannel)
-	wg.Wait()
 
 	return nil
 }
