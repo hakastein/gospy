@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"go.uber.org/zap"
+	"github.com/rs/zerolog/log"
 )
 
 type Request struct {
@@ -94,7 +94,6 @@ func sendRequest(
 	pyroscopeURL string,
 	pyroscopeAuth string,
 	rateBytes int,
-	logger *zap.Logger,
 ) {
 	var bytesSent, queries int
 	ticker := time.NewTicker(time.Second)
@@ -113,7 +112,7 @@ func sendRequest(
 				return
 			}
 			if bytesSent+req.bytes > rateBytes {
-				logger.Warn("sending too fast, consider increasing rate limit")
+				log.Warn().Msg("sending too fast, consider increasing rate limit")
 				// Wait for rate limit reset
 				<-ticker.C
 				continue
@@ -121,7 +120,7 @@ func sendRequest(
 
 			code, err := sendSample(ctx, client, pyroscopeURL, pyroscopeAuth, &req.data, req.name, req.from, req.until, req.sampleRate)
 			if err != nil {
-				logger.Warn("error sending request", zap.Error(err))
+				log.Warn().Err(err).Msg("error sending request")
 			}
 
 			if code == http.StatusOK {
@@ -135,12 +134,12 @@ func sendRequest(
 						requestQueue <- req
 					}()
 				} else {
-					logger.Warn("failed to send request after retries", zap.Int("retries", req.retries))
+					log.Warn().Int("retries", req.retries).Msg("failed to send request after retries")
 				}
 			}
 		case <-ticker.C:
 			if queries > 0 {
-				logger.Info("data sent", zap.Int("queries", queries), zap.Int("bytes", bytesSent))
+				log.Info().Int("queries", queries).Int("bytes", bytesSent).Msg("data sent")
 				bytesSent = 0
 				queries = 0
 			}
@@ -206,12 +205,12 @@ func readSamples(
 	}
 }
 
-func recoverAndLogPanic(logger *zap.Logger, message string, cancel context.CancelFunc) {
+func recoverAndLogPanic(message string, cancel context.CancelFunc) {
 	if r := recover(); r != nil {
 		if err, ok := r.(error); ok {
-			logger.Error(message, zap.Error(err))
+			log.Error().Err(err).Msg(message)
 		} else {
-			logger.Error(message, zap.Any("error", r))
+			log.Error().Interface("error", r).Msg(message)
 		}
 		cancel()
 	}
@@ -219,7 +218,6 @@ func recoverAndLogPanic(logger *zap.Logger, message string, cancel context.Cance
 
 func SendToPyroscope(
 	ctx context.Context,
-	logger *zap.Logger,
 	cancel context.CancelFunc,
 	samplesChannel <-chan *sample.Collection,
 	app string,
@@ -228,11 +226,11 @@ func SendToPyroscope(
 	pyroscopeAuth string,
 	rateBytes int,
 ) {
-	defer recoverAndLogPanic(logger, "panic recovered in sendToPyroscope", cancel)
+	defer recoverAndLogPanic("panic recovered in sendToPyroscope", cancel)
 
 	requestQueue := make(chan *Request)
 
-	go sendRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, logger)
+	go sendRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes)
 
 	readSamples(ctx, samplesChannel, requestQueue, app, staticTags, rateBytes)
 
