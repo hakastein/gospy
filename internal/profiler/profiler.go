@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"go.uber.org/zap"
 	"gospy/internal/phpspy"
 	"gospy/internal/sample"
+	"path/filepath"
 	"time"
 )
 
@@ -24,23 +24,23 @@ type Profiler interface {
 }
 
 func Run(
-	profilerApp string,
+	profilerPath string,
 	profilerArguments []string,
-	logger *zap.Logger,
 	accumulationInterval time.Duration,
 	entryPoints map[string]struct{},
 	dynamicTags map[string]string,
 ) (Profiler, error) {
 	var profiler Profiler
 	var profilerErr error
-	switch profilerApp {
+
+	switch filepath.Base(profilerPath) {
 	case "phpspy":
-		profiler, profilerErr = phpspy.NewProfiler(profilerApp, profilerArguments, logger, accumulationInterval, entryPoints, dynamicTags)
+		profiler, profilerErr = phpspy.NewProfiler(profilerPath, profilerArguments, accumulationInterval, entryPoints, dynamicTags)
 		if profilerErr != nil {
 			return nil, profilerErr
 		}
 	default:
-		return nil, fmt.Errorf("unsupported profiler: %s", profilerApp)
+		return nil, fmt.Errorf("unsupported profiler: %s", profilerPath)
 	}
 
 	return profiler, nil

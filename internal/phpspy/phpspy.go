@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/rs/zerolog/log"
 	"gospy/internal/sample"
 	"os"
 	"os/exec"
@@ -14,8 +15,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"go.uber.org/zap"
 )
 
 // Profiler implementation of profiler.Profiler
@@ -24,7 +23,6 @@ type Profiler struct {
 	args        []string
 	cmd         *exec.Cmd
 	mu          sync.Mutex
-	logger      *zap.Logger
 	rateHz      int
 	interval    time.Duration
 	entryPoints map[string]struct{}
@@ -34,12 +32,11 @@ type Profiler struct {
 func NewProfiler(
 	executable string,
 	args []string,
-	logger *zap.Logger,
 	interval time.Duration,
 	entryPoints map[string]struct{},
 	tags map[string]string,
 ) (*Profiler, error) {
-	rateHz, phpspyArgsErr := parsePhpSpyArguments(args, logger)
+	rateHz, phpspyArgsErr := parsePhpSpyArguments(args)
 	if phpspyArgsErr != nil {
 		return nil, phpspyArgsErr
 	}
@@ -47,7 +44,6 @@ func NewProfiler(
 	return &Profiler{
 		executable:  executable,
 		args:        args,
-		logger:      logger,
 		rateHz:      rateHz,
 		interval:    interval,
 		entryPoints: entryPoints,
@@ -94,10 +90,10 @@ func (p *Profiler) Stop() error {
 			// Process already finished; no need to log an error
 			return nil
 		}
-		p.logger.Info("failed to terminate process", zap.Error(err))
+		log.Info().Err(err).Msg("failed to terminate process")
 		killErr := p.cmd.Process.Kill()
 		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
-			p.logger.Info("failed to kill process", zap.Error(killErr))
+			log.Info().Err(killErr).Msg("failed to kill process")
 		}
 		return err
 	}
@@ -122,7 +118,7 @@ func (p *Profiler) ParseOutput(
 	scanner *bufio.Scanner,
 	samplesChannel chan<- *sample.Collection,
 ) {
-	scanPhpSpyStdout(ctx, cancel, scanner, samplesChannel, p.rateHz, p.interval, p.entryPoints, p.tags, p.logger)
+	scanPhpSpyStdout(ctx, cancel, scanner, samplesChannel, p.rateHz, p.interval, p.entryPoints, p.tags)
 }
 
 // parseMeta extracts dynamic tags from phpspy output
@@ -221,12 +217,12 @@ func getSampleFromTrace(trace []string, entryPoints map[string]struct{}) (string
 	return makeSample(trace, fileName)
 }
 
-func recoverAndLogPanic(logger *zap.Logger, message string, cancel context.CancelFunc) {
+func recoverAndLogPanic(message string, cancel context.CancelFunc) {
 	if r := recover(); r != nil {
 		if err, ok := r.(error); ok {
-			logger.Error(message, zap.Error(err))
+			log.Error().Err(err).Msg(message)
 		} else {
-			logger.Error(message, zap.Any("error", r))
+			log.Error().Interface("error", r).Msg(message)
 		}
 		cancel()
 	}
@@ -241,9 +237,8 @@ func scanPhpSpyStdout(
 	interval time.Duration,
 	entryPoints map[string]struct{},
 	tags map[string]string,
-	logger *zap.Logger,
 ) {
-	defer recoverAndLogPanic(logger, "panic recovered in scanPhpSpyStdout", cancel)
+	defer recoverAndLogPanic("panic recovered in scanPhpSpyStdout", cancel)
 
 	collection := sample.NewCollection(rateHz)
 	sampleCount := 0
@@ -259,7 +254,7 @@ func scanPhpSpyStdout(
 			lines <- scanner.Text()
 		}
 		if err := scanner.Err(); err != nil {
-			logger.Error("stdout scan error", zap.Error(err))
+			log.Error().Err(err).Msg("stdout scan error")
 		}
 	}()
 
@@ -281,7 +276,7 @@ func scanPhpSpyStdout(
 				case <-ctx.Done():
 					return
 				}
-				logger.Info("samples collected", zap.Int("count", sampleCount))
+				log.Info().Int("count", sampleCount).Msg("samples collected")
 				collection = sample.NewCollection(rateHz)
 				sampleCount = 0
 			}
@@ -296,7 +291,7 @@ func scanPhpSpyStdout(
 					case <-ctx.Done():
 						return
 					}
-					logger.Info("samples collected", zap.Int("count", sampleCount))
+					log.Info().Int("count", sampleCount).Msg("samples collected")
 				}
 				return
 			}
@@ -307,7 +302,7 @@ func scanPhpSpyStdout(
 					collection.AddSample(smpl, makeTags(currentTags))
 					sampleCount++
 				} else {
-					logger.Debug("unable to get smpl from trace", zap.Error(err))
+					log.Debug().Err(err).Msg("unable to get smpl from trace")
 				}
 				currentTrace = nil
 				currentTags = nil
@@ -322,7 +317,7 @@ func scanPhpSpyStdout(
 	}
 }
 
-func parsePhpSpyArguments(args []string, logger *zap.Logger) (int, error) {
+func parsePhpSpyArguments(args []string) (int, error) {
 	unsupportedFlags := []struct {
 		longKey  string
 		shortKey string
@@ -348,7 +343,7 @@ func parsePhpSpyArguments(args []string, logger *zap.Logger) (int, error) {
 		bufferSize := extractFlagValue[int](args, "buffer-size", "b", 4096)
 		eventHandlerOpts := extractFlagValue[string](args, "event-handler-opts", "J", "")
 		if bufferSize > 4096 && !strings.Contains(eventHandlerOpts, "m") {
-			logger.Warn("using large buffer size without mutex; consider adding -J m with -b > 4096")
+			log.Warn().Msg("using large buffer size without mutex; consider adding -J m with -b > 4096")
 		}
 	}
 
