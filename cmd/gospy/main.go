@@ -7,17 +7,16 @@ import (
 	"gospy/internal/profiler"
 	"gospy/internal/pyroscope"
 	"gospy/internal/sample"
-	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
-	"go.uber.org/zap"
 )
 
 const (
@@ -57,23 +56,22 @@ func mapEntryPoints(entryPoints []string) map[string]struct{} {
 	return entryMap
 }
 
-func setupLogger(debug bool) (*zap.Logger, error) {
-	if debug {
-		cfg := zap.NewDevelopmentConfig()
-		return cfg.Build()
-	}
-	cfg := zap.NewProductionConfig()
-	return cfg.Build()
-}
-
-func recoverAndLogPanic(logger *zap.Logger, message string, cancel context.CancelFunc) {
+func recoverAndLogPanic(message string, cancel context.CancelFunc) {
 	if r := recover(); r != nil {
 		if err, ok := r.(error); ok {
-			logger.Error(message, zap.Error(err))
+			log.Error().Err(err).Msg(message)
 		} else {
-			logger.Error(message, zap.Any("error", r))
+			log.Error().Interface("panic", r).Msg(message)
 		}
 		cancel()
+	}
+}
+
+func setupLogger(debug bool) {
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
 }
 
@@ -93,18 +91,14 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		return tagsErr
 	}
 
-	logger, logErr := setupLogger(debug)
-	if logErr != nil {
-		return logErr
-	}
-	defer logger.Sync()
+	setupLogger(debug)
 
-	logger.Info("gospy started",
-		zap.String("pyroscope_url", pyroscopeURL),
-		zap.String("app_name", app),
-		zap.String("static_tags", staticTags),
-		zap.Duration("accumulation_interval", accumulationInterval),
-	)
+	log.Info().
+		Str("pyroscope_url", pyroscopeURL).
+		Str("app_name", app).
+		Str("static_tags", staticTags).
+		Dur("accumulation_interval", accumulationInterval).
+		Msg("gospy started")
 
 	samplesChannel := make(chan *sample.Collection)
 	signalsChannel := make(chan os.Signal, 1)
@@ -117,9 +111,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	profilerApp := arguments[0]
 	profilerArguments := arguments[1:]
 
-	profilerName := filepath.Base(profilerApp)
-
-	prof, profilerError := profiler.Run(profilerName, profilerArguments, logger, accumulationInterval, entryPoints, dynamicTags)
+	prof, profilerError := profiler.Run(profilerApp, profilerArguments, accumulationInterval, entryPoints, dynamicTags)
 
 	if profilerError != nil {
 		return profilerError
@@ -131,7 +123,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	go func() {
 		select {
 		case sig := <-signalsChannel:
-			logger.Info("signal received", zap.String("signal", sig.String()))
+			log.Info().Str("signal", sig.String()).Msg("signal received")
 			cancel()
 		case <-ctx.Done():
 		}
@@ -141,20 +133,20 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer recoverAndLogPanic(logger, "panic recovered in profiler management goroutine", cancel)
+		defer recoverAndLogPanic("panic recovered in profiler management goroutine", cancel)
 
 		for {
 			select {
 			case <-ctx.Done():
 				if err := prof.Stop(); err != nil {
-					logger.Warn("error stopping profiler", zap.Error(err))
+					log.Warn().Err(err).Msg("error stopping profiler")
 				}
 				return
 			default:
-				logger.Info("starting profiler")
+				log.Info().Msg("starting profiler")
 				scanner, err := prof.Start(ctx)
 				if err != nil {
-					logger.Error("error starting profiler", zap.Error(err))
+					log.Error().Err(err).Msg("error starting profiler")
 					if restart == "always" || (restart == "onerror" && err != nil) {
 						continue
 					} else {
@@ -167,19 +159,19 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					defer recoverAndLogPanic(logger, "panic recovered in profiler ParseOutput", cancel)
+					defer recoverAndLogPanic("panic recovered in profiler ParseOutput", cancel)
 					prof.ParseOutput(ctx, cancel, scanner, samplesChannel)
 				}()
 
 				err = prof.Wait()
 				if err != nil {
 					if ctx.Err() != nil {
-						logger.Info("profiler terminated")
+						log.Info().Msg("profiler terminated")
 					} else {
-						logger.Error("profiler exited with error", zap.Error(err))
+						log.Error().Err(err).Msg("profiler exited with error")
 					}
 				} else {
-					logger.Info("profiler exited gracefully")
+					log.Info().Msg("profiler exited gracefully")
 				}
 
 				if ctx.Err() != nil {
@@ -205,16 +197,16 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer recoverAndLogPanic(logger, "panic recovered in sendToPyroscope", cancel)
-		pyroscope.SendToPyroscope(ctx, logger, cancel, samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
+		defer recoverAndLogPanic("panic recovered in sendToPyroscope", cancel)
+		pyroscope.SendToPyroscope(ctx, cancel, samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
 	}()
 
 	<-ctx.Done()
-	logger.Info("shutting down")
+	log.Info().Msg("shutting down")
 
 	// Ensure profiler process is terminated
 	if err := prof.Stop(); err != nil {
-		logger.Warn("error stopping profiler", zap.Error(err))
+		log.Warn().Err(err).Msg("error stopping profiler")
 	}
 
 	// Close channels and wait for goroutines
@@ -278,6 +270,6 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err)
 	}
 }
