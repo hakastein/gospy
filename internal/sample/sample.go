@@ -33,7 +33,7 @@ type Collection struct {
 	m       sync.RWMutex
 }
 
-func sampleHash(s, tags string) uint64 {
+func sampleHash(s string, tags string) uint64 {
 	return xxhash.Sum64String(s + tags)
 }
 
