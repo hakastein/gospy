@@ -15,7 +15,7 @@ build_app:
   stage: build
   image: golang:${GO_VERSION}-alpine
   script:
-    - apk add --no-cache gcc musl-dev
+    - apk add --no-cache gcc musl-dev make
     - go mod download
     - make build
   artifacts:
