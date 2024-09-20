@@ -1,6 +1,7 @@
 package sample
 
 import (
+	"context"
 	"github.com/cespare/xxhash/v2"
 	"strconv"
 	"strings"
@@ -93,6 +94,7 @@ func (sc *Collection) AddSample(str, tags string) {
 }
 
 func FoldedStacksToCollection(
+	ctx context.Context,
 	foldedStacksChannel chan [2]string,
 	collectionChannel chan<- *Collection,
 	accumulationInterval time.Duration,
@@ -104,10 +106,13 @@ func FoldedStacksToCollection(
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
 			if collection.Len() == 0 {
 				continue
 			}
+
 			collection.Finish()
 			collectionChannel <- collection
 			collection = newCollection(rateHz)
