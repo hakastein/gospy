@@ -37,7 +37,7 @@ func sampleHash(s string, tags string) uint64 {
 	return xxhash.Sum64String(s + tags)
 }
 
-func NewCollection(rateHz int) *Collection {
+func newCollection(rateHz int) *Collection {
 	return &Collection{
 		from:    time.Now(),
 		samples: make(map[string]map[uint64]*Sample),
@@ -88,6 +88,34 @@ func (sc *Collection) AddSample(str, tags string) {
 		tagSamples[hash] = &Sample{
 			sample: str,
 			count:  1,
+		}
+	}
+}
+
+func FoldedStacksToCollection(
+	foldedStacksChannel chan [2]string,
+	collectionChannel chan<- *Collection,
+	accumulationInterval time.Duration,
+	rateHz int,
+) {
+	ticker := time.NewTicker(accumulationInterval)
+	defer ticker.Stop()
+	collection := newCollection(rateHz)
+
+	for {
+		select {
+		case <-ticker.C:
+			if collection.Len() == 0 {
+				continue
+			}
+			collection.Finish()
+			collectionChannel <- collection
+			collection = newCollection(rateHz)
+		case stack, ok := <-foldedStacksChannel:
+			if !ok {
+				return
+			}
+			collection.AddSample(stack[0], stack[1])
 		}
 	}
 }

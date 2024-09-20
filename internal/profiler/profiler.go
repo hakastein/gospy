@@ -17,7 +17,7 @@ type Profiler interface {
 	Start(ctx context.Context) (*bufio.Scanner, error)
 	Stop() error
 	Wait() error
-	IsSupportable() (bool, error)
+	IsConfigurationValid() (bool, error)
 	GetHZ() int
 }
 
