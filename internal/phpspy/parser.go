@@ -32,7 +32,7 @@ func (prsr *Parser) Parse(
 ) {
 	var currentTrace, currentMeta []string
 
-	lines := make(chan string)
+	lines := make(chan string, 1000)
 
 	// Goroutine to read lines from scanner
 	go func() {

@@ -83,7 +83,7 @@ func (prflr *Profiler) Wait() error {
 	return prflr.cmd.Wait()
 }
 
-func (prflr *Profiler) IsSupportable() (bool, error) {
+func (prflr *Profiler) IsConfigurationValid() (bool, error) {
 	unsupportedFlags := []struct {
 		longKey  string
 		shortKey string
