@@ -56,7 +56,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		Msg("gospy started")
 
 	// make channels and ensure closing
-	foldedStacksChannel := make(chan [2]string, 1000)
+	stacksChannel := make(chan [2]string, 1000)
 	collectionChannel := make(chan *sample.Collection, 10)
 	signalsChannel := make(chan os.Signal, 1)
 
@@ -93,23 +93,24 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	var wg sync.WaitGroup
 	wg.Add(3)
 
-	// run profiler and parser
 	go func() {
 		defer wg.Done()
-		defer close(foldedStacksChannel)
+		defer close(stacksChannel)
 
-		supervisor.ManageProfiler(ctx, profilerInstance, parserInstance, foldedStacksChannel, restart)
+		// run profiles and parser, transform traces to stack format and send to stacksChannel
+		supervisor.ManageProfiler(ctx, profilerInstance, parserInstance, stacksChannel, restart)
 	}()
 
-	// collect folded stacks and compact into collection
+	// collect traces from stacksChannel and compress into foldedStacks collection, populate collectionChannel by period
 	go func() {
 		defer wg.Done()
 		defer close(collectionChannel)
 
-		sample.FoldedStacksToCollection(ctx, foldedStacksChannel, collectionChannel, accumulationInterval, rateHz)
+		// collect folded stacks and
+		sample.FoldedStacksToCollection(ctx, stacksChannel, collectionChannel, accumulationInterval, rateHz)
 	}()
 
-	// Send samples to Pyroscope
+	// Send folded stacks from collectionChannel to Pyroscope
 	go func() {
 		defer wg.Done()
 		defer close(signalsChannel)

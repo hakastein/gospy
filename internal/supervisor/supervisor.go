@@ -7,6 +7,7 @@ import (
 	"gospy/internal/profiler"
 )
 
+// ManageProfiler run profiler and parser, collect parses, transform parses into folded stacks format, send to foldedStacksChannel
 func ManageProfiler(
 	ctx context.Context,
 	profilerInstance profiler.Profiler,
