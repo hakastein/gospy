@@ -10,8 +10,10 @@ import (
 	"gospy/internal/profiler"
 	"gospy/internal/pyroscope"
 	"gospy/internal/sample"
+	"gospy/internal/supervisor"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 )
 
@@ -55,16 +57,13 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 
 	// make channels and ensure closing
 	foldedStacksChannel := make(chan [2]string, 1000)
-	defer close(foldedStacksChannel)
 	collectionChannel := make(chan *sample.Collection, 10)
-	defer close(collectionChannel)
 	signalsChannel := make(chan os.Signal, 1)
-	defer close(signalsChannel)
 
 	profilerApp := arguments[0]
 	profilerArguments := arguments[1:]
 
-	profilerInstance, profilerError := profiler.Run(profilerApp, profilerArguments)
+	profilerInstance, profilerError := profiler.Init(profilerApp, profilerArguments)
 	if profilerError != nil {
 		return profilerError
 	}
@@ -75,7 +74,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	// get sample rate from profiler settings
 	rateHz := profilerInstance.GetHZ()
 
-	parserInstance, parserError := parser.Get(profilerApp, entryPoints, dynamicTags)
+	parserInstance, parserError := parser.Init(profilerApp, entryPoints, dynamicTags)
 	if parserError != nil {
 		return parserError
 	}
@@ -91,78 +90,36 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		}
 	}()
 
+	var wg sync.WaitGroup
+	wg.Add(3)
+
 	// run profiler and parser
 	go func() {
-		defer recoverAndCancel("panic recovered in profiler management goroutine", cancel)
+		defer wg.Done()
+		defer close(foldedStacksChannel)
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				log.Info().Msg("starting profiler")
-				scanner, err := profilerInstance.Start(ctx)
-
-				if err != nil {
-					// terminate gospy if got startup error
-					log.Error().Err(err).Msg("error starting profiler")
-					cancel()
-					return
-				}
-
-				// Parse profiler output
-				parserInstance.Parse(ctx, scanner, foldedStacksChannel)
-
-				err = profilerInstance.Wait()
-				if err != nil {
-					if ctx.Err() != nil {
-						log.Info().Msg("profiler terminated")
-					} else {
-						log.Error().Err(err).Msg("profiler exited with error")
-					}
-				} else {
-					log.Info().Msg("profiler exited gracefully")
-				}
-
-				if ctx.Err() != nil {
-					return
-				}
-
-				switch {
-				case restart == "always":
-					continue
-				case restart == "onerror" && err != nil:
-					continue
-				case restart == "onsuccess" && err == nil:
-					continue
-				default:
-					cancel()
-					return
-				}
-			}
-		}
+		supervisor.ManageProfiler(ctx, profilerInstance, parserInstance, foldedStacksChannel, restart)
 	}()
 
 	// collect folded stacks and compact into collection
 	go func() {
-		sample.FoldedStacksToCollection(foldedStacksChannel, collectionChannel, accumulationInterval, rateHz)
+		defer wg.Done()
+		defer close(collectionChannel)
+
+		sample.FoldedStacksToCollection(ctx, foldedStacksChannel, collectionChannel, accumulationInterval, rateHz)
 	}()
 
 	// Send samples to Pyroscope
 	go func() {
-		defer recoverAndCancel("panic recovered in sendToPyroscope", cancel)
+		defer wg.Done()
+		defer close(signalsChannel)
+
 		pyroscope.SendToPyroscope(ctx, collectionChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
 	}()
 
+	wg.Wait()
 	<-ctx.Done()
 	log.Info().Msg("shutting down")
-
-	// Ensure profiler process is terminated
-	if err := profilerInstance.Stop(); err != nil {
-		log.Warn().Err(err).Msg("error stopping profiler")
-	} else {
-		log.Info().Msg("profiler process terminated")
-	}
 
 	return nil
 }

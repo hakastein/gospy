@@ -95,8 +95,9 @@ func main() {
 		},
 		Action: func(c *cli.Context) error {
 			ctx, cancel := context.WithCancel(context.Background())
-			setupLogger(verbosity)
 			defer cancel()
+
+			setupLogger(verbosity)
 			return run(ctx, cancel, c)
 		},
 	}

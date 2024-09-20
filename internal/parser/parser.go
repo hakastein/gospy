@@ -15,7 +15,7 @@ type Parser interface {
 	)
 }
 
-func Get(
+func Init(
 	profiler string,
 	entryPoints map[string]struct{},
 	tagsMapping map[string]string,

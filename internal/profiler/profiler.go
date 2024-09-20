@@ -15,13 +15,12 @@ type Args struct {
 // Profiler interface
 type Profiler interface {
 	Start(ctx context.Context) (*bufio.Scanner, error)
-	Stop() error
 	Wait() error
 	IsConfigurationValid() (bool, error)
 	GetHZ() int
 }
 
-func Run(
+func Init(
 	profilerPath string,
 	profilerArguments []string,
 ) (Profiler, error) {

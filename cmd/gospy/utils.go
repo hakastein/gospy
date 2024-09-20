@@ -1,11 +1,7 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"github.com/rs/zerolog/log"
-	"runtime/debug"
 	"strings"
 )
 
@@ -38,23 +34,4 @@ func mapEntryPoints(entryPoints []string) map[string]struct{} {
 		entryMap[entry] = struct{}{}
 	}
 	return entryMap
-}
-
-func recoverAndCancel(message string, cancel context.CancelFunc) {
-	if r := recover(); r != nil {
-		var err error
-		switch x := r.(type) {
-		case string:
-			err = errors.New(x)
-		case error:
-			err = x
-		default:
-			err = errors.New("unknown panic")
-		}
-		log.Err(err).
-			Stack().
-			Str("stack", string(debug.Stack())).
-			Msg(message)
-		cancel()
-	}
 }

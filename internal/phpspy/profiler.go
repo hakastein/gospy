@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 // Profiler implementation of profiler.Profiler
@@ -49,27 +48,6 @@ func (prflr *Profiler) Start(ctx context.Context) (*bufio.Scanner, error) {
 	prflr.cmd = cmd
 	scanner := bufio.NewScanner(stdout)
 	return scanner, nil
-}
-
-func (prflr *Profiler) Stop() error {
-	prflr.mu.Lock()
-	defer prflr.mu.Unlock()
-
-	if prflr.cmd == nil {
-		return nil
-	}
-
-	// Check if process is already exited
-	if prflr.cmd.ProcessState != nil && prflr.cmd.ProcessState.Exited() {
-		return nil
-	}
-
-	err := prflr.cmd.Process.Signal(syscall.SIGTERM)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (prflr *Profiler) Wait() error {
