@@ -125,6 +125,7 @@ func sendRequest(
 
 			if code == http.StatusOK {
 				bytesSent += req.bytes
+				log.Trace().Str("name", req.name).Msg("sent request for name")
 				queries++
 			} else {
 				if req.retries < 2 {

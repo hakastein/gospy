@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"gospy/internal/parser"
 	"gospy/internal/profiler"
 	"gospy/internal/pyroscope"
 	"gospy/internal/sample"
@@ -75,11 +76,14 @@ func recoverAndCancel(message string, cancel context.CancelFunc) {
 	}
 }
 
-func setupLogger(debug bool) {
+func setupLogger(verbose int) {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	if debug {
+	if verbose == 1 {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+	if verbose > 1 {
+		zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	}
 }
 
@@ -88,7 +92,6 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	pyroscopeAuth := c.String("pyroscopeAuth")
 	accumulationInterval := c.Duration("accumulation-interval")
 	app := c.String("app")
-	debugEnabled := c.Bool("debug")
 	restart := c.String("restart")
 	rateMb := c.Int("rate-mb") * Megabyte
 	staticTags, dynamicTags, tagsErr := parseTags(c.StringSlice("tag"))
@@ -98,8 +101,6 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	if tagsErr != nil {
 		return tagsErr
 	}
-
-	setupLogger(debugEnabled)
 
 	if len(arguments) == 0 {
 		return errors.New("no profiler application specified")
@@ -112,14 +113,25 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		Dur("accumulation_interval", accumulationInterval).
 		Msg("gospy started")
 
-	samplesChannel := make(chan *sample.Collection)
+	foldedStacksChannel := make(chan [2]string, 1000)
+	collectionChannel := make(chan *sample.Collection, 10)
 	signalsChannel := make(chan os.Signal, 1)
+
 	profilerApp := arguments[0]
 	profilerArguments := arguments[1:]
-	prof, profilerError := profiler.Run(profilerApp, profilerArguments, accumulationInterval, entryPoints, dynamicTags)
 
+	prof, profilerError := profiler.Run(profilerApp, profilerArguments)
 	if profilerError != nil {
 		return profilerError
+	}
+	if sup, unsupportableError := prof.IsSupportable(); !sup {
+		return unsupportableError
+	}
+	rateHz := prof.GetHZ()
+
+	pars, parserError := parser.Get(profilerApp, entryPoints, dynamicTags)
+	if parserError != nil {
+		return parserError
 	}
 
 	signal.Notify(signalsChannel, syscall.SIGTERM, syscall.SIGINT)
@@ -155,7 +167,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 				}
 
 				// Parse profiler output
-				prof.ParseOutput(ctx, scanner, samplesChannel)
+				pars.Parse(ctx, scanner, foldedStacksChannel)
 
 				err = prof.Wait()
 				if err != nil {
@@ -187,10 +199,37 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		}
 	}()
 
+	// Collect and compress tracess
+	ticker := time.NewTicker(accumulationInterval)
+	defer ticker.Stop()
+	collection := sample.NewCollection(rateHz)
+
+	// collect folded stacks and compact into collection
+	go func() {
+		defer recoverAndCancel("panic recovered in sendToPyroscope", cancel)
+
+		for {
+			select {
+			case <-ticker.C:
+				if collection.Len() == 0 {
+					continue
+				}
+				collection.Finish()
+				collectionChannel <- collection
+				collection = sample.NewCollection(rateHz)
+			case stack, ok := <-foldedStacksChannel:
+				if !ok {
+					return
+				}
+				collection.AddSample(stack[0], stack[1])
+			}
+		}
+	}()
+
 	// Send samples to Pyroscope
 	go func() {
 		defer recoverAndCancel("panic recovered in sendToPyroscope", cancel)
-		pyroscope.SendToPyroscope(ctx, samplesChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
+		pyroscope.SendToPyroscope(ctx, collectionChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
 	}()
 
 	<-ctx.Done()
@@ -204,15 +243,17 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	}
 
 	// Close channels and wait for goroutines
-	close(samplesChannel)
+	close(foldedStacksChannel)
 
 	return nil
 }
 
 func main() {
+	var verbosity int
 	app := &cli.App{
-		Name:  "gospy",
-		Usage: "A Go wrapper for sampling profilers that sends traces to Pyroscope",
+		Name:                   "gospy",
+		Usage:                  "A Go wrapper for sampling profilers that sends traces to Pyroscope",
+		UseShortOptionHandling: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:     "pyroscope",
@@ -224,8 +265,10 @@ func main() {
 				Usage: "Pyroscope authentication token",
 			},
 			&cli.BoolFlag{
-				Name:  "debug",
-				Usage: "Enable debug logging",
+				Name:    "verbose",
+				Usage:   "Verbosity level, use multiply time to increase verbosity",
+				Aliases: []string{"v"},
+				Count:   &verbosity,
 			},
 			&cli.StringFlag{
 				Name:  "app",
@@ -257,6 +300,7 @@ func main() {
 		},
 		Action: func(c *cli.Context) error {
 			ctx, cancel := context.WithCancel(context.Background())
+			setupLogger(verbosity)
 			defer cancel()
 			return run(ctx, cancel, c)
 		},
