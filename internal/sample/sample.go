@@ -66,6 +66,10 @@ func (sc *Collection) Samples() map[string]map[uint64]*Sample {
 	return sc.samples
 }
 
+func (sc *Collection) Len() int {
+	return len(sc.samples)
+}
+
 func (sc *Collection) AddSample(str, tags string) {
 	sc.m.Lock()
 	defer sc.m.Unlock()
