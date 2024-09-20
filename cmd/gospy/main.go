@@ -266,7 +266,7 @@ func main() {
 			},
 			&cli.BoolFlag{
 				Name:    "verbose",
-				Usage:   "Verbosity level, use multiply time to increase verbosity",
+				Usage:   "Verbosity level, use twice to increase verbosity",
 				Aliases: []string{"v"},
 				Count:   &verbosity,
 			},
