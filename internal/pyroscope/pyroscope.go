@@ -125,6 +125,7 @@ func sendRequest(
 
 			if code == http.StatusOK {
 				bytesSent += req.bytes
+				log.Trace().Str("name", req.name).Msg("sent request for name")
 				queries++
 			} else {
 				if req.retries < 2 {
@@ -172,14 +173,7 @@ func readSamples(
 					lineSize := len(line)
 
 					if requestSize+lineSize > rateBytes {
-						req := makeRequest(sampleCollection, name, buffer)
-						// Enqueue the request
-						select {
-						case requestQueue <- req:
-							// Successfully enqueued request
-						case <-ctx.Done():
-							return
-						}
+						requestQueue <- makeRequest(sampleCollection, name, buffer)
 						buffer.Reset()
 						requestSize = 0
 					}
@@ -190,14 +184,7 @@ func readSamples(
 				}
 
 				if requestSize > 0 {
-					req := makeRequest(sampleCollection, name, buffer)
-					// Enqueue the request
-					select {
-					case requestQueue <- req:
-						// Successfully enqueued request
-					case <-ctx.Done():
-						return
-					}
+					requestQueue <- makeRequest(sampleCollection, name, buffer)
 				}
 			}
 		}
@@ -213,13 +200,11 @@ func SendToPyroscope(
 	pyroscopeAuth string,
 	rateBytes int,
 ) {
-
 	requestQueue := make(chan *Request)
+	defer close(requestQueue)
 
 	go sendRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes)
 
 	readSamples(ctx, samplesChannel, requestQueue, app, staticTags, rateBytes)
 
-	// Close the requestQueue after readSamples returns
-	close(requestQueue)
 }
