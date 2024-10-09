@@ -11,17 +11,23 @@ import (
 )
 
 type Parser struct {
-	entryPoints map[string]struct{}
-	tagsMapping map[string]string
+	entryPoints        map[string]struct{}
+	tagsMapping        map[string]string
+	tagEntrypoint      bool
+	keepEntrypointName bool
 }
 
 func NewParser(
 	entryPoints map[string]struct{},
 	tagsMapping map[string]string,
+	tagEntrypoint bool,
+	keepEntrypointName bool,
 ) *Parser {
 	return &Parser{
-		entryPoints: entryPoints,
-		tagsMapping: tagsMapping,
+		entryPoints:        entryPoints,
+		tagsMapping:        tagsMapping,
+		tagEntrypoint:      tagEntrypoint,
+		keepEntrypointName: keepEntrypointName,
 	}
 }
 
@@ -30,9 +36,16 @@ func (prsr *Parser) Parse(
 	scanner *bufio.Scanner,
 	foldedStacks chan<- [2]string,
 ) {
-	var currentTrace, currentMeta []string
-
-	lines := make(chan string, 1000)
+	var (
+		currentTrace      []string
+		currentMeta       []string
+		tags              string
+		sample            string
+		entryPoint        string
+		convertError      error
+		isValidEntrypoint = true
+		lines             = make(chan string, 1000)
+	)
 
 	// Goroutine to read lines from scanner
 	go func() {
@@ -55,58 +68,116 @@ func (prsr *Parser) Parse(
 				log.Debug().Msg("folded stacks channel have been closed")
 				return
 			}
+
 			// Process the line
 			if strings.TrimSpace(line) == "" {
-				smpl, err := getSampleFromTrace(currentTrace, prsr.entryPoints)
-				if err == nil {
-					tags := parseMeta(currentMeta, prsr.tagsMapping)
-					foldedStacks <- [2]string{smpl, tags}
-					log.Trace().
-						Str("sample", smpl).
-						Msg("sample collected")
+				sample, entryPoint, convertError = tracesToFoldedStacks(currentTrace, prsr.keepEntrypointName)
+
+				if convertError == nil {
+
+					if len(prsr.tagsMapping) == 0 {
+						isValidEntrypoint = true
+					} else {
+						_, isValidEntrypoint = prsr.entryPoints[entryPoint]
+					}
+
+					if isValidEntrypoint {
+						tags = parseMeta(currentMeta, prsr.tagsMapping)
+
+						if prsr.tagEntrypoint {
+							tags += ",entrypoint=" + entryPoint
+						}
+
+						foldedStacks <- [2]string{sample, tags}
+						log.Trace().
+							Str("sample", sample).
+							Msg("sample collected")
+					} else {
+						log.
+							Debug().
+							Str("entrypoint", entryPoint).
+							Msg("trace entrypoint not in the list")
+					}
+
 				} else {
 					log.Debug().
-						Err(err).
+						Err(convertError).
 						Str("sample", strings.Join(currentTrace, "\n")).
-						Msg("unable to get smpl from trace")
+						Msg("unable convert trace to folded stack format")
 				}
+
 				currentTrace = nil
 				currentMeta = nil
-			} else if line[0] == '#' {
-				currentMeta = append(currentMeta, line)
-			} else {
-				currentTrace = append(currentTrace, line)
+
+				continue
 			}
+
+			if strings.HasPrefix(line, "#") {
+				currentMeta = append(currentMeta, line)
+
+				continue
+			}
+
+			currentTrace = append(currentTrace, line)
 		}
 	}
 }
 
-func getSampleFromTrace(
-	trace []string, entryPoints map[string]struct{},
-) (string, error) {
-	if len(trace) < 2 {
-		return "", errors.New("trace too small")
+// tracesToFoldedStacks returns trace in folded stack format and entrypoint of trace if trace is valid
+func tracesToFoldedStacks(trace []string, keepEntrypointName bool) (string, string, error) {
+	if len(trace) <= 1 {
+		return "", "", errors.New("trace too small")
 	}
 
-	fields := strings.Fields(trace[len(trace)-1])
-	if len(fields) != 3 {
-		return "", errors.New("invalid trace line structure")
-	}
+	var (
+		foldedStack strings.Builder
+		entryPoint  string
+	)
 
-	fileName := filepath.Base(strings.Split(fields[2], ":")[0])
-	if len(entryPoints) > 0 {
-		if _, exists := entryPoints[fileName]; !exists {
-			return "", fmt.Errorf("trace entrypoint '%s' not in list", fileName)
+	var functionName, fileInfo string
+	var colonIndex int
+
+	for i := len(trace) - 1; i >= 0; i-- {
+		tokens := strings.Fields(trace[i])
+		if len(tokens) < 3 {
+			return "", "", errors.New("invalid trace line structure")
+		}
+
+		functionName = tokens[1]
+		foldedStack.WriteString(functionName)
+
+		// last line in trace is entrypoint
+		if i == len(trace)-1 {
+			fileInfo = tokens[2]
+			colonIndex = strings.LastIndex(fileInfo, ":")
+			if colonIndex == -1 {
+				return "", "", errors.New("invalid file info in trace")
+			}
+
+			entryPoint = filepath.Base(fileInfo[:colonIndex])
+
+			if keepEntrypointName {
+				foldedStack.WriteString(" ")
+				foldedStack.WriteString(entryPoint)
+			}
+		}
+
+		if i > 0 {
+			foldedStack.WriteString(";")
 		}
 	}
 
-	return makeSample(trace, fileName)
+	return foldedStack.String(), entryPoint, nil
 }
 
 // parseMeta extracts dynamic tags from phpspy output
 func parseMeta(lines []string, tagsMapping map[string]string) string {
-	var tags strings.Builder
-	first := true
+	var (
+		tags   strings.Builder
+		key    string
+		exists bool
+		first  = true
+	)
 
 	for _, line := range lines {
 		line = strings.TrimSpace(strings.TrimPrefix(line, "# "))
@@ -115,7 +186,7 @@ func parseMeta(lines []string, tagsMapping map[string]string) string {
 			continue
 		}
 
-		key, exists := tagsMapping[keyVal[0]]
+		key, exists = tagsMapping[keyVal[0]]
 
 		if !exists {
 			continue
@@ -130,23 +201,4 @@ func parseMeta(lines []string, tagsMapping map[string]string) string {
 	}
 
 	return tags.String()
-}
-
-// makeSample constructs a sample string from a trace
-func makeSample(sampleArr []string, fileName string) (string, error) {
-	var smpl strings.Builder
-	for i := len(sampleArr) - 1; i >= 0; i-- {
-		fields := strings.Fields(sampleArr[i])
-		if len(fields) < 3 {
-			return "", errors.New("invalid trace line structure")
-		}
-		smpl.WriteString(fields[1])
-		if i == len(sampleArr)-1 {
-			smpl.WriteString(" (" + fileName + ")")
-		}
-		if i > 0 {
-			smpl.WriteString(";")
-		}
-	}
-	return smpl.String(), nil
 }
