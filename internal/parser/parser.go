@@ -19,12 +19,14 @@ func Init(
 	profiler string,
 	entryPoints map[string]struct{},
 	tagsMapping map[string]string,
+	tagEntrypoint bool,
+	keepEntrypointName bool,
 ) (Parser, error) {
 	var parser Parser
 
 	switch profiler {
 	case "phpspy":
-		parser = phpspy.NewParser(entryPoints, tagsMapping)
+		parser = phpspy.NewParser(entryPoints, tagsMapping, tagEntrypoint, keepEntrypointName)
 	default:
 		return nil, fmt.Errorf("unknown profiler: %s", profiler)
 	}
