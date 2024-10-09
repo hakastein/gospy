@@ -88,6 +88,7 @@ func sendSample(
 	return resp.StatusCode, nil
 }
 
+// sendRequest read request from requestQueue and sends it to pyroscope
 func sendRequest(
 	ctx context.Context,
 	requestQueue chan *Request,
@@ -95,13 +96,17 @@ func sendRequest(
 	pyroscopeAuth string,
 	rateBytes int,
 ) {
-	var bytesSent, queries int
-	ticker := time.NewTicker(time.Second)
+	var (
+		bytesSent     int
+		queries       int
+		responseCode  int
+		responseError error
+		ticker        = time.NewTicker(time.Second)
+		client        = &http.Client{
+			Timeout: 10 * time.Second,
+		}
+	)
 	defer ticker.Stop()
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
 
 	for {
 		select {
@@ -118,12 +123,12 @@ func sendRequest(
 				continue
 			}
 
-			code, err := sendSample(ctx, client, pyroscopeURL, pyroscopeAuth, &req.data, req.name, req.from, req.until, req.sampleRate)
-			if err != nil {
-				log.Warn().Err(err).Msg("error sending request")
+			responseCode, responseError = sendSample(ctx, client, pyroscopeURL, pyroscopeAuth, &req.data, req.name, req.from, req.until, req.sampleRate)
+			if responseError != nil {
+				log.Warn().Err(responseError).Msg("error sending request")
 			}
 
-			if code == http.StatusOK {
+			if responseCode == http.StatusOK {
 				bytesSent += req.bytes
 				log.Trace().Str("name", req.name).Msg("sent request for name")
 				queries++
@@ -148,6 +153,7 @@ func sendRequest(
 	}
 }
 
+// readSamples makes request object from samplesChannel and put them in requestQueue channel
 func readSamples(
 	ctx context.Context,
 	samplesChannel <-chan *sample.Collection,
@@ -156,6 +162,13 @@ func readSamples(
 	staticTags string,
 	rateBytes int,
 ) {
+	var (
+		appName     string
+		line        string
+		lineSize    int
+		requestSize int
+	)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -164,16 +177,18 @@ func readSamples(
 			if !ok {
 				return
 			}
+
 			for dynamicTags, tagSamples := range sampleCollection.Samples() {
 				var buffer bytes.Buffer
-				requestSize := 0
-				name := fmt.Sprintf("%s{%s}", app, combineTags(staticTags, dynamicTags))
+				requestSize = 0
+				appName = fmt.Sprintf("%s{%s}", app, combineTags(staticTags, dynamicTags))
 				for _, smpl := range tagSamples {
-					line := smpl.String()
-					lineSize := len(line)
+					line = smpl.String()
+					lineSize = len(line)
 
+					// if is too much samples to send in one request split them
 					if requestSize+lineSize > rateBytes {
-						requestQueue <- makeRequest(sampleCollection, name, buffer)
+						requestQueue <- makeRequest(sampleCollection, appName, buffer)
 						buffer.Reset()
 						requestSize = 0
 					}
@@ -184,7 +199,7 @@ func readSamples(
 				}
 
 				if requestSize > 0 {
-					requestQueue <- makeRequest(sampleCollection, name, buffer)
+					requestQueue <- makeRequest(sampleCollection, appName, buffer)
 				}
 			}
 		}
@@ -200,7 +215,7 @@ func SendToPyroscope(
 	pyroscopeAuth string,
 	rateBytes int,
 ) {
-	requestQueue := make(chan *Request)
+	requestQueue := make(chan *Request, 100)
 	defer close(requestQueue)
 
 	go sendRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes)

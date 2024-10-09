@@ -30,15 +30,19 @@ func setupLogger(verbose int) {
 
 func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	// setup app
-	pyroscopeURL := c.String("pyroscope")
-	pyroscopeAuth := c.String("pyroscopeAuth")
-	accumulationInterval := c.Duration("accumulation-interval")
-	app := c.String("app")
-	restart := c.String("restart")
-	rateMb := c.Int("rate-mb") * Megabyte
-	staticTags, dynamicTags, tagsErr := parseTags(c.StringSlice("tag"))
-	entryPoints := mapEntryPoints(c.StringSlice("entrypoint"))
-	arguments := c.Args().Slice()
+	var (
+		pyroscopeURL                     = c.String("pyroscope")
+		pyroscopeAuth                    = c.String("pyroscopeAuth")
+		accumulationInterval             = c.Duration("accumulation-interval")
+		tagEntrypoint                    = c.Bool("tag-entrypoint")
+		keepEntrypointName               = c.Bool("keep-entrypoint-name")
+		app                              = c.String("app")
+		restart                          = c.String("restart")
+		rateMb                           = c.Int("rate-mb") * Megabyte
+		staticTags, dynamicTags, tagsErr = parseTags(c.StringSlice("tag"))
+		entryPoints                      = mapEntryPoints(c.StringSlice("entrypoint"))
+		arguments                        = c.Args().Slice()
+	)
 
 	if tagsErr != nil {
 		return tagsErr
@@ -74,7 +78,13 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	// get sample rate from profiler settings
 	rateHz := profilerInstance.GetHZ()
 
-	parserInstance, parserError := parser.Init(profilerApp, entryPoints, dynamicTags)
+	parserInstance, parserError := parser.Init(
+		profilerApp,
+		entryPoints,
+		dynamicTags,
+		tagEntrypoint,
+		keepEntrypointName,
+	)
 	if parserError != nil {
 		return parserError
 	}
@@ -98,7 +108,13 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		defer close(stacksChannel)
 
 		// run profiles and parser, transform traces to stack format and send to stacksChannel
-		supervisor.ManageProfiler(ctx, profilerInstance, parserInstance, stacksChannel, restart)
+		supervisor.ManageProfiler(
+			ctx,
+			profilerInstance,
+			parserInstance,
+			stacksChannel,
+			restart,
+		)
 	}()
 
 	// collect traces from stacksChannel and compress into foldedStacks collection, populate collectionChannel by period
@@ -106,8 +122,13 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		defer wg.Done()
 		defer close(collectionChannel)
 
-		// collect folded stacks and
-		sample.FoldedStacksToCollection(ctx, stacksChannel, collectionChannel, accumulationInterval, rateHz)
+		sample.FoldedStacksToCollection(
+			ctx,
+			stacksChannel,
+			collectionChannel,
+			accumulationInterval,
+			rateHz,
+		)
 	}()
 
 	// Send folded stacks from collectionChannel to Pyroscope
@@ -115,7 +136,15 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		defer wg.Done()
 		defer close(signalsChannel)
 
-		pyroscope.SendToPyroscope(ctx, collectionChannel, app, staticTags, pyroscopeURL, pyroscopeAuth, rateMb)
+		pyroscope.SendToPyroscope(
+			ctx,
+			collectionChannel,
+			app,
+			staticTags,
+			pyroscopeURL,
+			pyroscopeAuth,
+			rateMb,
+		)
 	}()
 
 	wg.Wait()

@@ -90,7 +90,16 @@ func main() {
 			},
 			&cli.StringSliceFlag{
 				Name:  "entrypoint",
-				Usage: "Entrypoint filenames to collect data from (e.g., index.php)",
+				Usage: "Limit traces with certain entrypoint (e.g., index.php)",
+			},
+			&cli.BoolFlag{
+				Name:  "tag-entrypoint",
+				Usage: "Add entrypoint to tags",
+			},
+			&cli.BoolFlag{
+				Name:  "keep-entrypoint-name",
+				Usage: "Keep entrypoint name in traces. Default: true",
+				Value: true,
 			},
 		},
 		Action: func(c *cli.Context) error {
