@@ -26,7 +26,7 @@ func setupLogger(verbose int, instanceName string) {
 	if verbose > 1 {
 		zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	}
-	log.Logger = log.Logger.With().Str("app", instanceName).Logger()
+	log.Logger = log.Logger.With().Str("instance", instanceName).Logger()
 }
 
 func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
