@@ -103,7 +103,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:  "instance-name",
-				Usage: "change name of this instance in logs",
+				Usage: "change name of this instance of gospy. Only for logging purpose",
 				Value: "gospy",
 			},
 		},
