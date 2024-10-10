@@ -6,19 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"github.com/rs/zerolog/log"
-	"path/filepath"
+	"gospy/internal/validator"
 	"strings"
 )
 
 type Parser struct {
-	entryPoints        map[string]struct{}
+	entryPoints        []string
 	tagsMapping        map[string]string
 	tagEntrypoint      bool
 	keepEntrypointName bool
 }
 
 func NewParser(
-	entryPoints map[string]struct{},
+	entryPoints []string,
 	tagsMapping map[string]string,
 	tagEntrypoint bool,
 	keepEntrypointName bool,
@@ -37,15 +37,17 @@ func (prsr *Parser) Parse(
 	foldedStacks chan<- [2]string,
 ) {
 	var (
-		currentTrace      []string
-		currentMeta       []string
-		tags              string
-		sample            string
-		entryPoint        string
-		convertError      error
-		isValidEntrypoint = true
-		lines             = make(chan string, 1000)
+		currentTrace []string
+		currentMeta  []string
+		tags         string
+		sample       string
+		entryPoint   string
+		convertError error
+		lines        = make(chan string, 1000) // @TODO make it configurable
 	)
+
+	// @TODO make it configurable
+	epValidator := validator.NewEntryPointValidator(prsr.entryPoints, 1000)
 
 	// Goroutine to read lines from scanner
 	go func() {
@@ -75,17 +77,14 @@ func (prsr *Parser) Parse(
 
 				if convertError == nil {
 
-					if len(prsr.entryPoints) == 0 {
-						isValidEntrypoint = true
-					} else {
-						_, isValidEntrypoint = prsr.entryPoints[entryPoint]
-					}
-
-					if isValidEntrypoint {
+					if epValidator.IsValid(entryPoint) {
 						tags = parseMeta(currentMeta, prsr.tagsMapping)
 
 						if prsr.tagEntrypoint {
-							tags += ",entrypoint=" + entryPoint
+							if tags != "" {
+								tags += ","
+							}
+							tags += "entrypoint=" + entryPoint
 						}
 
 						foldedStacks <- [2]string{sample, tags}
@@ -95,7 +94,7 @@ func (prsr *Parser) Parse(
 					} else {
 						log.Debug().
 							Str("entrypoint", entryPoint).
-							Msg("trace entrypoint not in the list")
+							Msg("trace entrypoint not allowed")
 					}
 
 				} else {
@@ -131,19 +130,20 @@ func tracesToFoldedStacks(trace []string, keepEntrypointName bool) (string, stri
 	var (
 		foldedStack strings.Builder
 		entryPoint  string
+		fileInfo    string
+		colonIndex  int
 	)
-
-	var functionName, fileInfo string
-	var colonIndex int
 
 	for i := len(trace) - 1; i >= 0; i-- {
 		tokens := strings.Fields(trace[i])
+		// 0 - number of trace
+		// 1 - function
+		// 2 - path with line number
 		if len(tokens) < 3 {
 			return "", "", errors.New("invalid trace line structure")
 		}
 
-		functionName = tokens[1]
-		foldedStack.WriteString(functionName)
+		foldedStack.WriteString(tokens[1])
 
 		// last line in trace is entrypoint
 		if i == len(trace)-1 {
@@ -153,7 +153,7 @@ func tracesToFoldedStacks(trace []string, keepEntrypointName bool) (string, stri
 				return "", "", errors.New("invalid file info in trace")
 			}
 
-			entryPoint = filepath.Base(fileInfo[:colonIndex])
+			entryPoint = fileInfo[:colonIndex]
 
 			if keepEntrypointName {
 				foldedStack.WriteString(" ")
@@ -175,7 +175,6 @@ func parseMeta(lines []string, tagsMapping map[string]string) string {
 		tags   strings.Builder
 		key    string
 		exists bool
-		first  = true
 	)
 
 	for _, line := range lines {
@@ -191,13 +190,9 @@ func parseMeta(lines []string, tagsMapping map[string]string) string {
 			continue
 		}
 
-		if !first {
-			tags.WriteString(",")
-		}
-
 		tags.WriteString(fmt.Sprintf("%s=%s", key, keyVal[1]))
-		first = false
+		tags.WriteString(",")
 	}
 
-	return tags.String()
+	return strings.TrimSuffix(tags.String(), ",")
 }

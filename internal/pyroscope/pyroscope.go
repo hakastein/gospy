@@ -123,6 +123,9 @@ func sendRequest(
 				continue
 			}
 
+			log.Debug().
+				Str("name", req.name).
+				Msg("sending request")
 			responseCode, responseError = sendSample(ctx, client, pyroscopeURL, pyroscopeAuth, &req.data, req.name, req.from, req.until, req.sampleRate)
 			if responseError != nil {
 				log.Warn().Err(responseError).Msg("error sending request")
@@ -130,7 +133,6 @@ func sendRequest(
 
 			if responseCode == http.StatusOK {
 				bytesSent += req.bytes
-				log.Trace().Str("name", req.name).Msg("sent request for name")
 				queries++
 			} else {
 				if req.retries < 2 {
