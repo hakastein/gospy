@@ -17,7 +17,7 @@ import (
 	"syscall"
 )
 
-func setupLogger(verbose int) {
+func setupLogger(verbose int, instanceName string) {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	if verbose == 1 {
@@ -26,6 +26,7 @@ func setupLogger(verbose int) {
 	if verbose > 1 {
 		zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	}
+	log.Logger = log.Logger.With().Str("app", instanceName).Logger()
 }
 
 func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {

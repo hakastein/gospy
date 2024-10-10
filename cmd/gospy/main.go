@@ -101,12 +101,18 @@ func main() {
 				Usage: "Keep entrypoint name in traces. Default: true",
 				Value: true,
 			},
+			&cli.StringFlag{
+				Name:  "instance-name",
+				Usage: "change name of this instance in logs",
+				Value: "gospy",
+			},
 		},
 		Action: func(c *cli.Context) error {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			setupLogger(verbosity)
+			instanceName := c.String("instance-name")
+			setupLogger(verbosity, instanceName)
 			return run(ctx, cancel, c)
 		},
 	}
