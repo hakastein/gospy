@@ -75,7 +75,7 @@ func (prsr *Parser) Parse(
 
 				if convertError == nil {
 
-					if len(prsr.tagsMapping) == 0 {
+					if len(prsr.entryPoints) == 0 {
 						isValidEntrypoint = true
 					} else {
 						_, isValidEntrypoint = prsr.entryPoints[entryPoint]
@@ -93,8 +93,7 @@ func (prsr *Parser) Parse(
 							Str("sample", sample).
 							Msg("sample collected")
 					} else {
-						log.
-							Debug().
+						log.Debug().
 							Str("entrypoint", entryPoint).
 							Msg("trace entrypoint not in the list")
 					}
