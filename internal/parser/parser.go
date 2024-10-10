@@ -17,7 +17,7 @@ type Parser interface {
 
 func Init(
 	profiler string,
-	entryPoints map[string]struct{},
+	entryPoints []string,
 	tagsMapping map[string]string,
 	tagEntrypoint bool,
 	keepEntrypointName bool,
