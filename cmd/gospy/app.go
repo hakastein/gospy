@@ -40,7 +40,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		restart                          = c.String("restart")
 		rateMb                           = c.Int("rate-mb") * Megabyte
 		staticTags, dynamicTags, tagsErr = parseTags(c.StringSlice("tag"))
-		entryPoints                      = mapEntryPoints(c.StringSlice("entrypoint"))
+		entryPoints                      = c.StringSlice("entrypoint")
 		arguments                        = c.Args().Slice()
 	)
 
