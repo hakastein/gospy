@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/rs/zerolog/log"
+	"golang.org/x/time/rate"
 	"gospy/internal/sample"
 	"net/http"
+	"sync"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
 type Request struct {
@@ -95,64 +96,138 @@ func sendRequest(
 	pyroscopeURL string,
 	pyroscopeAuth string,
 	rateBytes int,
+	workerCount int,
 ) {
+	limiter := rate.NewLimiter(rate.Limit(rateBytes), rateBytes)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+
 	var (
-		bytesSent     int
-		queries       int
-		responseCode  int
-		responseError error
-		ticker        = time.NewTicker(time.Second)
-		client        = &http.Client{
-			Timeout: 10 * time.Second,
-		}
+		totalQueries      int
+		totalBytes        int
+		countsMutex       sync.Mutex
+		limiterBlockCount int
+		limiterMutex      sync.Mutex
 	)
-	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case req, ok := <-requestQueue:
-			if !ok {
-				return
-			}
-			if bytesSent+req.bytes > rateBytes {
-				log.Warn().Msg("sending too fast, consider increasing rate limit")
-				// Wait for rate limit reset
-				<-ticker.C
-				continue
-			}
+	// Start worker goroutines
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case req, ok := <-requestQueue:
+					if !ok {
+						return
+					}
 
-			log.Debug().
-				Str("name", req.name).
-				Msg("sending request")
-			responseCode, responseError = sendSample(ctx, client, pyroscopeURL, pyroscopeAuth, &req.data, req.name, req.from, req.until, req.sampleRate)
-			if responseError != nil {
-				log.Warn().Err(responseError).Msg("error sending request")
-			}
+					// Check if tokens are immediately available
+					if !limiter.AllowN(time.Now(), req.bytes) {
+						// Limiter would block; increment the block counter
+						limiterMutex.Lock()
+						limiterBlockCount++
+						limiterMutex.Unlock()
+					}
 
-			if responseCode == http.StatusOK {
-				bytesSent += req.bytes
-				queries++
-			} else {
-				if req.retries < 2 {
-					req.retries++
-					// Retry the request
-					go func() {
-						requestQueue <- req
-					}()
-				} else {
-					log.Warn().Int("retries", req.retries).Msg("failed to send request after retries")
+					// Wait for tokens
+					if err := limiter.WaitN(ctx, req.bytes); err != nil {
+						if ctx.Err() != nil {
+							return
+						}
+						log.Warn().Err(err).Msg("limiter error")
+						continue
+					}
+
+					maxRetries := 2
+					backoff := 100 * time.Millisecond
+
+					for attempt := 0; attempt <= maxRetries; attempt++ {
+						responseCode, responseError := sendSample(
+							ctx,
+							client,
+							pyroscopeURL,
+							pyroscopeAuth,
+							&req.data,
+							req.name,
+							req.from,
+							req.until,
+							req.sampleRate,
+						)
+						if responseError == nil && responseCode == http.StatusOK {
+
+							countsMutex.Lock()
+							totalQueries++
+							totalBytes += req.bytes
+							countsMutex.Unlock()
+
+							log.Debug().Str("name", req.name).Msg("request sent successfully")
+							break
+						}
+
+						if attempt < maxRetries {
+							log.Warn().
+								Err(responseError).
+								Int("attempt", attempt+1).
+								Msg("retrying request")
+							time.Sleep(backoff)
+							backoff *= 2
+						} else {
+							log.Error().
+								Err(responseError).
+								Msg("failed to send request after retries")
+						}
+					}
 				}
 			}
-		case <-ticker.C:
-			if queries > 0 {
-				log.Info().Int("queries", queries).Int("bytes", bytesSent).Msg("data sent")
-				bytesSent = 0
-				queries = 0
+		}()
+	}
+
+	// Start logging goroutine
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+
+		// Threshold for logging the warning (e.g., if blocked more than 10 times per second)
+		const limiterWarningThreshold = 10
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				countsMutex.Lock()
+				if totalQueries > 0 || totalBytes > 0 {
+					log.Info().
+						Int("queries", totalQueries).
+						Int("bytes", totalBytes).
+						Msg("data sent")
+				}
+				totalQueries = 0
+				totalBytes = 0
+				countsMutex.Unlock()
+
+				// Check if the limiter has blocked frequently
+				limiterMutex.Lock()
+				blockCount := limiterBlockCount
+				limiterBlockCount = 0 // Reset the counter
+				limiterMutex.Unlock()
+
+				if blockCount > limiterWarningThreshold {
+					log.Warn().
+						Int("block_count", blockCount).
+						Msg("Sender is frequently hitting the bandwidth limit; consider increasing the rate limit")
+				}
 			}
 		}
-	}
+	}()
+
+	wg.Wait()
 }
 
 // readSamples makes request object from samplesChannel and put them in requestQueue channel
@@ -220,7 +295,7 @@ func SendToPyroscope(
 	requestQueue := make(chan *Request, 100)
 	defer close(requestQueue)
 
-	go sendRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes)
+	go sendRequest(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, 5)
 
 	readSamples(ctx, samplesChannel, requestQueue, app, staticTags, rateBytes)
 
