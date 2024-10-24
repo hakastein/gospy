@@ -83,7 +83,7 @@ func main() {
 				Usage: "Interval between sending accumulated samples to Pyroscope",
 				Value: DefaultAccumulationPeriod,
 			},
-			&cli.IntFlag{
+			&cli.Float64Flag{
 				Name:  "rate-mb",
 				Usage: "Ingestion rate limit in MB",
 				Value: DefaultRateMB,

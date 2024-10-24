@@ -39,7 +39,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		keepEntrypointName               = c.Bool("keep-entrypoint-name")
 		app                              = c.String("app")
 		restart                          = c.String("restart")
-		rateMb                           = c.Int("rate-mb") * Megabyte
+		rateBytes                        = int(c.Float64("rate-mb") * Megabyte)
 		staticTags, dynamicTags, tagsErr = parseTags(c.StringSlice("tag"))
 		entryPoints                      = c.StringSlice("entrypoint")
 		arguments                        = c.Args().Slice()
@@ -144,7 +144,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 			staticTags,
 			pyroscopeURL,
 			pyroscopeAuth,
-			rateMb,
+			rateBytes,
 		)
 	}()
 
