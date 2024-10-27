@@ -25,7 +25,7 @@ GoSpy is a standalone CLI tool designed to collect profiling data from sampling 
 
 ## Installation
 
-To install GoSpy, download the pre-built binary from the [releases page](https://github.com/yourusername/gospy/releases) and place it in your system's `PATH`.
+To install GoSpy, download the pre-built binary from the [releases page](https://github.com/hakastein/gospy/releases) and place it in your system's `PATH`.
 
 ### Requirements
 
