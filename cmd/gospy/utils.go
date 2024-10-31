@@ -27,11 +27,3 @@ func parseTags(tagsInput []string) (string, map[string]string, error) {
 
 	return strings.Join(staticTags, ","), dynamicTags, nil
 }
-
-func mapEntryPoints(entryPoints []string) map[string]struct{} {
-	entryMap := make(map[string]struct{}, len(entryPoints))
-	for _, entry := range entryPoints {
-		entryMap[entry] = struct{}{}
-	}
-	return entryMap
-}

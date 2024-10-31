@@ -3,6 +3,7 @@ package pyroscope
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
@@ -111,7 +112,7 @@ func processRequests(
 			}
 
 			if err := limiter.WaitN(ctx, req.bytes); err != nil {
-				if err == context.Canceled || err == context.DeadlineExceeded {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return
 				}
 				log.Warn().Err(err).Msg("limiter error")
