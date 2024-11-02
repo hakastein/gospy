@@ -1,6 +1,8 @@
 
 # GoSpy
 
+![gospy.jpg](gospy.jpg)
+
 A CLI tool for collecting traces from sampling profilers (such as PHPSpy, currently the only supported profiler) and sending them to Pyroscope.
 
 ## Table of Contents
