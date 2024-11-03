@@ -27,6 +27,9 @@ endef
 build:
 	$(call build_app)
 
+test:
+	go test ./cmd/... ./internal/...
+
 # Clean target
 clean:
 	$(GO_CMD) clean
