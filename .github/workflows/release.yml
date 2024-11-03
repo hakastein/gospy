@@ -46,8 +46,6 @@ jobs:
         id: set_vars
         run: |
           echo "VERSION=${TAG_NAME}" >> $GITHUB_ENV
-          echo "COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
 
       # Step 6: Download dependencies
       - name: Download Dependencies
@@ -55,12 +53,12 @@ jobs:
 
       # Step 7: Build the application using Makefile with version info
       - name: Build
-        run: make build VERSION=${VERSION} COMMIT=${COMMIT} BUILD_TIME=${BUILD_TIME}
+        run: make build VERSION=${VERSION}
 
       # Step 8: Create versioned archive
       - name: Create Versioned Archive
         run: |
-          tar -czf "${TAG_NAME}.tar.gz" $(PACKAGE_NAME)
+          tar -czf "${TAG_NAME}.tar.gz" gospy
 
       - name: "Build Changelog"
         id: build_changelog
