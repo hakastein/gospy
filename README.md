@@ -1,8 +1,12 @@
 # gospy
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/hakastein/gospy)](https://goreportcard.com/report/github.com/hakastein/gospy)
+
 ![gospy.jpg](gospy.jpg)
 
-**gospy** is a lightweight Go wrapper for sampling profilers that seamlessly sends profiling traces to [Pyroscope](https://pyroscope.io/). Currently, it supports `phpspy` and is designed to be both container-friendly and easy to use in various environments.
+**gospy** is a lightweight Go wrapper for sampling profilers that seamlessly sends profiling traces
+to [Pyroscope](https://pyroscope.io/). Currently, it supports `phpspy` and is designed to be both container-friendly and
+easy to use in various environments.
 
 ## Table of Contents
 
@@ -49,13 +53,15 @@
 
 ### Using Pre-built Binaries
 
-Pre-built binaries for various platforms can be found in the [Releases](https://github.com/hakastein/gospy/releases) section.
+Pre-built binaries for various platforms can be found in the [Releases](https://github.com/hakastein/gospy/releases)
+section.
 
 ## Usage
 
 ### Basic Usage
 
-Run `gospy` with the necessary flags to start profiling your application. Below is an example of how to use `gospy` to profile a PHP application using `phpspy`:
+Run `gospy` with the necessary flags to start profiling your application. Below is an example of how to use `gospy` to
+profile a PHP application using `phpspy`:
 
 ```bash
 gospy \
@@ -85,11 +91,13 @@ gospy \
 
 ### Running in a Container
 
-To run `gospy` inside a Docker container, ensure that the container has the necessary permissions by adding the `SYS_PTRACE` capability.
+To run `gospy` inside a Docker container, ensure that the container has the necessary permissions by adding the
+`SYS_PTRACE` capability.
 
 #### Dockerfile Example
 
-Below is an example Dockerfile that sets up `gospy` and `phpspy` by downloading them from GitHub. The versions of the downloaded binaries are specified as build arguments.
+Below is an example Dockerfile that sets up `gospy` and `phpspy` by downloading them from GitHub. The versions of the
+downloaded binaries are specified as build arguments.
 
 ```dockerfile
 # Use the official PHP image as the base
@@ -120,7 +128,8 @@ ENTRYPOINT ["start.sh"]
 
 #### Docker Compose Example
 
-Ensure that the Docker container is run with the `SYS_PTRACE` capability. Below is an example `docker-compose.yml` configuration:
+Ensure that the Docker container is run with the `SYS_PTRACE` capability. Below is an example `docker-compose.yml`
+configuration:
 
 ```yaml
 version: '3.8'
@@ -177,14 +186,17 @@ wait
 
 ### Detailed Parameter Descriptions
 
-- **Tags**: Tags provide metadata for your profiling data. Static tags have fixed values, while dynamic tags can incorporate runtime data.
+- **Tags**: Tags provide metadata for your profiling data. Static tags have fixed values, while dynamic tags can
+  incorporate runtime data.
 
     - **Static Tags**: Defined with fixed values.
         - Example: `--tag="env=production"` adds a static tag `env` with the value `production`.
 
     - **Dynamic Tags**: Defined with values wrapped in `%`, allowing `phpspy` to append runtime data.
-        - Example: `gospy --tag="uri=%glopeek server.REQUEST_URI%" phpspy --peek-global=server.REQUEST_URI` adds a dynamic tag `uri` that captures the value of `$_SERVER['REQUEST_URI']` from each trace.
-        - In this example, `phpspy` appends the value of `$_SERVER['REQUEST_URI']` to the trace, and `gospy` adds it as the `uri` tag.
+        - Example: `gospy --tag="uri=%glopeek server.REQUEST_URI%" phpspy --peek-global=server.REQUEST_URI` adds a
+          dynamic tag `uri` that captures the value of `$_SERVER['REQUEST_URI']` from each trace.
+        - In this example, `phpspy` appends the value of `$_SERVER['REQUEST_URI']` to the trace, and `gospy` adds it as
+          the `uri` tag.
 
 - **Multiple Arguments**:
     - Flags like `--tag` and `--entrypoint` can be used multiple times to specify multiple tags or entry points.
