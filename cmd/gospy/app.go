@@ -33,7 +33,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	// setup app
 	var (
 		pyroscopeURL                     = c.String("pyroscope")
-		pyroscopeAuth                    = c.String("pyroscopeAuth")
+		pyroscopeAuth                    = c.String("pyroscope-auth")
 		accumulationInterval             = c.Duration("accumulation-interval")
 		tagEntrypoint                    = c.Bool("tag-entrypoint")
 		keepEntrypointName               = c.Bool("keep-entrypoint-name")
@@ -56,12 +56,13 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 
 	log.Info().
 		Str("pyroscope_url", pyroscopeURL).
-		Str("pyroscope_auth", maskString(pyroscopeAuth)).
+		Str("pyroscope_auth", maskString(pyroscopeAuth, 4, 2)).
 		Str("app_name", app).
 		Bool("tag_entrypoint", tagEntrypoint).
 		Bool("keep_entrypoint_name", keepEntrypointName).
 		Str("restart", restart).
 		Int("rate_bytes", rateBytes).
+		Str("version", Version).
 		Strs("tags", appTags).
 		Dur("accumulation_interval", accumulationInterval).
 		Msg("gospy started")
