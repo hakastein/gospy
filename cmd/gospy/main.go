@@ -31,11 +31,28 @@ var validRestartOptions = map[string]bool{
 	RestartNo:        true,
 }
 
+// Version variables to be replaced during build time using ldflags
+var (
+	Version = "dev"
+)
+
 func main() {
 	var verbosity int
+	cli.VersionFlag = &cli.BoolFlag{
+		Name:    "version",
+		Usage:   "print only the version",
+		Aliases: []string{"V"},
+	}
 	app := &cli.App{
-		Name:                   "gospy",
-		Usage:                  "A Go wrapper for sampling profilers that sends traces to Pyroscope",
+		Name:    "gospy",
+		Usage:   "A Go wrapper for sampling profilers that sends traces to Pyroscope",
+		Version: Version,
+		Authors: []*cli.Author{
+			{
+				Name:  "Anton Kolesov",
+				Email: "headcrabogon@gmail.com",
+			},
+		},
 		UseShortOptionHandling: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -44,17 +61,17 @@ func main() {
 				Required: true,
 			},
 			&cli.StringFlag{
-				Name:  "pyroscopeAuth",
-				Usage: "Pyroscope authentication token",
+				Name:  "pyroscope-auth",
+				Usage: "Authentication token for Pyroscope",
 			},
 			&cli.BoolFlag{
 				Name:    "verbose",
-				Usage:   "Verbosity level, use twice to increase verbosity",
+				Usage:   "Verbosity level; use twice to increase verbosity",
 				Aliases: []string{"v"},
 				Count:   &verbosity,
 				Action: func(c *cli.Context, b bool) error {
 					if verbosity > 2 {
-						return errors.New("verbosity too high")
+						return errors.New("verbosity level too high")
 					}
 					return nil
 				},
@@ -90,20 +107,20 @@ func main() {
 			},
 			&cli.StringSliceFlag{
 				Name:  "entrypoint",
-				Usage: "Limit traces with certain entrypoint (e.g., index.php)",
+				Usage: "Limit traces to certain entry points (e.g., index.php)",
 			},
 			&cli.BoolFlag{
 				Name:  "tag-entrypoint",
-				Usage: "Add entrypoint to tags",
+				Usage: "Add entry point to tags",
 			},
 			&cli.BoolFlag{
 				Name:  "keep-entrypoint-name",
-				Usage: "Keep entrypoint name in traces. Default: true",
+				Usage: "Keep entry point name in traces. Default: true",
 				Value: true,
 			},
 			&cli.StringFlag{
 				Name:  "instance-name",
-				Usage: "change name of this instance of gospy. Only for logging purpose",
+				Usage: "Change the name of this gospy instance (for logging purposes only)",
 				Value: "gospy",
 			},
 		},
