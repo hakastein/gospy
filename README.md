@@ -5,8 +5,7 @@
 ![gospy.jpg](gospy.jpg)
 
 **gospy** is a lightweight Go wrapper for sampling profilers that seamlessly sends profiling traces
-to [Pyroscope](https://pyroscope.io/). Currently, it supports `phpspy` and is designed to be both container-friendly and
-easy to use in various environments.
+to [Pyroscope](https://pyroscope.io/). Currently, it supports only [phpspy](https://github.com/adsr/phpspy).
 
 ## Table of Contents
 
