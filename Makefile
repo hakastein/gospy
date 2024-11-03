@@ -1,21 +1,54 @@
-# Define the name of the output binary
+# Makefile
+
+# Output binary name
 PACKAGE_NAME ?= gospy
 GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
 
 GO_CMD = go
-GO_BUILD = $(GO_CMD) build
-GO_CLEAN = $(GO_CMD) clean
 MAIN_PKG = ./cmd/gospy
 
+# Default versioning variables
+VERSION ?= dev
+
+# Linker flags to inject version information
+LDFLAGS = -X main.Version=$(VERSION)
+
+# Environment variables for Go build
 GO_ENV_VARS = CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH)
 
-build:
-	$(GO_ENV_VARS) $(GO_BUILD) -o $(PACKAGE_NAME) $(MAIN_PKG)
+# Build function
+define build_app
+	$(GO_ENV_VARS) $(GO_CMD) build -ldflags "$(LDFLAGS)" -o $(PACKAGE_NAME) $(MAIN_PKG)
+endef
 
+# Build target
+build:
+	$(call build_app)
+
+# Clean target
 clean:
-	$(GO_CLEAN)
+	$(GO_CMD) clean
 	rm -f $(PACKAGE_NAME)
 
-.PHONY: build test lint clean run
+# Download dependencies
+download-deps:
+	$(GO_CMD) mod download
+
+# Display version information
+version:
+	@echo "Version: $(VERSION)"
+
+# Dev target: build with dev versioning
+dev:
+	@TAG=$$(git describe --tags --exact-match 2>/dev/null) ; \
+	if [ -n "$$TAG" ]; then \
+		VERSION="$$TAG-dev"; \
+	else \
+		VERSION="dev"; \
+	fi ; \
+	echo "Building with VERSION=$$VERSION" ; \
+	make build VERSION=$$VERSION
+
+.PHONY: build clean download-deps version dev

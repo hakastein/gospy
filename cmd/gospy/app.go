@@ -40,7 +40,8 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		app                              = c.String("app")
 		restart                          = c.String("restart")
 		rateBytes                        = int(c.Float64("rate-mb") * Megabyte)
-		staticTags, dynamicTags, tagsErr = parseTags(c.StringSlice("tag"))
+		appTags                          = c.StringSlice("tag")
+		staticTags, dynamicTags, tagsErr = parseTags(appTags)
 		entryPoints                      = c.StringSlice("entrypoint")
 		arguments                        = c.Args().Slice()
 	)
@@ -55,14 +56,18 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 
 	log.Info().
 		Str("pyroscope_url", pyroscopeURL).
+		Str("pyroscope_auth", maskString(pyroscopeAuth)).
 		Str("app_name", app).
-		Str("static_tags", staticTags).
+		Bool("tag_entrypoint", tagEntrypoint).
+		Bool("keep_entrypoint_name", keepEntrypointName).
+		Str("restart", restart).
+		Int("rate_bytes", rateBytes).
+		Strs("tags", appTags).
 		Dur("accumulation_interval", accumulationInterval).
 		Msg("gospy started")
 
-	// make channels and ensure closing
 	stacksChannel := make(chan [2]string, 1000)
-	collectionChannel := make(chan *sample.Collection, 10)
+	collectionChannel := make(chan *sample.Collection, 100)
 	signalsChannel := make(chan os.Signal, 1)
 
 	profilerApp := arguments[0]
@@ -118,7 +123,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		)
 	}()
 
-	// collect traces from stacksChannel and compress into foldedStacks collection, populate collectionChannel by period
+	// collect traces from stacksChannel and compress into foldedStacks collection, populate collectionChannel by accumulationInterval period
 	go func() {
 		defer wg.Done()
 		defer close(collectionChannel)
@@ -132,7 +137,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		)
 	}()
 
-	// Send folded stacks from collectionChannel to Pyroscope
+	// send folded stacks from collectionChannel to Pyroscope
 	go func() {
 		defer wg.Done()
 		defer close(signalsChannel)
