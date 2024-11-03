@@ -100,7 +100,7 @@ ARG GOSPY_VERSION=0.7.9
 ARG PHPSPY_VERSION=0.7.0
 
 # Install dependencies
-...
+# your code ...
 
 # Download and install phpspy
 RUN mkdir -p /tmp/phpspy \
@@ -149,7 +149,7 @@ Create a `start.sh` script to start `gospy` and `php-fpm` together:
 php-fpm &
 
 # Start gospy with phpspy
-gospy ... phpspy ...
+gospy --gospy --config --here phpspy --phpspy --config --here
 
 # Wait for all background processes
 wait
