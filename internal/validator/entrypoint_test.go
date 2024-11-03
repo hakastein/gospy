@@ -61,6 +61,7 @@ func TestPHPEntryPointValidator(t *testing.T) {
 		validator := setupValidator(patterns, cacheCapacity)
 		entryPoint := "index.php"
 
+		validator.IsValid(entryPoint)
 		// Check cache to confirm entry point was stored
 		validator.mu.RLock()
 		_, found := validator.cache.Get(entryPoint)
