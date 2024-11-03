@@ -30,6 +30,7 @@ func TestPHPEntryPointValidator(t *testing.T) {
 	cacheCapacity := 100
 
 	t.Run("ValidPHPEntryPoints", func(t *testing.T) {
+		t.Parallel()
 		validator := setupValidator(patterns, cacheCapacity)
 		for _, ep := range validEntryPoints {
 			t.Run(ep, func(t *testing.T) {
@@ -39,6 +40,7 @@ func TestPHPEntryPointValidator(t *testing.T) {
 	})
 
 	t.Run("InvalidPHPEntryPoints", func(t *testing.T) {
+		t.Parallel()
 		validator := setupValidator(patterns, cacheCapacity)
 		for _, ep := range invalidEntryPoints {
 			t.Run(ep, func(t *testing.T) {
@@ -48,16 +50,19 @@ func TestPHPEntryPointValidator(t *testing.T) {
 	})
 
 	t.Run("EmptyPatterns", func(t *testing.T) {
+		t.Parallel()
 		validator := setupValidator([]string{}, cacheCapacity)
 		assert.True(t, validator.IsValid("any/entry/point"), "Any entry point should be valid when no patterns are defined")
 	})
 
 	t.Run("EmptyEntryPoint", func(t *testing.T) {
+		t.Parallel()
 		validator := setupValidator(patterns, cacheCapacity)
 		assert.False(t, validator.IsValid(""), "Empty entry point should be invalid")
 	})
 
 	t.Run("CacheUsage", func(t *testing.T) {
+		t.Parallel()
 		validator := setupValidator(patterns, cacheCapacity)
 		entryPoint := "index.php"
 
