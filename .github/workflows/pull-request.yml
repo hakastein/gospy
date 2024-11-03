@@ -31,26 +31,5 @@ jobs:
       - name: Download Dependencies
         run: make download-deps
 
-      - name: Run Tests with Coverage
-        run: go test -coverprofile=coverage.out ./...
-
-      - name: Upload Coverage Report
-        uses: actions/upload-artifact@v3
-        with:
-          name: coverage-report
-          path: coverage.out
-
-      - name: Generate Coverage Badge
-        run: |
-          go install github.com/badges/shields@latest
-          cat coverage.out | grep -E '^total' | awk '{ print $3 }' | xargs -I {} shields --color=social --style=flat-square --label="Coverage" --labelColor=555555 --message="{}" > coverage_badge.svg
-        shell: bash
-
-      - name: Post Coverage Comment
-        if: success()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
-          COMMENT="### :white_check_mark: Test Coverage Report\n\n**Total Coverage:** $COVERAGE"
-          gh pr comment ${{ github.event.pull_request.number }} --body "$COMMENT"
+      - name: Run Tests
+        run: make test
