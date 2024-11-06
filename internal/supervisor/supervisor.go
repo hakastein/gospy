@@ -3,16 +3,16 @@ package supervisor
 import (
 	"context"
 	"github.com/rs/zerolog/log"
-	"gospy/internal/parser"
 	"gospy/internal/profiler"
+	"gospy/internal/types"
 )
 
 // ManageProfiler run profiler and parser, collect parses, transform parses into folded stacks format, send to foldedStacksChannel
 func ManageProfiler(
 	ctx context.Context,
 	profilerInstance profiler.Profiler,
-	parserInstance parser.Parser,
-	foldedStacksChannel chan [2]string,
+	parserInstance types.Parser,
+	foldedStacksChannel chan *types.Sample,
 	restart string,
 ) {
 	for {

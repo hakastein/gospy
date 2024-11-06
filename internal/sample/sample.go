@@ -29,7 +29,6 @@ func (s *Sample) String() string {
 type Collection struct {
 	from    time.Time
 	until   time.Time
-	rateHZ  int
 	samples map[string]map[uint64]*Sample
 	m       sync.RWMutex
 }
@@ -38,26 +37,18 @@ func sampleHash(s string, tags string) uint64 {
 	return xxhash.Sum64String(s + tags)
 }
 
-func newCollection(rateHz int) *Collection {
+func newCollection() *Collection {
 	return &Collection{
 		from:    time.Now(),
 		samples: make(map[string]map[uint64]*Sample),
-		rateHZ:  rateHz,
 	}
 }
 
-func (sc *Collection) Finish() {
-	sc.m.Lock()
-	defer sc.m.Unlock()
-
-	sc.until = time.Now()
-}
-
-func (sc *Collection) Props() (int64, int64, int) {
+func (sc *Collection) Props() (int64, int64) {
 	sc.m.RLock()
 	defer sc.m.RUnlock()
 
-	return sc.from.Unix(), sc.until.Unix(), sc.rateHZ
+	return sc.from.Unix(), sc.until.Unix()
 }
 
 func (sc *Collection) Samples() map[string]map[uint64]*Sample {
@@ -67,11 +58,18 @@ func (sc *Collection) Samples() map[string]map[uint64]*Sample {
 	return sc.samples
 }
 
-func (sc *Collection) Len() int {
+func (sc *Collection) finish() {
+	sc.m.Lock()
+	defer sc.m.Unlock()
+
+	sc.until = time.Now()
+}
+
+func (sc *Collection) len() int {
 	return len(sc.samples)
 }
 
-func (sc *Collection) AddSample(str, tags string) {
+func (sc *Collection) addSample(str, tags string) {
 	sc.m.Lock()
 	defer sc.m.Unlock()
 
@@ -98,29 +96,28 @@ func FoldedStacksToCollection(
 	foldedStacksChannel chan [2]string,
 	collectionChannel chan<- *Collection,
 	accumulationInterval time.Duration,
-	rateHz int,
 ) {
 	ticker := time.NewTicker(accumulationInterval)
 	defer ticker.Stop()
-	collection := newCollection(rateHz)
+	collection := newCollection()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if collection.Len() == 0 {
+			if collection.len() == 0 {
 				continue
 			}
 
-			collection.Finish()
+			collection.finish()
 			collectionChannel <- collection
-			collection = newCollection(rateHz)
+			collection = newCollection()
 		case stack, ok := <-foldedStacksChannel:
 			if !ok {
 				return
 			}
-			collection.AddSample(stack[0], stack[1])
+			collection.addSample(stack[0], stack[1])
 		}
 	}
 }

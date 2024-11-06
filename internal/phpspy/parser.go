@@ -4,10 +4,11 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"github.com/rs/zerolog/log"
+	"gospy/internal/types"
 	"gospy/internal/validator"
 	"strings"
+	"time"
 )
 
 type Parser struct {
@@ -34,7 +35,7 @@ func NewParser(
 func (prsr *Parser) Parse(
 	ctx context.Context,
 	scanner *bufio.Scanner,
-	foldedStacks chan<- [2]string,
+	foldedStacks chan<- *types.Sample,
 ) {
 	var (
 		currentTrace []string
@@ -87,7 +88,7 @@ func (prsr *Parser) Parse(
 							tags += "entrypoint=" + entryPoint
 						}
 
-						foldedStacks <- [2]string{sample, tags}
+						foldedStacks <- &types.Sample{Trace: sample, Tags: tags, Time: time.Now()}
 						log.Trace().
 							Str("sample", sample).
 							Msg("sample collected")
@@ -178,21 +179,33 @@ func parseMeta(lines []string, tagsMapping map[string]string) string {
 	)
 
 	for _, line := range lines {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		if len(line) < 2 {
+			continue
+		}
+
+		if line[:2] != "# " {
+			continue
+		}
+
+		line = strings.TrimSpace(line[2:])
 		keyVal := strings.SplitN(line, " = ", 2)
 		if len(keyVal) != 2 {
 			continue
 		}
 
 		key, exists = tagsMapping[keyVal[0]]
-
 		if !exists {
 			continue
 		}
 
-		tags.WriteString(fmt.Sprintf("%s=%s", key, keyVal[1]))
-		tags.WriteString(",")
+		if tags.Len() > 0 {
+			tags.WriteString(",")
+		}
+
+		tags.WriteString(key)
+		tags.WriteString("=")
+		tags.WriteString(keyVal[1])
 	}
 
-	return strings.TrimSuffix(tags.String(), ",")
+	return tags.String()
 }

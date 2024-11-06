@@ -6,11 +6,12 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
+	"gospy/internal/collector"
 	"gospy/internal/parser"
 	"gospy/internal/profiler"
-	"gospy/internal/pyroscope"
 	"gospy/internal/sample"
 	"gospy/internal/supervisor"
+	"gospy/internal/types"
 	"os"
 	"os/signal"
 	"sync"
@@ -39,7 +40,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		keepEntrypointName               = c.Bool("keep-entrypoint-name")
 		app                              = c.String("app")
 		restart                          = c.String("restart")
-		rateBytes                        = int(c.Float64("rate-mb") * Megabyte)
+		rateLimit                        = int(c.Float64("rate-mb") * Megabyte)
 		appTags                          = c.StringSlice("tag")
 		staticTags, dynamicTags, tagsErr = parseTags(appTags)
 		entryPoints                      = c.StringSlice("entrypoint")
@@ -61,13 +62,13 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		Bool("tag_entrypoint", tagEntrypoint).
 		Bool("keep_entrypoint_name", keepEntrypointName).
 		Str("restart", restart).
-		Int("rate_bytes", rateBytes).
+		Int("rate_bytes", rateLimit).
 		Str("version", Version).
 		Strs("tags", appTags).
 		Dur("accumulation_interval", accumulationInterval).
 		Msg("gospy started")
 
-	stacksChannel := make(chan [2]string, 1000)
+	stacksChannel := make(chan *types.Sample, 1000)
 	collectionChannel := make(chan *sample.Collection, 100)
 	signalsChannel := make(chan os.Signal, 1)
 
@@ -83,7 +84,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		return unsupportableError
 	}
 	// get sample rate from profiler settings
-	rateHz := profilerInstance.GetHZ()
+	sampleingRateHZ := profilerInstance.GetHZ()
 
 	parserInstance, parserError := parser.Init(
 		profilerApp,
@@ -124,35 +125,8 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		)
 	}()
 
-	// collect traces from stacksChannel and compress into foldedStacks collection, populate collectionChannel by accumulationInterval period
-	go func() {
-		defer wg.Done()
-		defer close(collectionChannel)
-
-		sample.FoldedStacksToCollection(
-			ctx,
-			stacksChannel,
-			collectionChannel,
-			accumulationInterval,
-			rateHz,
-		)
-	}()
-
-	// send folded stacks from collectionChannel to Pyroscope
-	go func() {
-		defer wg.Done()
-		defer close(signalsChannel)
-
-		pyroscope.SendToPyroscope(
-			ctx,
-			collectionChannel,
-			app,
-			staticTags,
-			pyroscopeURL,
-			pyroscopeAuth,
-			rateBytes,
-		)
-	}()
+	collector := collector.NewCollector()
+	collector.ReadFrom(ctx, stacksChannel)
 
 	wg.Wait()
 	<-ctx.Done()
