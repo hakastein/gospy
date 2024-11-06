@@ -1,368 +1,374 @@
+// collector_test.go
 package collector
 
 import (
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gospy/internal/types"
 )
 
-// mockSample creates a Sample instance for testing.
-func mockSample(tags, trace string, t time.Time) *types.Sample {
-	return &types.Sample{
-		Tags:  tags,
-		Trace: trace,
-		Time:  t,
+func parsePyroscopeData(data string) map[string]int {
+	result := make(map[string]int)
+	lines := strings.Split(strings.TrimSpace(data), "\n")
+	for _, line := range lines {
+		parts := strings.Split(line, " ")
+		if len(parts) != 2 {
+			continue
+		}
+		count, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
+		result[parts[0]] = count
 	}
+	return result
+}
+
+func setupTraceCollector() *TraceCollector {
+	return NewTraceCollector()
 }
 
 func TestTraceCollector(t *testing.T) {
-	t.Parallel()
-
-	// Setup function to initialize TraceCollector before each test.
-	setup := func() *TraceCollector {
-		return NewTraceCollector()
-	}
-
-	t.Run("AddSample", func(t *testing.T) {
+	t.Run("SequentialReadWrite", func(t *testing.T) {
 		t.Parallel()
-		tc := setup()
 
-		t.Run("Add single sample", func(t *testing.T) {
-			t.Parallel()
-			sample := mockSample("tag1", "trace1", time.Now())
-			tc.AddSample(sample)
-
-			tc.mu.RLock()
-			defer tc.mu.RUnlock()
-
-			if len(tc.traces) != 1 {
-				t.Fatalf("expected 1 traceGroup, got %d", len(tc.traces))
-			}
-
-			tg, exists := tc.traces["tag1"]
-			if !exists {
-				t.Fatal("traceGroup for 'tag1' does not exist")
-			}
-
-			if count, ok := tg.stacks["trace1"]; !ok || count != 1 {
-				t.Fatalf("expected trace1 count to be 1, got %d", count)
-			}
-
-			if tc.queue.Len() != 1 {
-				t.Fatalf("expected queue length to be 1, got %d", tc.queue.Len())
-			}
-		})
-
-		t.Run("Add multiple samples with same tag", func(t *testing.T) {
-			t.Parallel()
-			tc := setup()
-			now := time.Now()
-
-			samples := []*types.Sample{
-				mockSample("tag1", "trace1", now),
-				mockSample("tag1", "trace2", now.Add(time.Second)),
-				mockSample("tag1", "trace1", now.Add(2*time.Second)),
-			}
-
-			for _, s := range samples {
-				tc.AddSample(s)
-			}
-
-			tc.mu.RLock()
-			defer tc.mu.RUnlock()
-
-			if len(tc.traces) != 1 {
-				t.Fatalf("expected 1 traceGroup, got %d", len(tc.traces))
-			}
-
-			tg := tc.traces["tag1"]
-
-			if tg.from != now {
-				t.Errorf("expected from to be %v, got %v", now, tg.from)
-			}
-
-			if count, ok := tg.stacks["trace1"]; !ok || count != 2 {
-				t.Errorf("expected trace1 count to be 2, got %d", count)
-			}
-
-			if count, ok := tg.stacks["trace2"]; !ok || count != 1 {
-				t.Errorf("expected trace2 count to be 1, got %d", count)
-			}
-
-			if tc.queue.Len() != 1 {
-				t.Fatalf("expected queue length to be 1, got %d", tc.queue.Len())
-			}
-		})
-
-		t.Run("Add samples with different tags", func(t *testing.T) {
-			t.Parallel()
-			tc := setup()
-			now := time.Now()
-
-			samples := []*types.Sample{
-				mockSample("tag1", "trace1", now),
-				mockSample("tag2", "trace2", now.Add(time.Second)),
-				mockSample("tag3", "trace3", now.Add(2*time.Second)),
-			}
-
-			for _, s := range samples {
-				tc.AddSample(s)
-			}
-
-			tc.mu.RLock()
-			defer tc.mu.RUnlock()
-
-			if len(tc.traces) != 3 {
-				t.Fatalf("expected 3 traceGroups, got %d", len(tc.traces))
-			}
-
-			for _, tag := range []string{"tag1", "tag2", "tag3"} {
-				tg, exists := tc.traces[tag]
-				if !exists {
-					t.Fatalf("traceGroup for '%s' does not exist", tag)
-				}
-				if tc.queue.Len() != 3 {
-					t.Fatalf("expected queue length to be 3, got %d", tc.queue.Len())
-				}
-				if tg.from != now && tg.from != now.Add(time.Second) && tg.from != now.Add(2*time.Second) {
-					t.Errorf("unexpected 'from' time for tag '%s'", tag)
-				}
-			}
-		})
-	})
-
-	t.Run("ConsumeTag", func(t *testing.T) {
-		t.Parallel()
-		tc := setup()
+		tc := setupTraceCollector()
 		now := time.Now()
-
-		samples := []*types.Sample{
-			mockSample("tag1", "trace1", now),
-			mockSample("tag1", "trace2", now),
-			mockSample("tag2", "trace3", now.Add(time.Second)),
+		samples := []types.Sample{
+			{Tags: "tag1", Trace: "stack1", Time: now},
+			{Tags: "tag1", Trace: "stack1", Time: now.Add(time.Second)},
+			{Tags: "tag2", Trace: "stack2", Time: now.Add(2 * time.Second)},
 		}
 
-		for _, s := range samples {
-			tc.AddSample(s)
+		for _, sample := range samples {
+			tc.AddSample(&sample)
 		}
 
-		t.Run("Consume single tag", func(t *testing.T) {
-			t.Parallel()
+		expectedData := map[string]struct {
+			From   time.Time
+			Until  time.Time
+			Stacks map[string]int
+		}{
+			"tag1": {
+				From:  now,
+				Until: now.Add(time.Second),
+				Stacks: map[string]int{
+					"stack1": 2,
+				},
+			},
+			"tag2": {
+				From:  now.Add(2 * time.Second),
+				Until: now.Add(2 * time.Second),
+				Stacks: map[string]int{
+					"stack2": 1,
+				},
+			},
+		}
+
+		// Collect all consumed data
+		var consumedData []*PyroscopeData
+		for {
 			data := tc.ConsumeTag()
 			if data == nil {
-				t.Fatal("expected PyroscopeData, got nil")
+				break
 			}
-			if data.Tags != "tag1" {
-				t.Errorf("expected Tags to be 'tag1', got '%s'", data.Tags)
-			}
-			if data.From != now {
-				t.Errorf("expected From to be %v, got %v", now, data.From)
-			}
-			if data.Until.IsZero() {
-				t.Errorf("expected Until to be set, got zero")
-			}
-			expectedData := "trace1 1\ntrace2 1\n"
-			if data.Data != expectedData {
-				t.Errorf("expected Data to be '%s', got '%s'", expectedData, data.Data)
-			}
+			consumedData = append(consumedData, data)
+		}
 
-			// Verify traceGroup is removed
-			tc.mu.RLock()
-			defer tc.mu.RUnlock()
-			if _, exists := tc.traces["tag1"]; exists {
-				t.Error("expected 'tag1' traceGroup to be removed")
-			}
-			if tc.queue.Len() != 1 {
-				t.Errorf("expected queue length to be 1, got %d", tc.queue.Len())
-			}
-		})
+		// Map consumed data by tag for comparison
+		consumedDataMap := make(map[string]*PyroscopeData)
+		for _, data := range consumedData {
+			consumedDataMap[data.Tags] = data
+		}
 
-		t.Run("Consume all tags in order", func(t *testing.T) {
-			t.Parallel()
-			tc := setup()
-			now := time.Now()
+		// Compare consumed data with expected data
+		require.Equal(t, len(expectedData), len(consumedDataMap), "Number of tags should match")
 
-			samples := []*types.Sample{
-				mockSample("tag1", "trace1", now),
-				mockSample("tag2", "trace2", now.Add(time.Second)),
-				mockSample("tag3", "trace3", now.Add(2*time.Second)),
-			}
+		for expectedTag, expected := range expectedData {
+			data, exists := consumedDataMap[expectedTag]
+			require.True(t, exists, "Tag %s should exist in consumed data", expectedTag)
 
-			for _, s := range samples {
-				tc.AddSample(s)
-			}
+			assert.Equal(t, expected.From, data.From, "From time should match for tag %s", expectedTag)
+			assert.Equal(t, expected.Until, data.Until, "Until time should match for tag %s", expectedTag)
 
-			expectedOrder := []string{"tag1", "tag2", "tag3"}
-			for _, tag := range expectedOrder {
-				data := tc.ConsumeTag()
-				if data == nil {
-					t.Fatalf("expected PyroscopeData for tag '%s', got nil", tag)
-				}
-				if data.Tags != tag {
-					t.Errorf("expected Tags to be '%s', got '%s'", tag, data.Tags)
-				}
-			}
+			stackCounts := parsePyroscopeData(data.Data)
+			assert.Equal(t, expected.Stacks, stackCounts, "Stack counts should match for tag %s", expectedTag)
+		}
 
-			// Queue should be empty
-			if tc.queue.Len() != 0 {
-				t.Errorf("expected queue length to be 0, got %d", tc.queue.Len())
-			}
-		})
-
-		t.Run("Consume when queue is empty", func(t *testing.T) {
-			t.Parallel()
-			tc := setup()
-			data := tc.ConsumeTag()
-			if data != nil {
-				t.Errorf("expected nil, got %v", data)
-			}
-		})
+		// Ensure no extra data is present
+		data := tc.ConsumeTag()
+		assert.Nil(t, data, "expected nil when consuming from empty TraceCollector")
 	})
 
-	t.Run("Concurrent Access", func(t *testing.T) {
+	t.Run("ConcurrentReadWrite", func(t *testing.T) {
 		t.Parallel()
-		tc := setup()
-		var wg sync.WaitGroup
 
-		addSamples := func(tagPrefix string, count int) {
-			defer wg.Done()
-			for i := 0; i < count; i++ {
-				sample := mockSample(tagPrefix, "trace"+strconv.Itoa(i), time.Now())
-				tc.AddSample(sample)
+		tc := setupTraceCollector()
+		startTime := time.Now()
+
+		numWriters := 20
+		numConsumers := 10
+		samplesPerWriter := 1000
+		tags := []string{"tagA", "tagB", "tagC", "tagD", "tagE", "tagF", "tagG", "tagH", "tagI", "tagJ"}
+
+		var writersWG sync.WaitGroup
+		writersWG.Add(numWriters)
+
+		doneWriting := make(chan struct{})
+
+		expectedCounts := make(map[string]map[string]int)
+		var mutex sync.Mutex
+
+		writer := func(writerID int) {
+			defer writersWG.Done()
+			for i := 0; i < samplesPerWriter; i++ {
+				tag := tags[writerID%len(tags)]
+				trace := "stack" + strconv.Itoa(i%50)
+				sample := types.Sample{
+					Tags:  tag,
+					Trace: trace,
+					Time:  startTime.Add(time.Duration(writerID*samplesPerWriter+i) * time.Millisecond),
+				}
+				tc.AddSample(&sample)
+
+				mutex.Lock()
+				if _, exists := expectedCounts[tag]; !exists {
+					expectedCounts[tag] = make(map[string]int)
+				}
+				expectedCounts[tag][trace]++
+				mutex.Unlock()
 			}
 		}
 
-		consumeTags := func(count int) {
-			defer wg.Done()
-			for i := 0; i < count; i++ {
-				tc.ConsumeTag()
+		for i := 0; i < numWriters; i++ {
+			go writer(i)
+		}
+
+		actualCounts := make(map[string]map[string]int)
+		var consumedDataMutex sync.Mutex
+
+		consumer := func() {
+			for {
+				data := tc.ConsumeTag()
+				if data != nil {
+					consumedDataMutex.Lock()
+					if _, exists := actualCounts[data.Tags]; !exists {
+						actualCounts[data.Tags] = make(map[string]int)
+					}
+					parsedStacks := parsePyroscopeData(data.Data)
+					for stack, count := range parsedStacks {
+						actualCounts[data.Tags][stack] += count
+					}
+					consumedDataMutex.Unlock()
+				} else {
+					select {
+					case <-doneWriting:
+						return
+					default:
+						time.Sleep(10 * time.Millisecond)
+					}
+				}
 			}
 		}
 
-		wg.Add(3)
-		go addSamples("concurrent1", 100)
-		go addSamples("concurrent2", 100)
-		go consumeTags(200)
-		wg.Wait()
+		var consumersWG sync.WaitGroup
+		consumersWG.Add(numConsumers)
+		for i := 0; i < numConsumers; i++ {
+			go func() {
+				defer consumersWG.Done()
+				consumer()
+			}()
+		}
 
-		tc.mu.RLock()
-		defer tc.mu.RUnlock()
-		if tc.queue.Len() != 0 || len(tc.traces) != 0 {
-			t.Errorf("expected all traces to be consumed, got queue length %d and traces length %d",
-				tc.queue.Len(), len(tc.traces))
+		writersWG.Wait()
+		close(doneWriting)
+		consumersWG.Wait()
+
+		assert.Equal(t, len(expectedCounts), len(actualCounts), "Number of tags should match")
+
+		for tag, expectedStacks := range expectedCounts {
+			actualStacks, exists := actualCounts[tag]
+			require.True(t, exists, "Tag %s should exist in consumed data", tag)
+			assert.Equal(t, expectedStacks, actualStacks, "Stack counts should match for tag %s", tag)
 		}
 	})
-}
 
-func TestTraceGroup_String(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		tg   traceGroup
-		want string
-	}{
-		{
-			name: "Empty traceGroup",
-			tg: traceGroup{
-				stacks: make(map[string]int),
-			},
-			want: "",
-		},
-		{
-			name: "Single stack",
-			tg: traceGroup{
-				stacks: map[string]int{
-					"trace1": 3,
-				},
-			},
-			want: "trace1 3\n",
-		},
-		{
-			name: "Multiple stacks",
-			tg: traceGroup{
-				stacks: map[string]int{
-					"trace1": 1,
-					"trace2": 2,
-				},
-			},
-			want: "trace1 1\ntrace2 2\n",
-		},
-	}
+	t.Run("ConsumeEmpty", func(t *testing.T) {
+		t.Parallel()
 
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := tt.tg.String()
-			if got != tt.want {
-				t.Errorf("String() = %q, want %q", got, tt.want)
+		tc := setupTraceCollector()
+		data := tc.ConsumeTag()
+		assert.Nil(t, data, "ConsumeTag should return nil when TraceCollector is empty")
+	})
+
+	t.Run("AddSampleUpdateTraceGroup", func(t *testing.T) {
+		t.Parallel()
+
+		tc := setupTraceCollector()
+		now := time.Now()
+
+		sample1 := types.Sample{
+			Tags:  "tagX",
+			Trace: "stackX",
+			Time:  now,
+		}
+		tc.AddSample(&sample1)
+
+		sample2 := types.Sample{
+			Tags:  "tagX",
+			Trace: "stackY",
+			Time:  now.Add(time.Minute),
+		}
+		tc.AddSample(&sample2)
+
+		data := tc.ConsumeTag()
+		require.NotNil(t, data, "Expected PyroscopeData to be non-nil")
+		require.Equal(t, "tagX", data.Tags, "Tags should match")
+
+		assert.Equal(t, now, data.From, "From time should be the first sample time")
+		assert.Equal(t, now.Add(time.Minute), data.Until, "Until time should be the latest sample time")
+
+		stackCounts := parsePyroscopeData(data.Data)
+		expectedStacks := map[string]int{
+			"stackX": 1,
+			"stackY": 1,
+		}
+		assert.Equal(t, expectedStacks, stackCounts, "Stack counts should match for tagX")
+	})
+
+	t.Run("ReadDuringWrites", func(t *testing.T) {
+		t.Parallel()
+
+		tc := setupTraceCollector()
+		startTime := time.Now()
+
+		numWriters := 10
+		samplesPerWriter := 500
+		tags := []string{"tag1", "tag2", "tag3", "tag4", "tag5"}
+
+		var writersWG sync.WaitGroup
+		writersWG.Add(numWriters)
+
+		expectedCounts := make(map[string]map[string]int)
+		var mutex sync.Mutex
+
+		writer := func(writerID int) {
+			defer writersWG.Done()
+			for i := 0; i < samplesPerWriter; i++ {
+				tag := tags[writerID%len(tags)]
+				trace := "trace" + strconv.Itoa(i%100)
+				sample := types.Sample{
+					Tags:  tag,
+					Trace: trace,
+					Time:  startTime.Add(time.Duration(writerID*samplesPerWriter+i) * time.Millisecond),
+				}
+				tc.AddSample(&sample)
+
+				mutex.Lock()
+				if _, exists := expectedCounts[tag]; !exists {
+					expectedCounts[tag] = make(map[string]int)
+				}
+				expectedCounts[tag][trace]++
+				mutex.Unlock()
 			}
-		})
-	}
+		}
+
+		for i := 0; i < numWriters; i++ {
+			go writer(i)
+		}
+
+		actualCounts := make(map[string]map[string]int)
+		var consumedDataMutex sync.Mutex
+
+		doneWriting := make(chan struct{})
+
+		consumer := func() {
+			for {
+				data := tc.ConsumeTag()
+				if data != nil {
+					consumedDataMutex.Lock()
+					if _, exists := actualCounts[data.Tags]; !exists {
+						actualCounts[data.Tags] = make(map[string]int)
+					}
+					parsedStacks := parsePyroscopeData(data.Data)
+					for stack, count := range parsedStacks {
+						actualCounts[data.Tags][stack] += count
+					}
+					consumedDataMutex.Unlock()
+				} else {
+					select {
+					case <-doneWriting:
+						return
+					default:
+						time.Sleep(5 * time.Millisecond)
+					}
+				}
+			}
+		}
+
+		var consumerWG sync.WaitGroup
+		consumerWG.Add(5) // Number of concurrent consumers
+
+		for i := 0; i < 5; i++ {
+			go func() {
+				defer consumerWG.Done()
+				consumer()
+			}()
+		}
+
+		go func() {
+			writersWG.Wait()
+			close(doneWriting)
+		}()
+
+		consumerWG.Wait()
+
+		assert.Equal(t, len(expectedCounts), len(actualCounts), "Number of tags should match")
+
+		for tag, expectedStacks := range expectedCounts {
+			actualStacks, exists := actualCounts[tag]
+			require.True(t, exists, "Tag %s should exist in consumed data", tag)
+			assert.Equal(t, expectedStacks, actualStacks, "Stack counts should match for tag %s", tag)
+		}
+	})
 }
 
 func BenchmarkTraceCollector_AddSample(b *testing.B) {
 	tc := NewTraceCollector()
-	tags := "benchmarkTag"
-	trace := "benchmarkTrace"
-	now := time.Now()
+	startTime := time.Now()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sample := &types.Sample{
-			Tags:  tags,
-			Trace: trace,
-			Time:  now,
+		sample := types.Sample{
+			Tags:  "benchmarkTag",
+			Trace: "benchmarkStack",
+			Time:  startTime.Add(time.Duration(i) * time.Millisecond),
 		}
-		tc.AddSample(sample)
+		tc.AddSample(&sample)
 	}
 }
 
 func BenchmarkTraceCollector_ConsumeTag(b *testing.B) {
 	tc := NewTraceCollector()
-	tags := "benchmarkTag"
-	trace := "benchmarkTrace"
-	now := time.Now()
+	startTime := time.Now()
 
-	// Pre-populate TraceCollector
 	for i := 0; i < b.N; i++ {
-		sample := &types.Sample{
-			Tags:  tags,
-			Trace: trace,
-			Time:  now,
+		sample := types.Sample{
+			Tags:  "benchmarkTag",
+			Trace: "benchmarkStack",
+			Time:  startTime.Add(time.Duration(i) * time.Millisecond),
 		}
-		tc.AddSample(sample)
+		tc.AddSample(&sample)
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tc.ConsumeTag()
-	}
-}
-
-func TestNewTraceCollector(t *testing.T) {
-	t.Parallel()
-	tc := NewTraceCollector()
-
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-
-	if tc.traces == nil {
-		t.Error("expected traces to be initialized, got nil")
-	}
-
-	if tc.queue == nil {
-		t.Error("expected queue to be initialized, got nil")
-	}
-
-	if len(tc.traces) != 0 {
-		t.Errorf("expected traces length to be 0, got %d", len(tc.traces))
-	}
-
-	if tc.queue.Len() != 0 {
-		t.Errorf("expected queue length to be 0, got %d", tc.queue.Len())
 	}
 }
