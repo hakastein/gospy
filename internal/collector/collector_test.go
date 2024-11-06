@@ -13,6 +13,7 @@ import (
 	"gospy/internal/types"
 )
 
+// parsePyroscopeData parses the PyroscopeData string into a map of stack traces and their counts.
 func parsePyroscopeData(data string) map[string]int {
 	result := make(map[string]int)
 	lines := strings.Split(strings.TrimSpace(data), "\n")
@@ -30,10 +31,41 @@ func parsePyroscopeData(data string) map[string]int {
 	return result
 }
 
+// setupTraceCollector initializes a new TraceCollector instance for testing.
 func setupTraceCollector() *TraceCollector {
 	return NewTraceCollector()
 }
 
+// addSamples adds a slice of samples to the TraceCollector.
+func addSamples(tc *TraceCollector, samples []types.Sample) {
+	for _, sample := range samples {
+		tc.AddSample(&sample)
+	}
+}
+
+// collectAllConsumedData retrieves all available PyroscopeData from the TraceCollector.
+func collectAllConsumedData(tc *TraceCollector) []*PyroscopeData {
+	var consumedData []*PyroscopeData
+	for {
+		data := tc.ConsumeTag()
+		if data == nil {
+			break
+		}
+		consumedData = append(consumedData, data)
+	}
+	return consumedData
+}
+
+// mapConsumedDataByTag creates a map from tag to PyroscopeData for easy lookup.
+func mapConsumedDataByTag(consumedData []*PyroscopeData) map[string]*PyroscopeData {
+	dataMap := make(map[string]*PyroscopeData)
+	for _, data := range consumedData {
+		dataMap[data.Tags] = data
+	}
+	return dataMap
+}
+
+// TestTraceCollector contains all unit tests for the TraceCollector.
 func TestTraceCollector(t *testing.T) {
 	t.Run("SequentialReadWrite", func(t *testing.T) {
 		t.Parallel()
@@ -46,9 +78,7 @@ func TestTraceCollector(t *testing.T) {
 			{Tags: "tag2", Trace: "stack2", Time: now.Add(2 * time.Second)},
 		}
 
-		for _, sample := range samples {
-			tc.AddSample(&sample)
-		}
+		addSamples(tc, samples)
 
 		expectedData := map[string]struct {
 			From   time.Time
@@ -71,25 +101,13 @@ func TestTraceCollector(t *testing.T) {
 			},
 		}
 
-		// Collect all consumed data
-		var consumedData []*PyroscopeData
-		for {
-			data := tc.ConsumeTag()
-			if data == nil {
-				break
-			}
-			consumedData = append(consumedData, data)
-		}
+		consumedData := collectAllConsumedData(tc)
+		consumedDataMap := mapConsumedDataByTag(consumedData)
 
-		// Map consumed data by tag for comparison
-		consumedDataMap := make(map[string]*PyroscopeData)
-		for _, data := range consumedData {
-			consumedDataMap[data.Tags] = data
-		}
-
-		// Compare consumed data with expected data
+		// Verify the number of tags consumed matches the expected number.
 		require.Equal(t, len(expectedData), len(consumedDataMap), "Number of tags should match")
 
+		// Validate each consumed tag's data against the expected data.
 		for expectedTag, expected := range expectedData {
 			data, exists := consumedDataMap[expectedTag]
 			require.True(t, exists, "Tag %s should exist in consumed data", expectedTag)
@@ -101,9 +119,9 @@ func TestTraceCollector(t *testing.T) {
 			assert.Equal(t, expected.Stacks, stackCounts, "Stack counts should match for tag %s", expectedTag)
 		}
 
-		// Ensure no extra data is present
+		// Ensure no additional data is present.
 		data := tc.ConsumeTag()
-		assert.Nil(t, data, "expected nil when consuming from empty TraceCollector")
+		assert.Nil(t, data, "ConsumeTag should return nil when TraceCollector is empty")
 	})
 
 	t.Run("ConcurrentReadWrite", func(t *testing.T) {
@@ -125,6 +143,7 @@ func TestTraceCollector(t *testing.T) {
 		expectedCounts := make(map[string]map[string]int)
 		var mutex sync.Mutex
 
+		// Writer function to simulate concurrent sample additions.
 		writer := func(writerID int) {
 			defer writersWG.Done()
 			for i := 0; i < samplesPerWriter; i++ {
@@ -146,6 +165,7 @@ func TestTraceCollector(t *testing.T) {
 			}
 		}
 
+		// Start writer goroutines.
 		for i := 0; i < numWriters; i++ {
 			go writer(i)
 		}
@@ -153,6 +173,7 @@ func TestTraceCollector(t *testing.T) {
 		actualCounts := make(map[string]map[string]int)
 		var consumedDataMutex sync.Mutex
 
+		// Consumer function to simulate concurrent data consumption.
 		consumer := func() {
 			for {
 				data := tc.ConsumeTag()
@@ -179,6 +200,8 @@ func TestTraceCollector(t *testing.T) {
 
 		var consumersWG sync.WaitGroup
 		consumersWG.Add(numConsumers)
+
+		// Start consumer goroutines.
 		for i := 0; i < numConsumers; i++ {
 			go func() {
 				defer consumersWG.Done()
@@ -186,12 +209,15 @@ func TestTraceCollector(t *testing.T) {
 			}()
 		}
 
+		// Wait for all writers to finish and signal consumers to stop.
 		writersWG.Wait()
 		close(doneWriting)
 		consumersWG.Wait()
 
+		// Verify the number of tags matches the expected count.
 		assert.Equal(t, len(expectedCounts), len(actualCounts), "Number of tags should match")
 
+		// Validate each tag's stack counts.
 		for tag, expectedStacks := range expectedCounts {
 			actualStacks, exists := actualCounts[tag]
 			require.True(t, exists, "Tag %s should exist in consumed data", tag)
@@ -213,27 +239,22 @@ func TestTraceCollector(t *testing.T) {
 		tc := setupTraceCollector()
 		now := time.Now()
 
-		sample1 := types.Sample{
-			Tags:  "tagX",
-			Trace: "stackX",
-			Time:  now,
+		samples := []types.Sample{
+			{Tags: "tagX", Trace: "stackX", Time: now},
+			{Tags: "tagX", Trace: "stackY", Time: now.Add(time.Minute)},
 		}
-		tc.AddSample(&sample1)
 
-		sample2 := types.Sample{
-			Tags:  "tagX",
-			Trace: "stackY",
-			Time:  now.Add(time.Minute),
-		}
-		tc.AddSample(&sample2)
+		addSamples(tc, samples)
 
 		data := tc.ConsumeTag()
 		require.NotNil(t, data, "Expected PyroscopeData to be non-nil")
 		require.Equal(t, "tagX", data.Tags, "Tags should match")
 
+		// Verify time range.
 		assert.Equal(t, now, data.From, "From time should be the first sample time")
 		assert.Equal(t, now.Add(time.Minute), data.Until, "Until time should be the latest sample time")
 
+		// Verify stack counts.
 		stackCounts := parsePyroscopeData(data.Data)
 		expectedStacks := map[string]int{
 			"stackX": 1,
@@ -258,6 +279,7 @@ func TestTraceCollector(t *testing.T) {
 		expectedCounts := make(map[string]map[string]int)
 		var mutex sync.Mutex
 
+		// Writer function for concurrent additions.
 		writer := func(writerID int) {
 			defer writersWG.Done()
 			for i := 0; i < samplesPerWriter; i++ {
@@ -279,6 +301,7 @@ func TestTraceCollector(t *testing.T) {
 			}
 		}
 
+		// Start writer goroutines.
 		for i := 0; i < numWriters; i++ {
 			go writer(i)
 		}
@@ -288,6 +311,7 @@ func TestTraceCollector(t *testing.T) {
 
 		doneWriting := make(chan struct{})
 
+		// Consumer function to handle data consumption during writes.
 		consumer := func() {
 			for {
 				data := tc.ConsumeTag()
@@ -315,6 +339,7 @@ func TestTraceCollector(t *testing.T) {
 		var consumerWG sync.WaitGroup
 		consumerWG.Add(5) // Number of concurrent consumers
 
+		// Start consumer goroutines.
 		for i := 0; i < 5; i++ {
 			go func() {
 				defer consumerWG.Done()
@@ -322,6 +347,7 @@ func TestTraceCollector(t *testing.T) {
 			}()
 		}
 
+		// Wait for all writers to finish and signal consumers to stop.
 		go func() {
 			writersWG.Wait()
 			close(doneWriting)
@@ -329,8 +355,10 @@ func TestTraceCollector(t *testing.T) {
 
 		consumerWG.Wait()
 
+		// Verify the number of tags matches the expected count.
 		assert.Equal(t, len(expectedCounts), len(actualCounts), "Number of tags should match")
 
+		// Validate each tag's stack counts.
 		for tag, expectedStacks := range expectedCounts {
 			actualStacks, exists := actualCounts[tag]
 			require.True(t, exists, "Tag %s should exist in consumed data", tag)
@@ -339,6 +367,7 @@ func TestTraceCollector(t *testing.T) {
 	})
 }
 
+// BenchmarkTraceCollector_AddSample benchmarks the AddSample method of TraceCollector.
 func BenchmarkTraceCollector_AddSample(b *testing.B) {
 	tc := NewTraceCollector()
 	startTime := time.Now()
@@ -354,10 +383,12 @@ func BenchmarkTraceCollector_AddSample(b *testing.B) {
 	}
 }
 
+// BenchmarkTraceCollector_ConsumeTag benchmarks the ConsumeTag method of TraceCollector.
 func BenchmarkTraceCollector_ConsumeTag(b *testing.B) {
 	tc := NewTraceCollector()
 	startTime := time.Now()
 
+	// Pre-populate the TraceCollector with samples.
 	for i := 0; i < b.N; i++ {
 		sample := types.Sample{
 			Tags:  "benchmarkTag",
