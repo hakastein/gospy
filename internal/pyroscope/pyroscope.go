@@ -13,88 +13,20 @@ import (
 	"time"
 )
 
-type Request struct {
-	data       bytes.Buffer
-	name       string
-	from       int64
-	until      int64
-	sampleRate int
-	bytes      int
-}
-
-func (req *Request) send(
-	ctx context.Context,
-	client *http.Client,
-	pyroscopeURL string,
-	pyroscopeAuth string,
-) error {
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", pyroscopeURL+"/ingest", &req.data)
-	if err != nil {
-		return fmt.Errorf("error creating request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "text/plain")
-	if pyroscopeAuth != "" {
-		httpReq.Header.Set("Authorization", pyroscopeAuth)
-	}
-
-	q := httpReq.URL.Query()
-	q.Add("name", req.name)
-	q.Add("from", fmt.Sprintf("%d", req.from))
-	q.Add("until", fmt.Sprintf("%d", req.until))
-	q.Add("sampleRate", fmt.Sprintf("%d", req.sampleRate))
-	q.Add("format", "folded")
-	httpReq.URL.RawQuery = q.Encode()
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("error sending request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("received unexpected response code: %s", resp.Status)
-	}
-
-	return nil
-}
-
-func makeRequest(sc *sample.Collection, name string, buffer bytes.Buffer) *Request {
-	from, until, rateHz := sc.Props()
-	return &Request{
-		from:       from,
-		until:      until,
-		sampleRate: rateHz,
-		data:       buffer,
-		name:       name,
-		bytes:      buffer.Len(),
-	}
-}
-
-func combineTags(staticTags, dynamicTags string) string {
-	if dynamicTags == "" {
-		return staticTags
-	}
-	if staticTags == "" {
-		return dynamicTags
-	}
-	return staticTags + "," + dynamicTags
-}
-
-type Stats struct {
-	Queries int
-	Bytes   int
-	Blocked int
+type stats struct {
+	queries int
+	bytes   int
+	blocked int
 }
 
 func processRequests(
 	ctx context.Context,
-	requestQueue <-chan *Request,
+	requestQueue <-chan *requestData,
 	client *http.Client,
 	limiter *rate.Limiter,
 	pyroscopeURL string,
 	pyroscopeAuth string,
-	statsChannel chan<- Stats,
+	statsChannel chan<- stats,
 ) {
 	for {
 		select {
@@ -105,10 +37,10 @@ func processRequests(
 				return
 			}
 
-			stats := Stats{}
+			stats := stats{}
 
 			if !limiter.AllowN(time.Now(), req.bytes) {
-				stats.Blocked = 1
+				stats.blocked = 1
 			}
 
 			if err := limiter.WaitN(ctx, req.bytes); err != nil {
@@ -125,8 +57,8 @@ func processRequests(
 			for attempt := 0; attempt <= maxRetries; attempt++ {
 				err := req.send(ctx, client, pyroscopeURL, pyroscopeAuth)
 				if err == nil {
-					stats.Queries = 1
-					stats.Bytes = req.bytes
+					stats.queries = 1
+					stats.bytes = req.bytes
 					log.Debug().Str("name", req.name).Msg("request sent successfully")
 					break
 				}
@@ -156,25 +88,25 @@ func processRequests(
 
 func sendRequests(
 	ctx context.Context,
-	requestQueue chan *Request,
+	requestQueue chan *requestData,
 	pyroscopeURL string,
 	pyroscopeAuth string,
 	rateBytes int,
 	workerCount int,
 ) {
 	limiter := rate.NewLimiter(rate.Limit(rateBytes), rateBytes)
-	client := &http.Client{
+	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
 	}
 
-	statsChannel := make(chan Stats)
+	statsChannel := make(chan stats)
 	var wg sync.WaitGroup
 
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			processRequests(ctx, requestQueue, client, limiter, pyroscopeURL, pyroscopeAuth, statsChannel)
+			processRequests(ctx, requestQueue, httpClient, limiter, pyroscopeURL, pyroscopeAuth, statsChannel)
 		}()
 	}
 
@@ -186,7 +118,7 @@ func sendRequests(
 	close(statsChannel)
 }
 
-func logStats(ctx context.Context, statsChannel <-chan Stats) {
+func logStats(ctx context.Context, statsChannel <-chan stats) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -201,9 +133,9 @@ func logStats(ctx context.Context, statsChannel <-chan Stats) {
 			if !ok {
 				return
 			}
-			totalQueries += stat.Queries
-			totalBytes += stat.Bytes
-			totalBlocked += stat.Blocked
+			totalQueries += stat.queries
+			totalBytes += stat.bytes
+			totalBlocked += stat.blocked
 		case <-ticker.C:
 			if totalQueries > 0 || totalBytes > 0 {
 				log.Info().
@@ -223,14 +155,55 @@ func logStats(ctx context.Context, statsChannel <-chan Stats) {
 	}
 }
 
-func readSamples(
-	ctx context.Context,
-	samplesChannel <-chan *sample.Collection,
-	requestQueue chan<- *Request,
-	app string,
-	staticTags string,
+func processTagSamples(
+	sampleCollection *sample.Collection,
+	appName string,
+	tagSamples map[uint64]*sample.Sample,
+	requestQueue chan<- *requestData,
 	rateBytes int,
 ) {
+	var (
+		currentBuffer = bytes.NewBuffer(nil)
+		requestSize   int
+	)
+
+	for _, smpl := range tagSamples {
+		line := smpl.String()
+		lineSize := len(line) + 1 // +1 for the newline character
+
+		if requestSize+lineSize > rateBytes {
+			// split buffer into multiples to avoid extra large queries that bigger then rate limit itself
+			requestQueue <- newRequest(sampleCollection, appName, *currentBuffer)
+			currentBuffer = bytes.NewBuffer(nil) // Create a new buffer
+			requestSize = 0
+		}
+
+		currentBuffer.WriteString(line)
+		currentBuffer.WriteString("\n")
+		requestSize += lineSize
+	}
+
+	if requestSize > 0 {
+		// Send any remaining data in the buffer
+		requestQueue <- newRequest(sampleCollection, appName, *currentBuffer)
+	}
+}
+
+func SendToPyroscope(
+	ctx context.Context,
+	samplesChannel <-chan *sample.Collection,
+	app string,
+	staticTags string,
+	pyroscopeURL string,
+	pyroscopeAuth string,
+	rateHz int,
+	rateBytes int,
+) {
+	requestQueue := make(chan *requestData, 100)
+	defer close(requestQueue)
+
+	go sendRequests(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, 5)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -246,55 +219,4 @@ func readSamples(
 			}
 		}
 	}
-}
-
-func processTagSamples(
-	sampleCollection *sample.Collection,
-	appName string,
-	tagSamples map[uint64]*sample.Sample,
-	requestQueue chan<- *Request,
-	rateBytes int,
-) {
-	var (
-		currentBuffer = bytes.NewBuffer(nil)
-		requestSize   int
-	)
-
-	for _, smpl := range tagSamples {
-		line := smpl.String()
-		lineSize := len(line) + 1 // +1 for the newline character
-
-		if requestSize+lineSize > rateBytes {
-			// split buffer into multiples to avoid extra large queries that bigger then rate limit itself
-			requestQueue <- makeRequest(sampleCollection, appName, *currentBuffer)
-			currentBuffer = bytes.NewBuffer(nil) // Create a new buffer
-			requestSize = 0
-		}
-
-		currentBuffer.WriteString(line)
-		currentBuffer.WriteString("\n")
-		requestSize += lineSize
-	}
-
-	if requestSize > 0 {
-		// Send any remaining data in the buffer
-		requestQueue <- makeRequest(sampleCollection, appName, *currentBuffer)
-	}
-}
-
-func SendToPyroscope(
-	ctx context.Context,
-	samplesChannel <-chan *sample.Collection,
-	app string,
-	staticTags string,
-	pyroscopeURL string,
-	pyroscopeAuth string,
-	rateBytes int,
-) {
-	requestQueue := make(chan *Request, 100)
-	defer close(requestQueue)
-
-	go sendRequests(ctx, requestQueue, pyroscopeURL, pyroscopeAuth, rateBytes, 5)
-
-	readSamples(ctx, samplesChannel, requestQueue, app, staticTags, rateBytes)
 }
