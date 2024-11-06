@@ -2,13 +2,15 @@ package collector
 
 import (
 	"container/list"
-	"gospy/internal/types"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"gospy/internal/types"
 )
 
+// PyroscopeData represents the data structure returned by ConsumeTag.
 type PyroscopeData struct {
 	Data  string
 	Tags  string
@@ -24,6 +26,8 @@ type traceGroup struct {
 	listElem *list.Element // Reference to its position in the access log
 }
 
+// String returns a string representation of the traceGroup.
+// The order of stacks is not guaranteed.
 func (tg traceGroup) String() string {
 	var builder strings.Builder
 	for stack, count := range tg.stacks {
@@ -42,6 +46,7 @@ type TraceCollector struct {
 	queue  *list.List
 }
 
+// NewTraceCollector initializes and returns a new TraceCollector.
 func NewTraceCollector() *TraceCollector {
 	return &TraceCollector{
 		traces: make(map[string]*traceGroup),
@@ -49,7 +54,8 @@ func NewTraceCollector() *TraceCollector {
 	}
 }
 
-// ConsumeTag removes samples by tag from traces collection
+// ConsumeTag removes the oldest tag from the traces collection and returns its data.
+// If there are no tags, it returns nil.
 func (tc *TraceCollector) ConsumeTag() *PyroscopeData {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
@@ -83,11 +89,18 @@ func (tc *TraceCollector) AddSample(stack *types.Sample) {
 		tg = &traceGroup{
 			stacks: make(map[string]int),
 			from:   stack.Time,
+			until:  stack.Time,
 		}
 		tc.traces[stack.Tags] = tg
-		// push tag into end of the queue
+		// Push tag into end of the queue
 		tg.listElem = tc.queue.PushBack(stack.Tags)
 	}
 
+	if stack.Time.After(tg.until) {
+		tg.until = stack.Time
+	}
+	if stack.Time.Before(tg.from) {
+		tg.from = stack.Time
+	}
 	tg.stacks[stack.Trace]++
 }

@@ -2,6 +2,7 @@ package pyroscope
 
 import (
 	"bytes"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -18,7 +19,7 @@ func (rd *requestData) String() string {
 	var builder strings.Builder
 
 	builder.WriteString("name=")
-	builder.WriteString(rd.name)
+	builder.WriteString(url.QueryEscape(rd.name))
 	builder.WriteString("&from=")
 	builder.WriteString(strconv.FormatInt(rd.from, 10))
 	builder.WriteString("&until=")

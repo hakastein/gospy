@@ -28,7 +28,7 @@ build:
 	$(call build_app)
 
 test:
-	go test -race -bench=. -benchmem - ./cmd/... ./internal/...
+	go test -v -race -bench=. -benchmem - ./cmd/... ./internal/...
 
 # Clean target
 clean:
