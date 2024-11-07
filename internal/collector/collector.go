@@ -1,8 +1,11 @@
 package collector
 
 import (
+	"bytes"
 	"container/list"
 	"context"
+	"github.com/rs/zerolog/log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,6 +18,17 @@ type TagCollection struct {
 	Data  map[string]int
 	From  time.Time
 	Until time.Time
+}
+
+func (tc *TagCollection) DataToBuffer() *bytes.Buffer {
+	var buffer bytes.Buffer
+	for sample, count := range tc.Data {
+		buffer.WriteString(sample)
+		buffer.WriteByte(' ')
+		buffer.WriteString(strconv.Itoa(count))
+		buffer.WriteByte('\n')
+	}
+	return &buffer
 }
 
 // traceGroup represents a collection of stacks with counts and a time range.
@@ -91,18 +105,18 @@ func (tc *TraceCollector) AddSample(stack *types.Sample) {
 	tg.stacks[stack.Trace]++
 }
 
+// Subscribe starts a goroutine that listens to stacksChannel and adds samples to the TraceCollector.
 func (tc *TraceCollector) Subscribe(ctx context.Context, stacksChannel <-chan *types.Sample) {
-	go func() {
-		for {
-			select {
-			case sample, ok := <-stacksChannel:
-				if !ok {
-					return
-				}
-				tc.AddSample(sample)
-			case <-ctx.Done():
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("shutdown subscriber")
+			return
+		case sample, ok := <-stacksChannel:
+			if !ok {
 				return
 			}
+			tc.AddSample(sample)
 		}
-	}()
+	}
 }

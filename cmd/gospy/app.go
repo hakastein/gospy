@@ -6,10 +6,11 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/time/rate"
 	"gospy/internal/collector"
 	"gospy/internal/parser"
 	"gospy/internal/profiler"
-	"gospy/internal/sample"
+	"gospy/internal/pyroscope"
 	"gospy/internal/supervisor"
 	"gospy/internal/types"
 	"os"
@@ -35,7 +36,8 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	var (
 		pyroscopeURL                     = c.String("pyroscope")
 		pyroscopeAuth                    = c.String("pyroscope-auth")
-		accumulationInterval             = c.Duration("accumulation-interval")
+		pyroscopeWorkers                 = c.Int("pyroscope-workers")
+		pyroscopeTimeout                 = c.Duration("pyroscope-timeout")
 		tagEntrypoint                    = c.Bool("tag-entrypoint")
 		keepEntrypointName               = c.Bool("keep-entrypoint-name")
 		app                              = c.String("app")
@@ -65,11 +67,9 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		Int("rate_bytes", rateLimit).
 		Str("version", Version).
 		Strs("tags", appTags).
-		Dur("accumulation_interval", accumulationInterval).
 		Msg("gospy started")
 
 	stacksChannel := make(chan *types.Sample, 1000)
-	collectionChannel := make(chan *sample.Collection, 100)
 	signalsChannel := make(chan os.Signal, 1)
 
 	profilerApp := arguments[0]
@@ -84,7 +84,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		return unsupportableError
 	}
 	// get sample rate from profiler settings
-	sampleingRateHZ := profilerInstance.GetHZ()
+	samplingRateHZ := profilerInstance.GetHZ()
 
 	parserInstance, parserError := parser.Init(
 		profilerApp,
@@ -109,7 +109,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	}()
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(1)
 
 	go func() {
 		defer wg.Done()
@@ -125,8 +125,25 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		)
 	}()
 
-	collector := collector.NewCollector()
-	collector.ReadFrom(ctx, stacksChannel)
+	rateLimiter := rate.NewLimiter(rate.Limit(rateLimit), rateLimit*2)
+
+	traceCollector := collector.NewTraceCollector()
+	go traceCollector.Subscribe(ctx, stacksChannel)
+
+	pyroscopeClient := pyroscope.NewClient(
+		ctx,
+		pyroscopeURL,
+		pyroscopeAuth,
+		app,
+		staticTags,
+		samplingRateHZ,
+		pyroscopeTimeout,
+	)
+
+	for i := 0; i < pyroscopeWorkers; i++ {
+		sender := pyroscope.NewSender(pyroscopeClient, traceCollector, rateLimiter)
+		go sender.Start(ctx)
+	}
 
 	wg.Wait()
 	<-ctx.Done()
