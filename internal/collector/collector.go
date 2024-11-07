@@ -2,6 +2,7 @@ package collector
 
 import (
 	"container/list"
+	"context"
 	"sync"
 	"time"
 
@@ -88,4 +89,20 @@ func (tc *TraceCollector) AddSample(stack *types.Sample) {
 		tg.from = stack.Time
 	}
 	tg.stacks[stack.Trace]++
+}
+
+func (tc *TraceCollector) Subscribe(ctx context.Context, stacksChannel <-chan *types.Sample) {
+	go func() {
+		for {
+			select {
+			case sample, ok := <-stacksChannel:
+				if !ok {
+					return
+				}
+				tc.AddSample(sample)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }
