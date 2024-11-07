@@ -107,16 +107,18 @@ func (tc *TraceCollector) AddSample(stack *types.Sample) {
 
 // Subscribe starts a goroutine that listens to stacksChannel and adds samples to the TraceCollector.
 func (tc *TraceCollector) Subscribe(ctx context.Context, stacksChannel <-chan *types.Sample) {
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info().Msg("shutdown subscriber")
-			return
-		case sample, ok := <-stacksChannel:
-			if !ok {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				log.Info().Msg("shutdown subscriber")
 				return
+			case sample, ok := <-stacksChannel:
+				if !ok {
+					return
+				}
+				tc.AddSample(sample)
 			}
-			tc.AddSample(sample)
 		}
-	}
+	}()
 }

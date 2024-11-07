@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 )
 
 func setupLogger(verbose int, instanceName string) {
@@ -32,7 +33,7 @@ func setupLogger(verbose int, instanceName string) {
 }
 
 func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
-	// setup app
+	// Setup app
 	var (
 		pyroscopeURL                     = c.String("pyroscope")
 		pyroscopeAuth                    = c.String("pyroscope-auth")
@@ -71,6 +72,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 
 	stacksChannel := make(chan *types.Sample, 1000)
 	signalsChannel := make(chan os.Signal, 1)
+	statsChannel := make(chan pyroscope.RequestStats, 1000)
 
 	profilerApp := arguments[0]
 	profilerArguments := arguments[1:]
@@ -79,11 +81,11 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	if profilerError != nil {
 		return profilerError
 	}
-	// terminate app if profiler arguments isn't supported by gospy
+	// Terminate app if profiler arguments aren't supported by gospy
 	if sup, unsupportableError := profilerInstance.IsConfigurationValid(); !sup {
 		return unsupportableError
 	}
-	// get sample rate from profiler settings
+	// Get sample rate from profiler settings
 	samplingRateHZ := profilerInstance.GetHZ()
 
 	parserInstance, parserError := parser.Init(
@@ -112,10 +114,10 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	wg.Add(1)
 
 	go func() {
-		defer wg.Done()
 		defer close(stacksChannel)
+		defer wg.Done()
 
-		// run profiles and parser, transform traces to stack format and send to stacksChannel
+		// Run profiles and parser, transform traces to stack format and send to stacksChannel
 		supervisor.ManageProfiler(
 			ctx,
 			profilerInstance,
@@ -128,7 +130,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	rateLimiter := rate.NewLimiter(rate.Limit(rateLimit), rateLimit*2)
 
 	traceCollector := collector.NewTraceCollector()
-	go traceCollector.Subscribe(ctx, stacksChannel)
+	traceCollector.Subscribe(ctx, stacksChannel)
 
 	pyroscopeClient := pyroscope.NewClient(
 		ctx,
@@ -140,9 +142,11 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		pyroscopeTimeout,
 	)
 
+	pyroscope.StartStatsAggregator(ctx, statsChannel, 10*time.Second)
+
 	for i := 0; i < pyroscopeWorkers; i++ {
-		sender := pyroscope.NewSender(pyroscopeClient, traceCollector, rateLimiter)
-		go sender.Start(ctx)
+		sender := pyroscope.NewSender(pyroscopeClient, traceCollector, rateLimiter, statsChannel)
+		sender.Start(ctx)
 	}
 
 	wg.Wait()

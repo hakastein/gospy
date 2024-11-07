@@ -46,11 +46,11 @@ func NewClient(
 	}
 }
 
-// send sends the TagCollection data to Pyroscope.
-func (cl *Client) send(body io.Reader, metaData *collector.TagCollection) error {
+// send sends the TagCollection data to Pyroscope and returns the HTTP status code and any error encountered.
+func (cl *Client) send(body io.Reader, metaData *collector.TagCollection) (int, error) {
 	httpReq, err := http.NewRequestWithContext(cl.ctx, "POST", cl.url+"/ingest", body)
 	if err != nil {
-		return fmt.Errorf("error creating request: %w", err)
+		return 0, fmt.Errorf("error creating request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "text/plain")
@@ -62,15 +62,15 @@ func (cl *Client) send(body io.Reader, metaData *collector.TagCollection) error 
 
 	resp, err := cl.httpClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("error sending request: %w", err)
+		return 0, fmt.Errorf("error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("received unexpected response code: %s", resp.Status)
+		return resp.StatusCode, fmt.Errorf("received unexpected response code: %s", resp.Status)
 	}
 
-	return nil
+	return resp.StatusCode, nil
 }
 
 func makeAppName(appName string, staticTags string, dynamicTags string) string {
