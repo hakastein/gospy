@@ -2,41 +2,26 @@ package collector
 
 import (
 	"container/list"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"gospy/internal/types"
 )
 
-// PyroscopeData represents the data structure returned by ConsumeTag.
-type PyroscopeData struct {
-	Data  string
+// TagCollection represents the Data of traces categorized by Tags over a period of time.
+type TagCollection struct {
 	Tags  string
+	Data  map[string]int
 	From  time.Time
 	Until time.Time
 }
 
 // traceGroup represents a collection of stacks with counts and a time range.
 type traceGroup struct {
-	stacks   map[string]int
-	from     time.Time
-	until    time.Time
-	listElem *list.Element // Reference to its position in the access log
-}
-
-// String returns a string representation of the traceGroup.
-// The order of stacks is not guaranteed.
-func (tg traceGroup) String() string {
-	var builder strings.Builder
-	for stack, count := range tg.stacks {
-		builder.WriteString(stack)
-		builder.WriteRune(' ')
-		builder.WriteString(strconv.Itoa(count))
-		builder.WriteRune('\n')
-	}
-	return builder.String()
+	stacks        map[string]int
+	from          time.Time
+	until         time.Time
+	queuePosition *list.Element
 }
 
 // TraceCollector manages trace groups organized by tags and tracks access order.
@@ -56,7 +41,7 @@ func NewTraceCollector() *TraceCollector {
 
 // ConsumeTag removes the oldest tag from the traces collection and returns its data.
 // If there are no tags, it returns nil.
-func (tc *TraceCollector) ConsumeTag() *PyroscopeData {
+func (tc *TraceCollector) ConsumeTag() *TagCollection {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -71,11 +56,11 @@ func (tc *TraceCollector) ConsumeTag() *PyroscopeData {
 	tc.queue.Remove(elem)
 	delete(tc.traces, tags)
 
-	return &PyroscopeData{
+	return &TagCollection{
 		From:  tg.from,
 		Until: tg.until,
 		Tags:  tags,
-		Data:  tg.String(),
+		Data:  tg.stacks,
 	}
 }
 
@@ -93,7 +78,7 @@ func (tc *TraceCollector) AddSample(stack *types.Sample) {
 		}
 		tc.traces[stack.Tags] = tg
 		// Push tag into end of the queue
-		tg.listElem = tc.queue.PushBack(stack.Tags)
+		tg.queuePosition = tc.queue.PushBack(stack.Tags)
 	}
 
 	if stack.Time.After(tg.until) {
