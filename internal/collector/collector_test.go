@@ -3,7 +3,6 @@ package collector
 
 import (
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,24 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gospy/internal/types"
 )
-
-// parsePyroscopeData parses the PyroscopeData string into a map of stack traces and their counts.
-func parsePyroscopeData(data string) map[string]int {
-	result := make(map[string]int)
-	lines := strings.Split(strings.TrimSpace(data), "\n")
-	for _, line := range lines {
-		parts := strings.Split(line, " ")
-		if len(parts) != 2 {
-			continue
-		}
-		count, err := strconv.Atoi(parts[1])
-		if err != nil {
-			continue
-		}
-		result[parts[0]] = count
-	}
-	return result
-}
 
 // setupTraceCollector initializes a new TraceCollector instance for testing.
 func setupTraceCollector() *TraceCollector {
@@ -43,9 +24,9 @@ func addSamples(tc *TraceCollector, samples []types.Sample) {
 	}
 }
 
-// collectAllConsumedData retrieves all available PyroscopeData from the TraceCollector.
-func collectAllConsumedData(tc *TraceCollector) []*PyroscopeData {
-	var consumedData []*PyroscopeData
+// collectAllConsumedData retrieves all available TagCollection from the TraceCollector.
+func collectAllConsumedData(tc *TraceCollector) []*TagCollection {
+	var consumedData []*TagCollection
 	for {
 		data := tc.ConsumeTag()
 		if data == nil {
@@ -56,9 +37,9 @@ func collectAllConsumedData(tc *TraceCollector) []*PyroscopeData {
 	return consumedData
 }
 
-// mapConsumedDataByTag creates a map from tag to PyroscopeData for easy lookup.
-func mapConsumedDataByTag(consumedData []*PyroscopeData) map[string]*PyroscopeData {
-	dataMap := make(map[string]*PyroscopeData)
+// mapConsumedDataByTag creates a map from tag to TagCollection for easy lookup.
+func mapConsumedDataByTag(consumedData []*TagCollection) map[string]*TagCollection {
+	dataMap := make(map[string]*TagCollection)
 	for _, data := range consumedData {
 		dataMap[data.Tags] = data
 	}
@@ -115,8 +96,7 @@ func TestTraceCollector(t *testing.T) {
 			assert.Equal(t, expected.From, data.From, "From time should match for tag %s", expectedTag)
 			assert.Equal(t, expected.Until, data.Until, "Until time should match for tag %s", expectedTag)
 
-			stackCounts := parsePyroscopeData(data.Data)
-			assert.Equal(t, expected.Stacks, stackCounts, "Stack counts should match for tag %s", expectedTag)
+			assert.Equal(t, expected.Stacks, data.Data, "Stack counts should match for tag %s", expectedTag)
 		}
 
 		// Ensure no additional data is present.
@@ -182,8 +162,7 @@ func TestTraceCollector(t *testing.T) {
 					if _, exists := actualCounts[data.Tags]; !exists {
 						actualCounts[data.Tags] = make(map[string]int)
 					}
-					parsedStacks := parsePyroscopeData(data.Data)
-					for stack, count := range parsedStacks {
+					for stack, count := range data.Data {
 						actualCounts[data.Tags][stack] += count
 					}
 					consumedDataMutex.Unlock()
@@ -247,7 +226,7 @@ func TestTraceCollector(t *testing.T) {
 		addSamples(tc, samples)
 
 		data := tc.ConsumeTag()
-		require.NotNil(t, data, "Expected PyroscopeData to be non-nil")
+		require.NotNil(t, data, "Expected TagCollection to be non-nil")
 		require.Equal(t, "tagX", data.Tags, "Tags should match")
 
 		// Verify time range.
@@ -255,12 +234,11 @@ func TestTraceCollector(t *testing.T) {
 		assert.Equal(t, now.Add(time.Minute), data.Until, "Until time should be the latest sample time")
 
 		// Verify stack counts.
-		stackCounts := parsePyroscopeData(data.Data)
 		expectedStacks := map[string]int{
 			"stackX": 1,
 			"stackY": 1,
 		}
-		assert.Equal(t, expectedStacks, stackCounts, "Stack counts should match for tagX")
+		assert.Equal(t, expectedStacks, data.Data, "Stack counts should match for tagX")
 	})
 
 	t.Run("ReadDuringWrites", func(t *testing.T) {
@@ -320,8 +298,7 @@ func TestTraceCollector(t *testing.T) {
 					if _, exists := actualCounts[data.Tags]; !exists {
 						actualCounts[data.Tags] = make(map[string]int)
 					}
-					parsedStacks := parsePyroscopeData(data.Data)
-					for stack, count := range parsedStacks {
+					for stack, count := range data.Data {
 						actualCounts[data.Tags][stack] += count
 					}
 					consumedDataMutex.Unlock()
