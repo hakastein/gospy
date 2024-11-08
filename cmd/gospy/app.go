@@ -6,15 +6,18 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/time/rate"
+	"gospy/internal/collector"
 	"gospy/internal/parser"
 	"gospy/internal/profiler"
 	"gospy/internal/pyroscope"
-	"gospy/internal/sample"
 	"gospy/internal/supervisor"
+	"gospy/internal/types"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 )
 
 func setupLogger(verbose int, instanceName string) {
@@ -30,16 +33,17 @@ func setupLogger(verbose int, instanceName string) {
 }
 
 func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
-	// setup app
+	// Setup app
 	var (
 		pyroscopeURL                     = c.String("pyroscope")
 		pyroscopeAuth                    = c.String("pyroscope-auth")
-		accumulationInterval             = c.Duration("accumulation-interval")
+		pyroscopeWorkers                 = c.Int("pyroscope-workers")
+		pyroscopeTimeout                 = c.Duration("pyroscope-timeout")
 		tagEntrypoint                    = c.Bool("tag-entrypoint")
 		keepEntrypointName               = c.Bool("keep-entrypoint-name")
 		app                              = c.String("app")
 		restart                          = c.String("restart")
-		rateBytes                        = int(c.Float64("rate-mb") * Megabyte)
+		rateLimit                        = int(c.Float64("rate-mb") * Megabyte)
 		appTags                          = c.StringSlice("tag")
 		staticTags, dynamicTags, tagsErr = parseTags(appTags)
 		entryPoints                      = c.StringSlice("entrypoint")
@@ -61,15 +65,14 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		Bool("tag_entrypoint", tagEntrypoint).
 		Bool("keep_entrypoint_name", keepEntrypointName).
 		Str("restart", restart).
-		Int("rate_bytes", rateBytes).
+		Int("rate_bytes", rateLimit).
 		Str("version", Version).
 		Strs("tags", appTags).
-		Dur("accumulation_interval", accumulationInterval).
 		Msg("gospy started")
 
-	stacksChannel := make(chan [2]string, 1000)
-	collectionChannel := make(chan *sample.Collection, 100)
+	stacksChannel := make(chan *types.Sample, 1000)
 	signalsChannel := make(chan os.Signal, 1)
+	statsChannel := make(chan pyroscope.RequestStats, 1000)
 
 	profilerApp := arguments[0]
 	profilerArguments := arguments[1:]
@@ -78,12 +81,12 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	if profilerError != nil {
 		return profilerError
 	}
-	// terminate app if profiler arguments isn't supported by gospy
+	// Terminate app if profiler arguments aren't supported by gospy
 	if sup, unsupportableError := profilerInstance.IsConfigurationValid(); !sup {
 		return unsupportableError
 	}
-	// get sample rate from profiler settings
-	rateHz := profilerInstance.GetHZ()
+	// Get sample rate from profiler settings
+	samplingRateHZ := profilerInstance.GetHZ()
 
 	parserInstance, parserError := parser.Init(
 		profilerApp,
@@ -108,13 +111,13 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	}()
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(1)
 
 	go func() {
-		defer wg.Done()
 		defer close(stacksChannel)
+		defer wg.Done()
 
-		// run profiles and parser, transform traces to stack format and send to stacksChannel
+		// Run profiles and parser, transform traces to stack format and send to stacksChannel
 		supervisor.ManageProfiler(
 			ctx,
 			profilerInstance,
@@ -124,35 +127,27 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		)
 	}()
 
-	// collect traces from stacksChannel and compress into foldedStacks collection, populate collectionChannel by accumulationInterval period
-	go func() {
-		defer wg.Done()
-		defer close(collectionChannel)
+	rateLimiter := rate.NewLimiter(rate.Limit(rateLimit), rateLimit*2)
 
-		sample.FoldedStacksToCollection(
-			ctx,
-			stacksChannel,
-			collectionChannel,
-			accumulationInterval,
-			rateHz,
-		)
-	}()
+	traceCollector := collector.NewTraceCollector()
+	traceCollector.Subscribe(ctx, stacksChannel)
 
-	// send folded stacks from collectionChannel to Pyroscope
-	go func() {
-		defer wg.Done()
-		defer close(signalsChannel)
+	pyroscopeClient := pyroscope.NewClient(
+		ctx,
+		pyroscopeURL,
+		pyroscopeAuth,
+		app,
+		staticTags,
+		samplingRateHZ,
+		pyroscopeTimeout,
+	)
 
-		pyroscope.SendToPyroscope(
-			ctx,
-			collectionChannel,
-			app,
-			staticTags,
-			pyroscopeURL,
-			pyroscopeAuth,
-			rateBytes,
-		)
-	}()
+	pyroscope.StartStatsAggregator(ctx, statsChannel, 10*time.Second)
+
+	for i := 0; i < pyroscopeWorkers; i++ {
+		sender := pyroscope.NewWorker(pyroscopeClient, traceCollector, rateLimiter, statsChannel)
+		sender.Start(ctx)
+	}
 
 	wg.Wait()
 	<-ctx.Done()
