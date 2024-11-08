@@ -3,7 +3,6 @@ package pyroscope
 import (
 	"context"
 	"fmt"
-	"gospy/internal/collector"
 	"io"
 	"net/http"
 	"net/url"
@@ -47,7 +46,7 @@ func NewClient(
 }
 
 // send sends the TagCollection data to Pyroscope and returns the HTTP status code and any error encountered.
-func (cl *Client) send(body io.Reader, metaData *collector.TagCollection) (int, error) {
+func (cl *Client) send(tags string, from time.Time, until time.Time, body io.Reader) (int, error) {
 	httpReq, err := http.NewRequestWithContext(cl.ctx, "POST", cl.url+"/ingest", body)
 	if err != nil {
 		return 0, fmt.Errorf("error creating request: %w", err)
@@ -58,7 +57,7 @@ func (cl *Client) send(body io.Reader, metaData *collector.TagCollection) (int, 
 		httpReq.Header.Set("Authorization", cl.auth)
 	}
 
-	httpReq.URL.RawQuery = makeQuery(makeAppName(cl.app, cl.staticTags, metaData.Tags), metaData.From, metaData.Until, cl.rateHz)
+	httpReq.URL.RawQuery = makeQuery(makeAppName(cl.app, cl.staticTags, tags), from, until, cl.rateHz)
 
 	resp, err := cl.httpClient.Do(httpReq)
 	if err != nil {

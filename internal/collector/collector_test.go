@@ -48,15 +48,52 @@ func mapConsumedDataByTag(consumedData []*TagCollection) map[string]*TagCollecti
 
 // TestTraceCollector contains all unit tests for the TraceCollector.
 func TestTraceCollector(t *testing.T) {
+	t.Run("ConsumeEmpty", func(t *testing.T) {
+		t.Parallel()
+
+		tc := setupTraceCollector()
+		data := tc.ConsumeTag()
+		assert.Nil(t, data, "ConsumeTag should return nil when TraceCollector is empty")
+	})
+
+	t.Run("AddSampleUpdateTraceGroup", func(t *testing.T) {
+		t.Parallel()
+
+		tc := setupTraceCollector()
+		now := time.Now()
+
+		samples := []types.Sample{
+			{Tags: "tagX", Trace: "traceX", Time: now},
+			{Tags: "tagX", Trace: "traceY", Time: now.Add(time.Minute)},
+		}
+
+		addSamples(tc, samples)
+
+		data := tc.ConsumeTag()
+		require.NotNil(t, data, "Expected TagCollection to be non-nil")
+		require.Equal(t, "tagX", data.Tags, "Tags should match")
+
+		// Verify time range.
+		assert.Equal(t, now, data.From, "From time should be the first sample time")
+		assert.Equal(t, now.Add(time.Minute), data.Until, "Until time should be the latest sample time")
+
+		// Verify trace counts.
+		expectedStacks := map[string]int{
+			"traceX": 1,
+			"traceY": 1,
+		}
+		assert.Equal(t, expectedStacks, data.Data, "Stack counts should match for tagX")
+	})
+
 	t.Run("SequentialReadWrite", func(t *testing.T) {
 		t.Parallel()
 
 		tc := setupTraceCollector()
 		now := time.Now()
 		samples := []types.Sample{
-			{Tags: "tag1", Trace: "stack1", Time: now},
-			{Tags: "tag1", Trace: "stack1", Time: now.Add(time.Second)},
-			{Tags: "tag2", Trace: "stack2", Time: now.Add(2 * time.Second)},
+			{Tags: "tag1", Trace: "trace1", Time: now},
+			{Tags: "tag1", Trace: "trace1", Time: now.Add(time.Second)},
+			{Tags: "tag2", Trace: "trace2", Time: now.Add(2 * time.Second)},
 		}
 
 		addSamples(tc, samples)
@@ -64,20 +101,20 @@ func TestTraceCollector(t *testing.T) {
 		expectedData := map[string]struct {
 			From   time.Time
 			Until  time.Time
-			Stacks map[string]int
+			Traces map[string]int
 		}{
 			"tag1": {
 				From:  now,
 				Until: now.Add(time.Second),
-				Stacks: map[string]int{
-					"stack1": 2,
+				Traces: map[string]int{
+					"trace1": 2,
 				},
 			},
 			"tag2": {
 				From:  now.Add(2 * time.Second),
 				Until: now.Add(2 * time.Second),
-				Stacks: map[string]int{
-					"stack2": 1,
+				Traces: map[string]int{
+					"trace2": 1,
 				},
 			},
 		}
@@ -96,7 +133,7 @@ func TestTraceCollector(t *testing.T) {
 			assert.Equal(t, expected.From, data.From, "From time should match for tag %s", expectedTag)
 			assert.Equal(t, expected.Until, data.Until, "Until time should match for tag %s", expectedTag)
 
-			assert.Equal(t, expected.Stacks, data.Data, "Stack counts should match for tag %s", expectedTag)
+			assert.Equal(t, expected.Traces, data.Data, "Trace counts should match for tag %s", expectedTag)
 		}
 
 		// Ensure no additional data is present.
@@ -128,7 +165,7 @@ func TestTraceCollector(t *testing.T) {
 			defer writersWG.Done()
 			for i := 0; i < samplesPerWriter; i++ {
 				tag := tags[writerID%len(tags)]
-				trace := "stack" + strconv.Itoa(i%50)
+				trace := "trace" + strconv.Itoa(i%50)
 				sample := types.Sample{
 					Tags:  tag,
 					Trace: trace,
@@ -162,8 +199,8 @@ func TestTraceCollector(t *testing.T) {
 					if _, exists := actualCounts[data.Tags]; !exists {
 						actualCounts[data.Tags] = make(map[string]int)
 					}
-					for stack, count := range data.Data {
-						actualCounts[data.Tags][stack] += count
+					for trace, count := range data.Data {
+						actualCounts[data.Tags][trace] += count
 					}
 					consumedDataMutex.Unlock()
 				} else {
@@ -196,49 +233,12 @@ func TestTraceCollector(t *testing.T) {
 		// Verify the number of tags matches the expected count.
 		assert.Equal(t, len(expectedCounts), len(actualCounts), "Number of tags should match")
 
-		// Validate each tag's stack counts.
+		// Validate each tag's trace counts.
 		for tag, expectedStacks := range expectedCounts {
 			actualStacks, exists := actualCounts[tag]
 			require.True(t, exists, "Tag %s should exist in consumed data", tag)
 			assert.Equal(t, expectedStacks, actualStacks, "Stack counts should match for tag %s", tag)
 		}
-	})
-
-	t.Run("ConsumeEmpty", func(t *testing.T) {
-		t.Parallel()
-
-		tc := setupTraceCollector()
-		data := tc.ConsumeTag()
-		assert.Nil(t, data, "ConsumeTag should return nil when TraceCollector is empty")
-	})
-
-	t.Run("AddSampleUpdateTraceGroup", func(t *testing.T) {
-		t.Parallel()
-
-		tc := setupTraceCollector()
-		now := time.Now()
-
-		samples := []types.Sample{
-			{Tags: "tagX", Trace: "stackX", Time: now},
-			{Tags: "tagX", Trace: "stackY", Time: now.Add(time.Minute)},
-		}
-
-		addSamples(tc, samples)
-
-		data := tc.ConsumeTag()
-		require.NotNil(t, data, "Expected TagCollection to be non-nil")
-		require.Equal(t, "tagX", data.Tags, "Tags should match")
-
-		// Verify time range.
-		assert.Equal(t, now, data.From, "From time should be the first sample time")
-		assert.Equal(t, now.Add(time.Minute), data.Until, "Until time should be the latest sample time")
-
-		// Verify stack counts.
-		expectedStacks := map[string]int{
-			"stackX": 1,
-			"stackY": 1,
-		}
-		assert.Equal(t, expectedStacks, data.Data, "Stack counts should match for tagX")
 	})
 
 	t.Run("ReadDuringWrites", func(t *testing.T) {
@@ -298,8 +298,8 @@ func TestTraceCollector(t *testing.T) {
 					if _, exists := actualCounts[data.Tags]; !exists {
 						actualCounts[data.Tags] = make(map[string]int)
 					}
-					for stack, count := range data.Data {
-						actualCounts[data.Tags][stack] += count
+					for trace, count := range data.Data {
+						actualCounts[data.Tags][trace] += count
 					}
 					consumedDataMutex.Unlock()
 				} else {
@@ -335,7 +335,7 @@ func TestTraceCollector(t *testing.T) {
 		// Verify the number of tags matches the expected count.
 		assert.Equal(t, len(expectedCounts), len(actualCounts), "Number of tags should match")
 
-		// Validate each tag's stack counts.
+		// Validate each tag's trace counts.
 		for tag, expectedStacks := range expectedCounts {
 			actualStacks, exists := actualCounts[tag]
 			require.True(t, exists, "Tag %s should exist in consumed data", tag)
