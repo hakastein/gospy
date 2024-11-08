@@ -1,8 +1,8 @@
 package pyroscope
 
 import (
+	"bytes"
 	"context"
-	"strconv"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -26,8 +26,8 @@ type Worker struct {
 	statsChan chan<- RequestStats
 }
 
-// NewSender initializes and returns a new Worker with a statistics channel.
-func NewSender(client *Client, collector *collector.TraceCollector, limiter *rate.Limiter, statsChan chan<- RequestStats) *Worker {
+// NewWorker initializes and returns a new Worker with a statistics channel.
+func NewWorker(client *Client, collector *collector.TraceCollector, limiter *rate.Limiter, statsChan chan<- RequestStats) *Worker {
 	return &Worker{
 		limiter:   limiter,
 		client:    client,
@@ -39,54 +39,61 @@ func NewSender(client *Client, collector *collector.TraceCollector, limiter *rat
 // Start a goroutine to send data to Pyroscope.
 func (s *Worker) Start(ctx context.Context) {
 	go func() {
+		log.Info().Msg("pyroscope worker started")
+		var (
+			data    *collector.TagCollection
+			body    *bytes.Buffer
+			bodyLen int
+		)
 		for {
 			select {
 			case <-ctx.Done():
-				log.Info().Msg("shutdown worker")
+				log.Info().Msg("pyroscope worker shutting down")
 				return
 			default:
-				data := s.collector.ConsumeTag()
+				data = s.collector.ConsumeTag()
 				if data == nil {
 					// No data available. Sleep briefly.
 					time.Sleep(100 * time.Millisecond)
 					continue
 				}
 
-				body := data.DataToBuffer()
-				bytesSent := body.Len() // Capture the length before sending
+				body = data.DataToBuffer()
+				bodyLen = body.Len()
 
 				// Respect rate limiting
-				if err := s.limiter.WaitN(ctx, bytesSent); err != nil {
+				if err := s.limiter.WaitN(ctx, bodyLen); err != nil {
 					log.Error().
 						Err(err).
-						Msg("Rate limiter error")
+						Msg("rate limiter error")
 					continue
 				}
 
 				// Attempt to send the request
-				statusCode, err := s.client.send(body, data)
+				statusCode, err := s.client.send(data.Tags, data.From, data.Until, body)
 				if err != nil {
+					// @TODO make retry for certain type of errors
 					s.statsChan <- RequestStats{
-						Bytes:      bytesSent,
+						Bytes:      bodyLen,
 						StatusCode: statusCode,
 						Success:    false,
 					}
 					log.Error().
 						Err(err).
 						Int("status_code", statusCode).
-						Msg("Failed to send data to Pyroscope")
+						Msg("failed to send data to Pyroscope")
 					continue
 				}
 
 				s.statsChan <- RequestStats{
-					Bytes:      bytesSent,
+					Bytes:      bodyLen,
 					StatusCode: statusCode,
 					Success:    true,
 				}
 				log.Debug().
 					Str("tags", data.Tags).
 					Int("status_code", statusCode).
-					Msg("Successfully sent data to Pyroscope")
+					Msg("successfully sent data to Pyroscope")
 			}
 		}
 	}()
@@ -122,19 +129,13 @@ func StartStatsAggregator(ctx context.Context, statsChan <-chan RequestStats, in
 				statusCodes[stat.StatusCode]++
 			case <-ticker.C:
 				if totalRequests > 0 {
-					// Convert statusCodes to map[string]int for logging
-					statusDict := make(map[string]int)
-					for code, count := range statusCodes {
-						statusDict[strconv.Itoa(code)] = count
-					}
-
 					log.Info().
 						Int("total_requests", totalRequests).
 						Int("total_bytes", totalBytes).
 						Int("success_requests", successRequests).
 						Int("failed_requests", failedRequests).
-						Interface("status_codes", statusDict).
-						Msg("Pyroscope statistics")
+						Interface("status_codes", statusCodes).
+						Msg("pyroscope sending statistics")
 
 					// Reset statistics
 					totalRequests, totalBytes, successRequests, failedRequests = 0, 0, 0, 0

@@ -145,7 +145,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	pyroscope.StartStatsAggregator(ctx, statsChannel, 10*time.Second)
 
 	for i := 0; i < pyroscopeWorkers; i++ {
-		sender := pyroscope.NewSender(pyroscopeClient, traceCollector, rateLimiter, statsChannel)
+		sender := pyroscope.NewWorker(pyroscopeClient, traceCollector, rateLimiter, statsChannel)
 		sender.Start(ctx)
 	}
 
