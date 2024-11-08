@@ -4,17 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"time"
-
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
+	"os"
+	"time"
 )
 
 const (
-	DefaultRateMB             = 4                // Default ingestion rate limit in MB for Pyroscope
-	DefaultAccumulationPeriod = 10 * time.Second // Period for collecting samples
-	Megabyte                  = 1048576          // Number of bytes in a megabyte
+	DefaultRateMB    = 4       // Default ingestion rate limit in MB for Pyroscope
+	Megabyte         = 1048576 // Number of bytes in a megabyte
+	PyroscopeWorkers = 5       // Amount of pyroscope senders
+	PyroscopeTimeout = 10 * time.Second
 )
 
 const (
@@ -64,6 +64,11 @@ func main() {
 				Name:  "pyroscope-auth",
 				Usage: "Authentication token for Pyroscope",
 			},
+			&cli.DurationFlag{
+				Name:  "pyroscope-timeout",
+				Usage: "timeout to pyroscope request",
+				Value: PyroscopeTimeout,
+			},
 			&cli.BoolFlag{
 				Name:    "verbose",
 				Usage:   "Verbosity level; use twice to increase verbosity",
@@ -95,15 +100,20 @@ func main() {
 				Name:  "tag",
 				Usage: "Static and dynamic tags (key=value or key=%value%)",
 			},
-			&cli.DurationFlag{
-				Name:  "accumulation-interval",
-				Usage: "Interval between sending accumulated samples to Pyroscope",
-				Value: DefaultAccumulationPeriod,
-			},
 			&cli.Float64Flag{
 				Name:  "rate-mb",
 				Usage: "Ingestion rate limit in MB",
 				Value: DefaultRateMB,
+			},
+			&cli.Float64Flag{
+				Name:  "rate-burst-mb",
+				Usage: "Ingestion rate limit burst in MB",
+				Value: DefaultRateMB + DefaultRateMB/2,
+			},
+			&cli.IntFlag{
+				Name:  "pyroscope-workers",
+				Usage: "Amount of workers who sends data to pyroscope",
+				Value: PyroscopeWorkers,
 			},
 			&cli.StringSliceFlag{
 				Name:  "entrypoint",

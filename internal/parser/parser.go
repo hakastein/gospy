@@ -1,19 +1,10 @@
 package parser
 
 import (
-	"bufio"
-	"context"
 	"fmt"
 	"gospy/internal/phpspy"
+	"gospy/internal/types"
 )
-
-type Parser interface {
-	Parse(
-		ctx context.Context,
-		scanner *bufio.Scanner,
-		samplesChannel chan<- [2]string,
-	)
-}
 
 func Init(
 	profiler string,
@@ -21,8 +12,8 @@ func Init(
 	tagsMapping map[string]string,
 	tagEntrypoint bool,
 	keepEntrypointName bool,
-) (Parser, error) {
-	var parser Parser
+) (types.Parser, error) {
+	var parser types.Parser
 
 	switch profiler {
 	case "phpspy":

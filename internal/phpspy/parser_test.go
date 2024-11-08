@@ -3,6 +3,7 @@ package phpspy
 import (
 	"bufio"
 	"context"
+	"gospy/internal/types"
 	"strings"
 	"testing"
 )
@@ -181,7 +182,7 @@ func TestParser_Parse(t *testing.T) {
 
 			scanner := bufio.NewScanner(strings.NewReader(tc.input))
 
-			foldedStacks := make(chan [2]string, 10)
+			foldedStacks := make(chan *types.Sample, 10)
 
 			parser := NewParser(tc.entryPoints, tc.tagsMapping, tc.tagEntrypoint, tc.keepEntrypointName)
 
@@ -190,7 +191,7 @@ func TestParser_Parse(t *testing.T) {
 				close(foldedStacks)
 			}()
 
-			var results [][2]string
+			var results []*types.Sample
 			for fs := range foldedStacks {
 				results = append(results, fs)
 			}
@@ -203,10 +204,28 @@ func TestParser_Parse(t *testing.T) {
 				if i >= len(results) {
 					break
 				}
-				if results[i][0] != expected[0] || results[i][1] != expected[1] {
+				if results[i].Trace != expected[0] || results[i].Tags != expected[1] {
 					t.Errorf("Expected folded stack %v, got %v", expected, results[i])
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkParseMeta(b *testing.B) {
+	lines := []string{
+		"# key1 = value1",
+		"# key2 = value2",
+		"# key3 = value3",
+	}
+	tagsMapping := map[string]string{
+		"key1": "tag1",
+		"key2": "tag2",
+		"key3": "tag3",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		parseMeta(lines, tagsMapping)
 	}
 }
