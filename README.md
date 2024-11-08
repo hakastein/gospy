@@ -66,6 +66,7 @@ profile a PHP application using `phpspy`:
 gospy \
   --pyroscope=https://pyroscope.example.com:4040 \
   --pyroscope-auth=your_auth_token \
+  --pyroscope-workers=2 \
   --tag="env=production" \
   --tag="host=yourhost.example.com" \
   --tag="uri=%glopeek server.REQUEST_URI%" \
@@ -76,7 +77,6 @@ gospy \
   --restart=onsuccess \
   --entrypoint="index.php" \
   --entrypoint="dashboard.php" \
-  --accumulation-interval=10s \
     phpspy --max-depth=-1 \
       --threads=100 \
       -H 25 \
@@ -179,7 +179,7 @@ wait
     - `onsuccess`: Restart only if the profiler exits successfully.
     - `no`: Do not restart the profiler. *(Default)*
 - `--entrypoint`: Limit traces to certain entry points (e.g., `index.php`). **Can be used multiple times**.
-- `--accumulation-interval`: Interval between sending accumulated samples to Pyroscope. Default is `10s`.
+- `--pyroscope-workers`: Amount of workers who sends data to pyroscope. Default is `5`.
 - `--instance-name`: Name of the `gospy` instance for logging purposes. Default is `gospy`.
 - `--verbose` or `-v`: Increase verbosity. Use multiple times for higher verbosity levels (e.g., `-vv`).
 
@@ -216,6 +216,7 @@ wait
 - **Entry Points**:
     - Specify one or more entry points to limit profiling to specific parts of your application.
     - Example: `--entrypoint="index.php"` restricts profiling to the `index.php` entry point.
+    - You can use glob patterns
 
 ## Supported Profilers
 
