@@ -72,7 +72,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 
 	stacksChannel := make(chan *types.Sample, 1000)
 	signalsChannel := make(chan os.Signal, 1)
-	statsChannel := make(chan pyroscope.RequestStats, 1000)
+	statsChannel := make(chan *pyroscope.RequestStats, 1000)
 
 	profilerApp := arguments[0]
 	profilerArguments := arguments[1:]

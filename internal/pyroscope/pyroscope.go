@@ -23,11 +23,11 @@ type Worker struct {
 	client    *Client
 	collector *collector.TraceCollector
 	limiter   *rate.Limiter
-	statsChan chan<- RequestStats
+	statsChan chan<- *RequestStats
 }
 
 // NewWorker initializes and returns a new Worker with a statistics channel.
-func NewWorker(client *Client, collector *collector.TraceCollector, limiter *rate.Limiter, statsChan chan<- RequestStats) *Worker {
+func NewWorker(client *Client, collector *collector.TraceCollector, limiter *rate.Limiter, statsChan chan<- *RequestStats) *Worker {
 	return &Worker{
 		limiter:   limiter,
 		client:    client,
@@ -73,7 +73,7 @@ func (s *Worker) Start(ctx context.Context) {
 				statusCode, err := s.client.send(data.Tags, data.From, data.Until, body)
 				if err != nil {
 					// @TODO make retry for certain type of errors
-					s.statsChan <- RequestStats{
+					s.statsChan <- &RequestStats{
 						Bytes:      bodyLen,
 						StatusCode: statusCode,
 						Success:    false,
@@ -85,7 +85,7 @@ func (s *Worker) Start(ctx context.Context) {
 					continue
 				}
 
-				s.statsChan <- RequestStats{
+				s.statsChan <- &RequestStats{
 					Bytes:      bodyLen,
 					StatusCode: statusCode,
 					Success:    true,
@@ -100,7 +100,7 @@ func (s *Worker) Start(ctx context.Context) {
 }
 
 // StartStatsAggregator starts a goroutine to aggregate and log statistics every interval.
-func StartStatsAggregator(ctx context.Context, statsChan <-chan RequestStats, interval time.Duration) {
+func StartStatsAggregator(ctx context.Context, statsChan <-chan *RequestStats, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
