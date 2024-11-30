@@ -53,7 +53,8 @@ func main() {
 				Email: "headcrabogon@gmail.com",
 			},
 		},
-		UseShortOptionHandling: true,
+		UseShortOptionHandling:    true,
+		DisableSliceFlagSeparator: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:     "pyroscope",
@@ -145,6 +146,6 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
-		log.Fatal().Err(err)
+		log.Fatal().Err(err).Msg("can't start app")
 	}
 }
