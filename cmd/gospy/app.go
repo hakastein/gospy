@@ -12,6 +12,7 @@ import (
 	"gospy/internal/profiler"
 	"gospy/internal/pyroscope"
 	"gospy/internal/supervisor"
+	"gospy/internal/tag"
 	"gospy/internal/types"
 	"os"
 	"os/signal"
@@ -45,7 +46,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		restart                          = c.String("restart")
 		rateLimit                        = int(c.Float64("rate-mb") * Megabyte)
 		appTags                          = c.StringSlice("tag")
-		staticTags, dynamicTags, tagsErr = parseTags(appTags)
+		staticTags, dynamicTags, tagsErr = tag.ParseInput(appTags)
 		entryPoints                      = c.StringSlice("entrypoint")
 		arguments                        = c.Args().Slice()
 	)

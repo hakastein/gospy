@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"github.com/rs/zerolog/log"
-	"gospy/internal/types"
-	"gospy/internal/validator"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog/log"
+
+	"gospy/internal/types"
+	"gospy/internal/validator"
 )
 
 type Parser struct {
@@ -40,10 +42,6 @@ func (prsr *Parser) Parse(
 	var (
 		currentTrace []string
 		currentMeta  []string
-		tags         string
-		sample       string
-		entryPoint   string
-		convertError error
 		lines        = make(chan string, 1000) // @TODO make it configurable
 	)
 
@@ -68,18 +66,17 @@ func (prsr *Parser) Parse(
 			return
 		case line, ok := <-lines:
 			if !ok {
-				log.Debug().Msg("folded stacks channel have been closed")
+				log.Debug().Msg("folded stacks channel has been closed")
 				return
 			}
 
 			// Process the line
 			if strings.TrimSpace(line) == "" {
-				sample, entryPoint, convertError = tracesToFoldedStacks(currentTrace, prsr.keepEntrypointName)
+				sample, entryPoint, convertError := tracesToFoldedStacks(currentTrace, prsr.keepEntrypointName)
 
 				if convertError == nil {
-
 					if epValidator.IsValid(entryPoint) {
-						tags = parseMeta(currentMeta, prsr.tagsMapping)
+						tags := prsr.metaToTags(currentMeta)
 
 						if prsr.tagEntrypoint {
 							if tags != "" {
@@ -97,12 +94,11 @@ func (prsr *Parser) Parse(
 							Str("entrypoint", entryPoint).
 							Msg("trace entrypoint not allowed")
 					}
-
 				} else {
 					log.Debug().
 						Err(convertError).
 						Str("sample", strings.Join(currentTrace, "\n")).
-						Msg("unable convert trace to folded stack format")
+						Msg("unable to convert trace to folded stack format")
 				}
 
 				currentTrace = nil
@@ -113,7 +109,6 @@ func (prsr *Parser) Parse(
 
 			if strings.HasPrefix(line, "#") {
 				currentMeta = append(currentMeta, line)
-
 				continue
 			}
 
@@ -131,8 +126,6 @@ func tracesToFoldedStacks(trace []string, keepEntrypointName bool) (string, stri
 	var (
 		foldedStack strings.Builder
 		entryPoint  string
-		fileInfo    string
-		colonIndex  int
 	)
 
 	for i := len(trace) - 1; i >= 0; i-- {
@@ -148,8 +141,8 @@ func tracesToFoldedStacks(trace []string, keepEntrypointName bool) (string, stri
 
 		// last line in trace is entrypoint
 		if i == len(trace)-1 {
-			fileInfo = tokens[2]
-			colonIndex = strings.LastIndex(fileInfo, ":")
+			fileInfo := tokens[2]
+			colonIndex := strings.LastIndex(fileInfo, ":")
 			if colonIndex == -1 {
 				return "", "", errors.New("invalid file info in trace")
 			}
@@ -170,13 +163,9 @@ func tracesToFoldedStacks(trace []string, keepEntrypointName bool) (string, stri
 	return foldedStack.String(), entryPoint, nil
 }
 
-// parseMeta extracts dynamic tags from phpspy output
-func parseMeta(lines []string, tagsMapping map[string]string) string {
-	var (
-		tags   strings.Builder
-		key    string
-		exists bool
-	)
+// metaToTags extracts dynamic tags from phpspy output
+func (prsr *Parser) metaToTags(lines []string) string {
+	var tags strings.Builder
 
 	for _, line := range lines {
 		if len(line) < 2 {
@@ -193,7 +182,7 @@ func parseMeta(lines []string, tagsMapping map[string]string) string {
 			continue
 		}
 
-		key, exists = tagsMapping[keyVal[0]]
+		key, exists := prsr.tagsMapping[keyVal[0]]
 		if !exists {
 			continue
 		}
