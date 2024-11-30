@@ -2,6 +2,7 @@ package pyroscope
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,11 @@ type Client struct {
 	staticTags string
 	ctx        context.Context
 	rateHz     int
+}
+
+type ErrorResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // NewClient initializes and returns a new Client.
@@ -66,7 +72,13 @@ func (cl *Client) send(tags string, from time.Time, until time.Time, body io.Rea
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return resp.StatusCode, fmt.Errorf("received unexpected response code: %s", resp.Status)
+		var result ErrorResponse
+		responseBody, _ := io.ReadAll(resp.Body)
+		jsonParseErr := json.Unmarshal(responseBody, &result)
+		if jsonParseErr != nil {
+			panic(fmt.Errorf("error parsing response: %w", jsonParseErr))
+		}
+		return resp.StatusCode, fmt.Errorf("http code: %s, error: %s, message: %s", resp.Status, result.Code, result.Message)
 	}
 
 	return resp.StatusCode, nil
