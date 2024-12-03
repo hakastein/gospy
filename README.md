@@ -11,7 +11,6 @@ to [Pyroscope](https://pyroscope.io/). Currently, it supports only [phpspy](http
 
 - [Features](#features)
 - [Installation](#installation)
-    - [Prerequisites](#prerequisites)
     - [Building from Source](#building-from-source)
     - [Using Pre-built Binaries](#using-pre-built-binaries)
 - [Usage](#usage)
@@ -30,12 +29,9 @@ to [Pyroscope](https://pyroscope.io/). Currently, it supports only [phpspy](http
 
 ## Installation
 
-### Prerequisites
-
-- [Go](https://golang.org/dl/) 1.18 or higher
-- Access to a [Pyroscope](https://pyroscope.io/) server
-
 ### Building from Source
+
+You need 1.23.3 or higher
 
 1. **Clone the Repository**
 
