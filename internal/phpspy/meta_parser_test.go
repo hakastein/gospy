@@ -1,6 +1,7 @@
 package phpspy
 
 import (
+	"gospy/internal/tag"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,14 +11,13 @@ import (
 type parseMetaTest struct {
 	name        string
 	lines       []string
-	tagsMapping map[string]string
+	tagsMapping map[string]tag.DynamicTag
 	want        string
 }
 
 // runParseMetaTests executes a slice of parseMetaTest cases.
 func runParseMetaTests(t *testing.T, tests []parseMetaTest, assertMessage string) {
 	for _, tt := range tests {
-		tt := tt // Capture range variable
 		t.Run(tt.name, func(t *testing.T) {
 			got := parseMeta(tt.lines, tt.tagsMapping)
 			assert.Equal(t, tt.want, got, assertMessage)
@@ -29,10 +29,12 @@ func runParseMetaTests(t *testing.T, tests []parseMetaTest, assertMessage string
 func TestParseMeta(t *testing.T) {
 	validInputs := []parseMetaTest{
 		{
-			name:        "Single valid line",
-			lines:       []string{"# author = John Doe"},
-			tagsMapping: map[string]string{"author": "creator"},
-			want:        "creator=John Doe",
+			name:  "Single valid line",
+			lines: []string{"# author = John Doe"},
+			tagsMapping: map[string]tag.DynamicTag{
+				"author": {TagKey: "creator"},
+			},
+			want: "creator=John Doe",
 		},
 		{
 			name: "Multiple valid lines",
@@ -41,10 +43,10 @@ func TestParseMeta(t *testing.T) {
 				"# version = 1.0",
 				"# license = MIT",
 			},
-			tagsMapping: map[string]string{
-				"author":  "creator",
-				"version": "v",
-				"license": "lic",
+			tagsMapping: map[string]tag.DynamicTag{
+				"author":  {TagKey: "creator"},
+				"version": {TagKey: "v"},
+				"license": {TagKey: "lic"},
 			},
 			want: "creator=John Doe,lic=MIT,v=1.0",
 		},
@@ -55,10 +57,10 @@ func TestParseMeta(t *testing.T) {
 				"# license = MIT",
 				"# author = John Doe",
 			},
-			tagsMapping: map[string]string{
-				"version": "v",
-				"author":  "creator",
-				"license": "lic",
+			tagsMapping: map[string]tag.DynamicTag{
+				"version": {TagKey: "v"},
+				"author":  {TagKey: "creator"},
+				"license": {TagKey: "lic"},
 			},
 			want: "creator=John Doe,lic=MIT,v=1.0",
 		},
@@ -67,19 +69,19 @@ func TestParseMeta(t *testing.T) {
 			lines: []string{
 				"# author = Jane = Doe",
 			},
-			tagsMapping: map[string]string{
-				"description": "desc",
-				"author":      "creator",
+			tagsMapping: map[string]tag.DynamicTag{
+				"description": {TagKey: "desc"},
+				"author":      {TagKey: "creator"},
 			},
 			want: "creator=Jane = Doe",
 		},
 		{
-			name: "Leading spaces in in value",
+			name: "Leading spaces in value",
 			lines: []string{
 				"# description =              Version 1.0 = Initial Release         ",
 			},
-			tagsMapping: map[string]string{
-				"description": "description",
+			tagsMapping: map[string]tag.DynamicTag{
+				"description": {TagKey: "description"},
 			},
 			want: "description=Version 1.0 = Initial Release",
 		},
@@ -88,8 +90,8 @@ func TestParseMeta(t *testing.T) {
 			lines: []string{
 				"# description of process = description value",
 			},
-			tagsMapping: map[string]string{
-				"description of process": "description",
+			tagsMapping: map[string]tag.DynamicTag{
+				"description of process": {TagKey: "description"},
 			},
 			want: "description=description value",
 		},
@@ -99,31 +101,37 @@ func TestParseMeta(t *testing.T) {
 		{
 			name:        "Empty lines",
 			lines:       []string{},
-			tagsMapping: map[string]string{"author": "creator"},
+			tagsMapping: map[string]tag.DynamicTag{"author": {TagKey: "creator"}},
 			want:        "",
 		},
 		{
 			name:        "No '# ' prefix",
 			lines:       []string{"invalid line", "another invalid line"},
-			tagsMapping: map[string]string{"author": "creator"},
+			tagsMapping: map[string]tag.DynamicTag{"author": {TagKey: "creator"}},
 			want:        "",
 		},
 		{
-			name:        "Invalid '# ' format",
-			lines:       []string{"#invalid=123", "#anotherinvalid"},
-			tagsMapping: map[string]string{"invalid": "invalid", "anotherinvalid": "anotherinvalid"},
-			want:        "",
+			name:  "Invalid '# ' format",
+			lines: []string{"#invalid=123", "#anotherinvalid"},
+			tagsMapping: map[string]tag.DynamicTag{
+				"invalid":        {TagKey: "invalid"},
+				"anotherinvalid": {TagKey: "anotherinvalid"},
+			},
+			want: "",
 		},
 		{
-			name:        "Lines with '# ' but bad format",
-			lines:       []string{"# keyonly", "# keymultiple=val1=val2"},
-			tagsMapping: map[string]string{"keyonly": "mappedKey", "keymultiple": "val1"},
-			want:        "",
+			name:  "Lines with '# ' but bad format",
+			lines: []string{"# keyonly", "# keymultiple=val1=val2"},
+			tagsMapping: map[string]tag.DynamicTag{
+				"keyonly":     {TagKey: "mappedKey"},
+				"keymultiple": {TagKey: "val1"},
+			},
+			want: "",
 		},
 		{
 			name:        "Keys not in mapping",
 			lines:       []string{"# unknown = value", "# anotherUnknown = value2"},
-			tagsMapping: map[string]string{"author": "creator"},
+			tagsMapping: map[string]tag.DynamicTag{"author": {TagKey: "creator"}},
 			want:        "",
 		},
 	}
@@ -136,9 +144,9 @@ func TestParseMeta(t *testing.T) {
 				"# author = Charlie",
 				"# version = 1.2",
 			},
-			tagsMapping: map[string]string{
-				"author":  "creator",
-				"version": "v",
+			tagsMapping: map[string]tag.DynamicTag{
+				"author":  {TagKey: "creator"},
+				"version": {TagKey: "v"},
 			},
 			want: "creator=Charlie,v=1.2",
 		},
@@ -149,10 +157,10 @@ func TestParseMeta(t *testing.T) {
 				"# writer = Bob",
 				"# version = 2.0",
 			},
-			tagsMapping: map[string]string{
-				"author":  "creator",
-				"writer":  "creator",
-				"version": "v",
+			tagsMapping: map[string]tag.DynamicTag{
+				"author":  {TagKey: "creator"},
+				"writer":  {TagKey: "creator"},
+				"version": {TagKey: "v"},
 			},
 			want: "creator=Bob,v=2.0",
 		},
@@ -165,10 +173,10 @@ func TestParseMeta(t *testing.T) {
 				"# writer = Dave",
 				"# version = 3.1",
 			},
-			tagsMapping: map[string]string{
-				"author":  "creator",
-				"writer":  "creator",
-				"version": "v",
+			tagsMapping: map[string]tag.DynamicTag{
+				"author":  {TagKey: "creator"},
+				"writer":  {TagKey: "creator"},
+				"version": {TagKey: "v"},
 			},
 			want: "creator=Dave,v=3.1",
 		},
@@ -185,8 +193,8 @@ func TestParseMeta(t *testing.T) {
 				"# anotherBad = format1 = format2",
 				"# validKey = newValue",
 			},
-			tagsMapping: map[string]string{
-				"validKey": "mappedValid",
+			tagsMapping: map[string]tag.DynamicTag{
+				"validKey": {TagKey: "mappedValid"},
 			},
 			want: "mappedValid=newValue",
 		},
@@ -198,9 +206,9 @@ func TestParseMeta(t *testing.T) {
 				"# = value",
 				"# key = value",
 			},
-			tagsMapping: map[string]string{
-				"author": "creator",
-				"key":    "k",
+			tagsMapping: map[string]tag.DynamicTag{
+				"author": {TagKey: "creator"},
+				"key":    {TagKey: "k"},
 			},
 			want: "creator=,k=value",
 		},
@@ -211,10 +219,10 @@ func TestParseMeta(t *testing.T) {
 				"# vers#on = 1.0$",
 				"# lic#ence = M!T",
 			},
-			tagsMapping: map[string]string{
-				"auth@or":  "creator",
-				"vers#on":  "v",
-				"lic#ence": "lic",
+			tagsMapping: map[string]tag.DynamicTag{
+				"auth@or":  {TagKey: "creator"},
+				"vers#on":  {TagKey: "v"},
+				"lic#ence": {TagKey: "lic"},
 			},
 			want: "creator=Jo!hn_Doe,lic=M!T,v=1.0$",
 		},

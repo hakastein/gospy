@@ -2,6 +2,9 @@ package phpspy
 
 import (
 	"github.com/rs/zerolog/log"
+	"gospy/internal/tag"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -9,7 +12,11 @@ import (
 // parseMeta extracts and maps tags from metadata lines.
 // It retains only the last occurrence of each mapped key, sorts the keys alphabetically,
 // and logs a warning when duplicate keys are detected.
-func parseMeta(lines []string, tagsMapping map[string]string) string {
+func parseMeta(lines []string, tagsMapping map[string]tag.DynamicTag) string {
+	if len(tagsMapping) == 0 || len(lines) == 0 {
+		return ""
+	}
+
 	mappedTags := make(map[string]string)
 
 	for _, line := range lines {
@@ -28,25 +35,28 @@ func parseMeta(lines []string, tagsMapping map[string]string) string {
 			continue
 		}
 
+		value = mappedKey.GetValue(value)
+
 		// Check for duplicate keys and log a warning if a duplicate is found
-		if oldValue, alreadyExists := mappedTags[mappedKey]; alreadyExists {
+		if oldValue, alreadyExists := mappedTags[mappedKey.TagKey]; alreadyExists {
 			log.Warn().
 				Str("originalKey", originalKey).
-				Str("mappedKey", mappedKey).
+				Str("mappedKey", mappedKey.TagKey).
 				Str("oldValue", oldValue).
 				Str("newValue", value).
 				Msg("Duplicate key detected, overwriting previous value")
 		}
 
 		// Overwrite with the latest value
-		mappedTags[mappedKey] = value
+		mappedTags[mappedKey.TagKey] = value
+	}
+
+	if len(mappedTags) == 0 {
+		return ""
 	}
 
 	// Collect and sort the keys alphabetically
-	keys := make([]string, 0, len(mappedTags))
-	for key := range mappedTags {
-		keys = append(keys, key)
-	}
+	keys := slices.Collect(maps.Keys(mappedTags))
 	sort.Strings(keys)
 
 	var tags strings.Builder

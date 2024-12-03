@@ -3,6 +3,7 @@ package phpspy
 import (
 	"bufio"
 	"context"
+	"gospy/internal/tag"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -17,7 +18,7 @@ const (
 
 type Parser struct {
 	entryPoints        []string
-	tagsMapping        map[string]string
+	tagsMapping        map[string]tag.DynamicTag
 	tagEntrypoint      bool
 	keepEntrypointName bool
 	currentTrace       []string
@@ -29,7 +30,7 @@ type Parser struct {
 // NewParser initializes a new Parser.
 func NewParser(
 	entryPoints []string,
-	tagsMapping map[string]string,
+	tagsMapping map[string]tag.DynamicTag,
 	tagEntrypoint bool,
 	keepEntrypointName bool,
 ) *Parser {
