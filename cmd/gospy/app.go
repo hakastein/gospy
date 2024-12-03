@@ -18,23 +18,23 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 )
 
 func setupLogger(verbose int, instanceName string) {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	if verbose == 1 {
+	switch {
+	case verbose == 1:
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	}
-	if verbose > 1 {
+	case verbose == 2:
 		zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	default:
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
+
 	log.Logger = log.Logger.With().Str("instance", instanceName).Logger()
 }
 
 func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
-	// Setup app
 	var (
 		pyroscopeURL                     = c.String("pyroscope")
 		pyroscopeAuth                    = c.String("pyroscope-auth")
@@ -45,9 +45,11 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		app                              = c.String("app")
 		restart                          = c.String("restart")
 		rateLimit                        = int(c.Float64("rate-mb") * Megabyte)
+		rateBurst                        = int(c.Float64("rate-burst-mb") * Megabyte)
 		appTags                          = c.StringSlice("tag")
 		staticTags, dynamicTags, tagsErr = tag.ParseInput(appTags)
 		entryPoints                      = c.StringSlice("entrypoint")
+		statsInterval                    = c.Duration("stats-interval")
 		arguments                        = c.Args().Slice()
 	)
 
@@ -67,6 +69,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		Bool("keep_entrypoint_name", keepEntrypointName).
 		Str("restart", restart).
 		Int("rate_bytes", rateLimit).
+		Int("rate_burst", rateBurst).
 		Str("version", Version).
 		Strs("tags", appTags).
 		Msg("gospy started")
@@ -119,6 +122,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		defer wg.Done()
 
 		// Run profiles and parser, transform traces to stack format and send to stacksChannel
+		// Restart profiler if set
 		supervisor.ManageProfiler(
 			ctx,
 			profilerInstance,
@@ -128,8 +132,9 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		)
 	}()
 
-	rateLimiter := rate.NewLimiter(rate.Limit(rateLimit), rateLimit*2)
+	rateLimiter := rate.NewLimiter(rate.Limit(rateLimit), rateBurst)
 
+	// Trace collector is queue-like struct
 	traceCollector := collector.NewTraceCollector()
 	traceCollector.Subscribe(ctx, stacksChannel)
 
@@ -143,9 +148,10 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		pyroscopeTimeout,
 	)
 
-	pyroscope.StartStatsAggregator(ctx, statsChannel, 10*time.Second)
+	pyroscope.StartStatsAggregator(ctx, statsChannel, statsInterval)
 
-	for i := 0; i < pyroscopeWorkers; i++ {
+	for workerNumber := 1; workerNumber <= pyroscopeWorkers; workerNumber++ {
+		// each worker will consume traces by tag from the traceCollector queue
 		sender := pyroscope.NewWorker(pyroscopeClient, traceCollector, rateLimiter, statsChannel)
 		sender.Start(ctx)
 	}

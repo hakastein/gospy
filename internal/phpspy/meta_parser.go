@@ -57,7 +57,6 @@ func parseMeta(lines []string, tagsMapping map[string][]tag.DynamicTag) string {
 		return ""
 	}
 
-	// Collect and sort the keys alphabetically
 	keys := slices.Collect(maps.Keys(mappedTags))
 	sort.Strings(keys)
 
