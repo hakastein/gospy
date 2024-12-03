@@ -69,7 +69,7 @@ gospy \
   --pyroscope-workers=2 \
   --tag="env=production" \
   --tag="host=yourhost.example.com" \
-  --tag="uri=%glopeek server.REQUEST_URI%" \
+  --tag="uri={{ \"glopeek server.REQUEST_URI\" }} " \
   --tag="source=php-fpm" \
   --tag-entrypoint \
   --app=your-app \
@@ -169,7 +169,7 @@ wait
 
 - `--pyroscope` **(Required)**: Pyroscope server URL.
 - `--pyroscope-auth`: Authentication token for Pyroscope.
-- `--tag`: Static and dynamic tags in `key=value` or `key=%value%` format. **Can be used multiple times**.
+- `--tag`: Static and dynamic tags in `key=value` or `key={{ "value" }}` format. **Can be used multiple times**.
 - `--tag-entrypoint`: Add entry point to tags.
 - `--app`: App name for Pyroscope.
 - `--rate-mb`: Ingestion rate limit in MB. Default is `4`.
@@ -191,11 +191,17 @@ wait
     - **Static Tags**: Defined with fixed values.
         - Example: `--tag="env=production"` adds a static tag `env` with the value `production`.
 
-    - **Dynamic Tags**: Defined with values wrapped in `%`, allowing `phpspy` to append runtime data.
-        - Example: `gospy --tag="uri=%glopeek server.REQUEST_URI%" phpspy --peek-global=server.REQUEST_URI` adds a
-          dynamic tag `uri` that captures the value of `$_SERVER['REQUEST_URI']` from each trace.
-        - In this example, `phpspy` appends the value of `$_SERVER['REQUEST_URI']` to the trace, and `gospy` adds it as
-          the `uri` tag.
+    - **Dynamic Tags**: Defined with values wrapped in `{{ "" }}`, allowing `phpspy` to append runtime data.
+        - Simple usage:
+          `gospy --tag="uri={{ \"glopeek server.REQUEST_URI\" }} " phpspy --peek-global=server.REQUEST_URI`.
+          In this example, `phpspy` appends the value of `$_SERVER['REQUEST_URI']` to the trace, and `gospy` adds it as
+          the `uri` tag
+        - Regex usage:
+          You can use regex in dynamic tag, second quoted string is a regex and third is a replace string
+          `gospy --tag="uri={{ \"glopeek server.REQUEST_URI\" \"^([^?]+)\?.*$\" \"\$1\" }} " phpspy --peek-global=server.REQUEST_URI`.
+          In this example, similar to the previous one, phpspy will add `$_SERVER['REQUEST_URI']` to the metadata.
+          However, before converting it to a tag, we remove the query part with regex
+
 
 - **Multiple Arguments**:
     - Flags like `--tag` and `--entrypoint` can be used multiple times to specify multiple tags or entry points.
