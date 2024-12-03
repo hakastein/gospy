@@ -37,8 +37,8 @@ func (t DynamicTag) GetValue(input string) string {
 
 // ParseInput processes input tags and separates static and dynamic tags.
 // Returns a string of static tags, a map of dynamic tags, and an error if necessary.
-func ParseInput(tagsInput []string) (string, map[string]DynamicTag, error) {
-	dynamicTags := make(map[string]DynamicTag)
+func ParseInput(tagsInput []string) (string, map[string][]DynamicTag, error) {
+	dynamicTags := make(map[string][]DynamicTag)
 	var staticTags []string
 
 	sort.Strings(tagsInput)
@@ -65,19 +65,21 @@ func ParseInput(tagsInput []string) (string, map[string]DynamicTag, error) {
 
 			switch len(parts) {
 			case 1:
-				dynamicTags[parts[0]] = DynamicTag{
+				dt := DynamicTag{
 					TagKey: key,
 				}
+				dynamicTags[parts[0]] = append(dynamicTags[parts[0]], dt)
 			case 3:
 				regex, rerr := regexp.Compile(parts[1])
 				if rerr != nil {
 					return "", nil, fmt.Errorf("invalid regex `%s` in tag `%s`: %v", parts[1], tag, rerr)
 				}
-				dynamicTags[parts[0]] = DynamicTag{
+				dt := DynamicTag{
 					TagKey:     key,
 					TagRegexp:  regex,
 					TagReplace: parts[2],
 				}
+				dynamicTags[parts[0]] = append(dynamicTags[parts[0]], dt)
 			default:
 				return "", nil, fmt.Errorf("unexpected number of parameters in dynamic tag `%s`", tag)
 			}
@@ -102,7 +104,6 @@ func parseQuotedStrings(input string) ([]string, error) {
 
 	for i, r := range input {
 		if escaped {
-			// Add the escaped character and reset the escaped flag
 			current.WriteRune(r)
 			escaped = false
 			continue
@@ -113,7 +114,6 @@ func parseQuotedStrings(input string) ([]string, error) {
 			if inQuotes {
 				escaped = true
 			} else {
-				// Backslashes outside quotes are treated as literal characters
 				current.WriteRune(r)
 			}
 		case '"':
@@ -127,10 +127,8 @@ func parseQuotedStrings(input string) ([]string, error) {
 				current.WriteRune(r)
 			} else {
 				if current.Len() > 0 {
-					// Unexpected non-quoted character
 					return nil, fmt.Errorf("unexpected space at position %d", i)
 				}
-				// Ignore multiple spaces between quotes
 			}
 		default:
 			if inQuotes {

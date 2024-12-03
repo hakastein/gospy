@@ -10,7 +10,7 @@ import (
 func Init(
 	profiler string,
 	entryPoints []string,
-	tagsMapping map[string]tag.DynamicTag,
+	tagsMapping map[string][]tag.DynamicTag,
 	tagEntrypoint bool,
 	keepEntrypointName bool,
 ) (types.Parser, error) {

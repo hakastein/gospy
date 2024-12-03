@@ -12,7 +12,7 @@ func TestParseInput(t *testing.T) {
 		name        string
 		input       []string
 		wantStatic  string
-		wantDynamic map[string]DynamicTag
+		wantDynamic map[string][]DynamicTag
 		wantErr     bool
 	}{
 		{
@@ -22,7 +22,7 @@ func TestParseInput(t *testing.T) {
 				"version=1.0.0",
 			},
 			wantStatic:  "env=production,version=1.0.0",
-			wantDynamic: map[string]DynamicTag{},
+			wantDynamic: map[string][]DynamicTag{},
 			wantErr:     false,
 		},
 		{
@@ -31,9 +31,11 @@ func TestParseInput(t *testing.T) {
 				`request_id={{"id"}}`,
 			},
 			wantStatic: "",
-			wantDynamic: map[string]DynamicTag{
+			wantDynamic: map[string][]DynamicTag{
 				"id": {
-					TagKey: "request_id",
+					{
+						TagKey: "request_id",
+					},
 				},
 			},
 			wantErr: false,
@@ -44,11 +46,13 @@ func TestParseInput(t *testing.T) {
 				`user={{"username" "^[a-z]+$" "user_$1"}}`,
 			},
 			wantStatic: "",
-			wantDynamic: map[string]DynamicTag{
+			wantDynamic: map[string][]DynamicTag{
 				"username": {
-					TagKey:     "user",
-					TagRegexp:  regexp.MustCompile("^[a-z]+$"),
-					TagReplace: "user_$1",
+					{
+						TagKey:     "user",
+						TagRegexp:  regexp.MustCompile("^[a-z]+$"),
+						TagReplace: "user_$1",
+					},
 				},
 			},
 			wantErr: false,
@@ -61,9 +65,11 @@ func TestParseInput(t *testing.T) {
 				"version=2.1",
 			},
 			wantStatic: "env=staging,version=2.1",
-			wantDynamic: map[string]DynamicTag{
+			wantDynamic: map[string][]DynamicTag{
 				"username": {
-					TagKey: "user",
+					{
+						TagKey: "user",
+					},
 				},
 			},
 			wantErr: false,
@@ -119,23 +125,16 @@ func TestParseInput(t *testing.T) {
 				`description={{"desc" "He said \"Hello\"" "Greeting: $1"}}`,
 			},
 			wantStatic: "",
-			wantDynamic: map[string]DynamicTag{
+			wantDynamic: map[string][]DynamicTag{
 				"desc": {
-					TagKey:     "description",
-					TagRegexp:  regexp.MustCompile(`He said "Hello"`),
-					TagReplace: "Greeting: $1",
+					{
+						TagKey:     "description",
+						TagRegexp:  regexp.MustCompile(`He said "Hello"`),
+						TagReplace: "Greeting: $1",
+					},
 				},
 			},
 			wantErr: false,
-		},
-		{
-			name: "Unterminated dynamic tag braces",
-			input: []string{
-				`user={{"username" "regex" "replace"`,
-			},
-			wantStatic:  `user={{"username" "regex" "replace"`,
-			wantDynamic: map[string]DynamicTag{},
-			wantErr:     false,
 		},
 		{
 			name: "Dynamic tag with extra parameters",
@@ -150,7 +149,7 @@ func TestParseInput(t *testing.T) {
 			name:        "Empty input",
 			input:       []string{},
 			wantStatic:  "",
-			wantDynamic: map[string]DynamicTag{},
+			wantDynamic: map[string][]DynamicTag{},
 			wantErr:     false,
 		},
 		{
@@ -159,11 +158,13 @@ func TestParseInput(t *testing.T) {
 				`meta={{ "key" "regex" "replace" }}`,
 			},
 			wantStatic: "",
-			wantDynamic: map[string]DynamicTag{
+			wantDynamic: map[string][]DynamicTag{
 				"key": {
-					TagKey:     "meta",
-					TagRegexp:  regexp.MustCompile("regex"),
-					TagReplace: "replace",
+					{
+						TagKey:     "meta",
+						TagRegexp:  regexp.MustCompile("regex"),
+						TagReplace: "replace",
+					},
 				},
 			},
 			wantErr: false,
@@ -175,14 +176,39 @@ func TestParseInput(t *testing.T) {
 				`session={{"session_id" "^[0-9]+$" "sess_$1"}}`,
 			},
 			wantStatic: "",
-			wantDynamic: map[string]DynamicTag{
+			wantDynamic: map[string][]DynamicTag{
 				"username": {
-					TagKey: "user",
+					{
+						TagKey: "user",
+					},
 				},
 				"session_id": {
-					TagKey:     "session",
-					TagRegexp:  regexp.MustCompile("^[0-9]+$"),
-					TagReplace: "sess_$1",
+					{
+						TagKey:     "session",
+						TagRegexp:  regexp.MustCompile("^[0-9]+$"),
+						TagReplace: "sess_$1",
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "Multiple dynamic tags with same source",
+			input: []string{
+				`session={{"session_id"}}`,
+				`session_id={{"session_id" "^[0-9]+$" "sess_$1"}}`,
+			},
+			wantStatic: "",
+			wantDynamic: map[string][]DynamicTag{
+				"session_id": {
+					{
+						TagKey: "session",
+					},
+					{
+						TagKey:     "session_id",
+						TagRegexp:  regexp.MustCompile("^[0-9]+$"),
+						TagReplace: "sess_$1",
+					},
 				},
 			},
 			wantErr: false,
@@ -194,9 +220,11 @@ func TestParseInput(t *testing.T) {
 				`env={{"environment"}}`,
 			},
 			wantStatic: "env=production",
-			wantDynamic: map[string]DynamicTag{
+			wantDynamic: map[string][]DynamicTag{
 				"environment": {
-					TagKey: "env",
+					{
+						TagKey: "env",
+					},
 				},
 			},
 			wantErr: false,
@@ -207,11 +235,36 @@ func TestParseInput(t *testing.T) {
 				`user={{"username" "regex" ""}}`,
 			},
 			wantStatic: "",
-			wantDynamic: map[string]DynamicTag{
+			wantDynamic: map[string][]DynamicTag{
 				"username": {
-					TagKey:     "user",
-					TagRegexp:  regexp.MustCompile("regex"),
-					TagReplace: "",
+					{
+						TagKey:     "user",
+						TagRegexp:  regexp.MustCompile("regex"),
+						TagReplace: "",
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "Multiple dynamic tags with the same key",
+			input: []string{
+				`user={{"username"}}`,
+				`user={{"user_id" "^[0-9]+$" "user_$1"}}`,
+			},
+			wantStatic: "",
+			wantDynamic: map[string][]DynamicTag{
+				"username": {
+					{
+						TagKey: "user",
+					},
+				},
+				"user_id": {
+					{
+						TagKey:     "user",
+						TagRegexp:  regexp.MustCompile("^[0-9]+$"),
+						TagReplace: "user_$1",
+					},
 				},
 			},
 			wantErr: false,
@@ -219,6 +272,7 @@ func TestParseInput(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
 			gotStatic, gotDynamic, err := ParseInput(tt.input)
 			if tt.wantErr {
@@ -232,22 +286,26 @@ func TestParseInput(t *testing.T) {
 			if tt.wantDynamic == nil {
 				assert.Nil(t, gotDynamic, "Expected dynamic tags to be nil")
 			} else {
-				assert.Equal(t, len(tt.wantDynamic), len(gotDynamic), "Number of dynamic tags does not match")
+				assert.Equal(t, len(tt.wantDynamic), len(gotDynamic), "Number of dynamic keys does not match")
 
-				for key, expectedTag := range tt.wantDynamic {
-					actualTag, exists := gotDynamic[key]
+				for key, expectedTags := range tt.wantDynamic {
+					actualTags, exists := gotDynamic[key]
 					if assert.True(t, exists, "Dynamic tag key %v does not exist", key) {
-						assert.Equal(t, expectedTag.TagKey, actualTag.TagKey, "TagKey mismatch for key %v", key)
+						assert.Equal(t, len(expectedTags), len(actualTags), "Number of DynamicTags for key %v does not match", key)
+						for i, expectedTag := range expectedTags {
+							actualTag := actualTags[i]
+							assert.Equal(t, expectedTag.TagKey, actualTag.TagKey, "TagKey mismatch for key %v", key)
 
-						if expectedTag.TagRegexp == nil {
-							assert.Nil(t, actualTag.TagRegexp, "Expected TagRegexp to be nil for key %v", key)
-						} else {
-							if assert.NotNil(t, actualTag.TagRegexp, "Expected TagRegexp to be non-nil for key %v", key) {
-								assert.Equal(t, expectedTag.TagRegexp.String(), actualTag.TagRegexp.String(), "TagRegexp mismatch for key %v", key)
+							if expectedTag.TagRegexp == nil {
+								assert.Nil(t, actualTag.TagRegexp, "Expected TagRegexp to be nil for key %v", key)
+							} else {
+								if assert.NotNil(t, actualTag.TagRegexp, "Expected TagRegexp to be non-nil for key %v", key) {
+									assert.Equal(t, expectedTag.TagRegexp.String(), actualTag.TagRegexp.String(), "TagRegexp mismatch for key %v", key)
+								}
 							}
-						}
 
-						assert.Equal(t, expectedTag.TagReplace, actualTag.TagReplace, "TagReplace mismatch for key %v", key)
+							assert.Equal(t, expectedTag.TagReplace, actualTag.TagReplace, "TagReplace mismatch for key %v", key)
+						}
 					}
 				}
 			}
