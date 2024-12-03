@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
@@ -11,10 +10,11 @@ import (
 )
 
 const (
-	DefaultRateMB    = 4       // Default ingestion rate limit in MB for Pyroscope
-	Megabyte         = 1048576 // Number of bytes in a megabyte
-	PyroscopeWorkers = 5       // Amount of pyroscope senders
-	PyroscopeTimeout = 10 * time.Second
+	DefaultRateMB        = 4       // Default ingestion rate limit in MB for Pyroscope
+	Megabyte             = 1048576 // Number of bytes in a megabyte
+	PyroscopeWorkers     = 5       // Amount of pyroscope senders
+	PyroscopeTimeout     = 10 * time.Second
+	DefaultStatsInterval = 10 * time.Second
 )
 
 const (
@@ -75,12 +75,6 @@ func main() {
 				Usage:   "Verbosity level; use twice to increase verbosity",
 				Aliases: []string{"v"},
 				Count:   &verbosity,
-				Action: func(c *cli.Context, b bool) error {
-					if verbosity > 2 {
-						return errors.New("verbosity level too high")
-					}
-					return nil
-				},
 			},
 			&cli.StringFlag{
 				Name:  "app",
@@ -133,6 +127,11 @@ func main() {
 				Name:  "instance-name",
 				Usage: "Change the name of this gospy instance (for logging purposes only)",
 				Value: "gospy",
+			},
+			&cli.DurationFlag{
+				Name:  "stats-interval",
+				Usage: "Interval at which the application will log its sending statistics",
+				Value: DefaultStatsInterval,
 			},
 		},
 		Action: func(c *cli.Context) error {
