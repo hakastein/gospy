@@ -12,7 +12,7 @@ import (
 // parseMeta extracts and maps tags from metadata lines.
 // It retains only the last occurrence of each mapped key, sorts the keys alphabetically,
 // and logs a warning when duplicate keys are detected.
-func parseMeta(lines []string, tagsMapping map[string]tag.DynamicTag) string {
+func parseMeta(lines []string, tagsMapping map[string][]tag.DynamicTag) string {
 	if len(tagsMapping) == 0 || len(lines) == 0 {
 		return ""
 	}
@@ -30,25 +30,27 @@ func parseMeta(lines []string, tagsMapping map[string]tag.DynamicTag) string {
 		}
 
 		originalKey, value := parts[0], strings.TrimSpace(parts[1])
-		mappedKey, exists := tagsMapping[originalKey]
+		dynamicTags, exists := tagsMapping[originalKey]
 		if !exists {
 			continue
 		}
 
-		value = mappedKey.GetValue(value)
+		for _, dynamicTag := range dynamicTags {
+			value = dynamicTag.GetValue(value)
 
-		// Check for duplicate keys and log a warning if a duplicate is found
-		if oldValue, alreadyExists := mappedTags[mappedKey.TagKey]; alreadyExists {
-			log.Warn().
-				Str("originalKey", originalKey).
-				Str("mappedKey", mappedKey.TagKey).
-				Str("oldValue", oldValue).
-				Str("newValue", value).
-				Msg("Duplicate key detected, overwriting previous value")
+			// Check for duplicate keys and log a warning if a duplicate is found
+			if oldValue, alreadyExists := mappedTags[dynamicTag.TagKey]; alreadyExists {
+				log.Warn().
+					Str("originalKey", originalKey).
+					Str("mappedKey", dynamicTag.TagKey).
+					Str("oldValue", oldValue).
+					Str("newValue", value).
+					Msg("Duplicate key detected, overwriting previous value")
+			}
+
+			// Overwrite with the latest value
+			mappedTags[dynamicTag.TagKey] = value
 		}
-
-		// Overwrite with the latest value
-		mappedTags[mappedKey.TagKey] = value
 	}
 
 	if len(mappedTags) == 0 {
