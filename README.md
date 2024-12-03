@@ -76,7 +76,6 @@ gospy \
     phpspy --max-depth=-1 \
       --threads=100 \
       -H 25 \
-      --php-version=74 \
       --buffer-size=65536 \
       -J m \
       --continue-on-error \
@@ -96,7 +95,7 @@ downloaded binaries are specified as build arguments.
 
 ```dockerfile
 # Use the official PHP image as the base
-FROM php:7.4-fpm
+FROM php:8.2-fpm
 
 # Build arguments for versions
 ARG GOSPY_VERSION=0.7.9
