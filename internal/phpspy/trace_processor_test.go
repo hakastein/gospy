@@ -20,7 +20,6 @@ type tracesToFoldedStacksTest struct {
 // runTracesToFoldedStacksTests executes a slice of tracesToFoldedStacksTest cases.
 func runTracesToFoldedStacksTests(t *testing.T, tests []tracesToFoldedStacksTest) {
 	for _, tt := range tests {
-		tt := tt // Capture range variable
 		t.Run(tt.name, func(t *testing.T) {
 			gotFoldedStack, gotEntryPoint, gotErr := tracesToFoldedStacks(tt.trace, tt.keepEntrypointName)
 			if tt.wantErr != nil {
