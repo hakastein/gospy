@@ -1,7 +1,8 @@
-package phpspy
+package transform_test
 
 import (
 	"errors"
+	"gospy/internal/transform"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,7 +22,7 @@ type tracesToFoldedStacksTest struct {
 func runTracesToFoldedStacksTests(t *testing.T, tests []tracesToFoldedStacksTest) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotFoldedStack, gotEntryPoint, gotErr := tracesToFoldedStacks(tt.trace, tt.keepEntrypointName)
+			gotFoldedStack, gotEntryPoint, gotErr := transform.TracesToFoldedStacks(tt.trace, tt.keepEntrypointName)
 			if tt.wantErr != nil {
 				assert.Error(t, gotErr, "Expected an error but got none")
 				assert.EqualError(t, gotErr, tt.wantErr.Error(), "Error message should match")

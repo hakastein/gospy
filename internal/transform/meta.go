@@ -1,4 +1,4 @@
-package phpspy
+package transform
 
 import (
 	"github.com/rs/zerolog/log"
@@ -9,10 +9,10 @@ import (
 	"strings"
 )
 
-// parseMeta extracts and maps tags from metadata lines.
+// MetaToTags extracts and maps tags from metadata lines.
 // It retains only the last occurrence of each mapped key, sorts the keys alphabetically,
 // and logs a warning when duplicate keys are detected.
-func parseMeta(lines []string, tagsMapping map[string][]tag.DynamicTag) string {
+func MetaToTags(lines []string, tagsMapping map[string][]tag.DynamicTag) string {
 	if len(tagsMapping) == 0 || len(lines) == 0 {
 		return ""
 	}
