@@ -2,6 +2,7 @@ package phpspy
 
 import (
 	"gospy/internal/tag"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,7 +19,6 @@ type parseMetaTest struct {
 // runParseMetaTests executes a slice of parseMetaTest cases.
 func runParseMetaTests(t *testing.T, tests []parseMetaTest, assertMessage string) {
 	for _, tt := range tests {
-		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
 			got := parseMeta(tt.lines, tt.tagsMapping)
 			assert.Equal(t, tt.want, got, assertMessage)
@@ -38,26 +38,6 @@ func TestParseMeta(t *testing.T) {
 				},
 			},
 			want: "creator=John Doe",
-		},
-		{
-			name: "Multiple valid lines",
-			lines: []string{
-				"# author = John Doe",
-				"# version = 1.0",
-				"# license = MIT",
-			},
-			tagsMapping: map[string][]tag.DynamicTag{
-				"author": {
-					{TagKey: "creator"},
-				},
-				"version": {
-					{TagKey: "v"},
-				},
-				"license": {
-					{TagKey: "lic"},
-				},
-			},
-			want: "creator=John Doe,lic=MIT,v=1.0",
 		},
 		{
 			name: "Mapped keys in alphabetical order",
@@ -176,6 +156,25 @@ func TestParseMeta(t *testing.T) {
 				},
 			},
 			want: "creator=Charlie,v=1.2",
+		},
+		{
+			name: "Same source but different values",
+			lines: []string{
+				"# greetings = Hello World",
+			},
+			tagsMapping: map[string][]tag.DynamicTag{
+				"greetings": {
+					{
+						TagKey:     "hi",
+						TagRegexp:  regexp.MustCompile("World"),
+						TagReplace: "Sekai",
+					},
+					{
+						TagKey: "hello",
+					},
+				},
+			},
+			want: "hello=Hello World,hi=Hello Sekai",
 		},
 		{
 			name: "Mapped keys to the same target key - last occurrence retained",

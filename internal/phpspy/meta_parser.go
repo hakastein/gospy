@@ -29,14 +29,14 @@ func parseMeta(lines []string, tagsMapping map[string][]tag.DynamicTag) string {
 			continue
 		}
 
-		originalKey, value := parts[0], strings.TrimSpace(parts[1])
+		originalKey, originalValue := parts[0], strings.TrimSpace(parts[1])
 		dynamicTags, exists := tagsMapping[originalKey]
 		if !exists {
 			continue
 		}
 
 		for _, dynamicTag := range dynamicTags {
-			value = dynamicTag.GetValue(value)
+			mappedValue := dynamicTag.GetValue(originalValue)
 
 			// Check for duplicate keys and log a warning if a duplicate is found
 			if oldValue, alreadyExists := mappedTags[dynamicTag.TagKey]; alreadyExists {
@@ -44,12 +44,12 @@ func parseMeta(lines []string, tagsMapping map[string][]tag.DynamicTag) string {
 					Str("originalKey", originalKey).
 					Str("mappedKey", dynamicTag.TagKey).
 					Str("oldValue", oldValue).
-					Str("newValue", value).
+					Str("newValue", mappedValue).
 					Msg("Duplicate key detected, overwriting previous value")
 			}
 
 			// Overwrite with the latest value
-			mappedTags[dynamicTag.TagKey] = value
+			mappedTags[dynamicTag.TagKey] = mappedValue
 		}
 	}
 

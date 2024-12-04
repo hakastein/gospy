@@ -272,7 +272,6 @@ func TestParseInput(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
 			gotStatic, gotDynamic, err := ParseInput(tt.input)
 			if tt.wantErr {
