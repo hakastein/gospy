@@ -9,7 +9,6 @@ to [Pyroscope](https://pyroscope.io/). Currently, it supports only [phpspy](http
 
 ## Table of Contents
 
-- [Features](#features)
 - [Installation](#installation)
     - [Building from Source](#building-from-source)
     - [Using Pre-built Binaries](#using-pre-built-binaries)
@@ -20,12 +19,6 @@ to [Pyroscope](https://pyroscope.io/). Currently, it supports only [phpspy](http
         - [Docker Compose Example](#docker-compose-example)
 - [Configuration](#configuration)
 - [Supported Profilers](#supported-profilers)
-
-## Features
-
-- **Seamless Integration**: Wraps around profilers like `phpspy` to collect profiling data.
-- **Flexible Configuration**: Supports various flags to customize profiling behavior and tagging.
-- **Container-Friendly**: Can be easily used within Docker containers with minimal setup.
 
 ## Installation
 
@@ -223,7 +216,7 @@ wait
 
 Currently, `gospy` supports the following profiler:
 
-- **phpspy**: A sampling profiler for PHP applications. Future versions may include support for additional profilers.
+- [phpspy](https://github.com/adsr/phpspy): low-overhead sampling profiler for PHP 7+
 
 ---
 
