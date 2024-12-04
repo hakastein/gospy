@@ -67,18 +67,35 @@ func main() {
 			},
 			&cli.DurationFlag{
 				Name:  "pyroscope-timeout",
-				Usage: "timeout to pyroscope request",
+				Usage: "Timeout to pyroscope request",
 				Value: PyroscopeTimeout,
 			},
-			&cli.BoolFlag{
-				Name:    "verbose",
-				Usage:   "Verbosity level; use twice to increase verbosity",
-				Aliases: []string{"v"},
-				Count:   &verbosity,
+			&cli.IntFlag{
+				Name:  "pyroscope-workers",
+				Usage: "Amount of workers who sends data to pyroscope",
+				Value: PyroscopeWorkers,
 			},
 			&cli.StringFlag{
 				Name:  "app",
 				Usage: "App name for Pyroscope",
+			},
+			&cli.StringSliceFlag{
+				Name:  "tag",
+				Usage: "Static and dynamic tags (key=value or key=%value%)",
+			},
+			&cli.BoolFlag{
+				Name:  "tag-entrypoint",
+				Usage: "Add entry point to tags",
+			},
+			&cli.Float64Flag{
+				Name:  "rate-mb",
+				Usage: "Ingestion rate limit in MB",
+				Value: DefaultRateMB,
+			},
+			&cli.Float64Flag{
+				Name:  "rate-burst-mb",
+				Usage: "Ingestion rate limit burst in MB",
+				Value: DefaultRateMB + DefaultRateMB/2,
 			},
 			&cli.StringFlag{
 				Name:  "restart",
@@ -92,31 +109,8 @@ func main() {
 				},
 			},
 			&cli.StringSliceFlag{
-				Name:  "tag",
-				Usage: "Static and dynamic tags (key=value or key=%value%)",
-			},
-			&cli.Float64Flag{
-				Name:  "rate-mb",
-				Usage: "Ingestion rate limit in MB",
-				Value: DefaultRateMB,
-			},
-			&cli.Float64Flag{
-				Name:  "rate-burst-mb",
-				Usage: "Ingestion rate limit burst in MB",
-				Value: DefaultRateMB + DefaultRateMB/2,
-			},
-			&cli.IntFlag{
-				Name:  "pyroscope-workers",
-				Usage: "Amount of workers who sends data to pyroscope",
-				Value: PyroscopeWorkers,
-			},
-			&cli.StringSliceFlag{
 				Name:  "entrypoint",
 				Usage: "Limit traces to certain entry points (e.g., index.php)",
-			},
-			&cli.BoolFlag{
-				Name:  "tag-entrypoint",
-				Usage: "Add entry point to tags",
 			},
 			&cli.BoolFlag{
 				Name:  "keep-entrypoint-name",
@@ -132,6 +126,12 @@ func main() {
 				Name:  "stats-interval",
 				Usage: "Interval at which the application will log its sending statistics",
 				Value: DefaultStatsInterval,
+			},
+			&cli.BoolFlag{
+				Name:    "verbose",
+				Usage:   "Verbosity level; use twice to increase verbosity",
+				Aliases: []string{"v"},
+				Count:   &verbosity,
 			},
 		},
 		Action: func(c *cli.Context) error {
