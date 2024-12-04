@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"gospy/internal/tag"
+	"gospy/internal/transform"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	"gospy/internal/types"
@@ -87,4 +89,57 @@ func (parser *Parser) addToTrace(line string) {
 
 func (parser *Parser) addToMeta(line string) {
 	parser.currentMeta = append(parser.currentMeta, line)
+}
+
+// processTrace converts the current trace to a folded stack and sends it to the foldedStacks channel.
+func (parser *Parser) processTrace(
+	foldedStacks chan<- *types.Sample,
+) {
+	defer parser.resetState()
+
+	if len(parser.currentTrace) == 0 {
+		return
+	}
+
+	sample, entryPoint, convertError := transform.TracesToFoldedStacks(parser.currentTrace, parser.keepEntrypointName)
+	if convertError != nil {
+		log.Debug().
+			Err(convertError).
+			Str("sample", strings.Join(parser.currentTrace, "\n")).
+			Msg("Failed to convert trace")
+		return
+	}
+
+	if !parser.epValidator.IsValid(entryPoint) {
+		log.Debug().
+			Str("entrypoint", entryPoint).
+			Msg("Disallowed entrypoint in trace")
+		return
+	}
+
+	parser.buildTags(entryPoint)
+	foldedStacks <- &types.Sample{Trace: sample, Tags: parser.tags.String(), Time: time.Now()}
+	log.Trace().
+		Str("sample", sample).
+		Msg("Trace processed")
+}
+
+// buildTags constructs the tags string based on metadata and entry point.
+func (parser *Parser) buildTags(entryPoint string) {
+	parsedTags := transform.MetaToTags(parser.currentMeta, parser.tagsMapping)
+	parser.tags.WriteString(parsedTags)
+	if parser.tagEntrypoint {
+		if parsedTags != "" {
+			parser.tags.WriteRune(',')
+		}
+		parser.tags.WriteString("entrypoint=")
+		parser.tags.WriteString(entryPoint)
+	}
+}
+
+// resetState clears the current trace, metadata, and tags for the next parsing session.
+func (parser *Parser) resetState() {
+	parser.currentTrace = parser.currentTrace[:0]
+	parser.currentMeta = parser.currentMeta[:0]
+	parser.tags.Reset()
 }

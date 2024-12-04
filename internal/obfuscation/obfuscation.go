@@ -1,4 +1,4 @@
-package main
+package obfuscation
 
 import (
 	"strings"
@@ -9,7 +9,7 @@ import (
 // It preserves the first 'startKeep' and last 'endKeep' runes.
 // If the string length is less than or equal to startKeep + endKeep,
 // it returns a string of '*' with the same length.
-func maskString(s string, options ...int) string {
+func MaskString(s string, options ...int) string {
 	const defaultStartKeep = 1
 	const defaultEndKeep = 1
 

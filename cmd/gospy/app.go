@@ -8,6 +8,7 @@ import (
 	"github.com/urfave/cli/v2"
 	"golang.org/x/time/rate"
 	"gospy/internal/collector"
+	"gospy/internal/obfuscation"
 	"gospy/internal/parser"
 	"gospy/internal/profiler"
 	"gospy/internal/pyroscope"
@@ -63,7 +64,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 
 	log.Info().
 		Str("pyroscope_url", pyroscopeURL).
-		Str("pyroscope_auth", maskString(pyroscopeAuth, 4, 2)).
+		Str("pyroscope_auth", obfuscation.MaskString(pyroscopeAuth, 4, 2)).
 		Str("app_name", app).
 		Bool("tag_entrypoint", tagEntrypoint).
 		Bool("keep_entrypoint_name", keepEntrypointName).

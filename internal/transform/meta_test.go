@@ -1,11 +1,11 @@
-package phpspy
+package transform_test
 
 import (
+	"github.com/stretchr/testify/assert"
 	"gospy/internal/tag"
+	"gospy/internal/transform"
 	"regexp"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 // parseMetaTest defines the structure for each test case.
@@ -20,13 +20,13 @@ type parseMetaTest struct {
 func runParseMetaTests(t *testing.T, tests []parseMetaTest, assertMessage string) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseMeta(tt.lines, tt.tagsMapping)
+			got := transform.MetaToTags(tt.lines, tt.tagsMapping)
 			assert.Equal(t, tt.want, got, assertMessage)
 		})
 	}
 }
 
-// TestParseMeta tests the parseMeta function across various scenarios.
+// TestParseMeta tests the MetaToTags function across various scenarios.
 func TestParseMeta(t *testing.T) {
 	validInputs := []parseMetaTest{
 		{
@@ -279,18 +279,18 @@ func TestParseMeta(t *testing.T) {
 	}
 
 	t.Run("Valid Inputs", func(t *testing.T) {
-		runParseMetaTests(t, validInputs, "parseMeta() should return the expected result")
+		runParseMetaTests(t, validInputs, "MetaToTags() should return the expected result")
 	})
 
 	t.Run("Invalid Formats", func(t *testing.T) {
-		runParseMetaTests(t, invalidFormats, "parseMeta() should return empty string for invalid inputs")
+		runParseMetaTests(t, invalidFormats, "MetaToTags() should return empty string for invalid inputs")
 	})
 
 	t.Run("Duplicate Keys", func(t *testing.T) {
-		runParseMetaTests(t, duplicateKeys, "parseMeta() should retain the last occurrence of duplicate keys")
+		runParseMetaTests(t, duplicateKeys, "MetaToTags() should retain the last occurrence of duplicate keys")
 	})
 
 	t.Run("Edge Cases", func(t *testing.T) {
-		runParseMetaTests(t, edgeCases, "parseMeta() should handle edge cases correctly")
+		runParseMetaTests(t, edgeCases, "MetaToTags() should handle edge cases correctly")
 	})
 }

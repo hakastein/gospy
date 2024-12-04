@@ -1,8 +1,9 @@
-package phpspy
+package phpspy_test
 
 import (
 	"bufio"
 	"context"
+	"gospy/internal/phpspy"
 	"gospy/internal/tag"
 	"gospy/internal/types"
 	"os"
@@ -25,7 +26,7 @@ func TestParser_Parse(t *testing.T) {
 	tracesScanner := bufio.NewScanner(traces)
 	samplesChannel := make(chan *types.Sample, 100)
 
-	parser := NewParser(
+	parser := phpspy.NewParser(
 		[]string{"server.php"},
 		map[string][]tag.DynamicTag{
 			"glopeek server.REQUEST_URI": {
