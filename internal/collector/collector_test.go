@@ -1,7 +1,7 @@
-// collector_test.go
-package collector
+package collector_test
 
 import (
+	"gospy/internal/collector"
 	"strconv"
 	"sync"
 	"testing"
@@ -13,20 +13,20 @@ import (
 )
 
 // setupTraceCollector initializes a new TraceCollector instance for testing.
-func setupTraceCollector() *TraceCollector {
-	return NewTraceCollector()
+func setupTraceCollector() *collector.TraceCollector {
+	return collector.NewTraceCollector()
 }
 
 // addSamples adds a slice of samples to the TraceCollector.
-func addSamples(tc *TraceCollector, samples []types.Sample) {
+func addSamples(tc *collector.TraceCollector, samples []types.Sample) {
 	for _, sample := range samples {
 		tc.AddSample(&sample)
 	}
 }
 
 // collectAllConsumedData retrieves all available TagCollection from the TraceCollector.
-func collectAllConsumedData(tc *TraceCollector) []*TagCollection {
-	var consumedData []*TagCollection
+func collectAllConsumedData(tc *collector.TraceCollector) []*collector.TagCollection {
+	var consumedData []*collector.TagCollection
 	for {
 		data := tc.ConsumeTag()
 		if data == nil {
@@ -38,8 +38,8 @@ func collectAllConsumedData(tc *TraceCollector) []*TagCollection {
 }
 
 // mapConsumedDataByTag creates a map from tag to TagCollection for easy lookup.
-func mapConsumedDataByTag(consumedData []*TagCollection) map[string]*TagCollection {
-	dataMap := make(map[string]*TagCollection)
+func mapConsumedDataByTag(consumedData []*collector.TagCollection) map[string]*collector.TagCollection {
+	dataMap := make(map[string]*collector.TagCollection)
 	for _, data := range consumedData {
 		dataMap[data.Tags] = data
 	}
@@ -346,7 +346,7 @@ func TestTraceCollector(t *testing.T) {
 
 // BenchmarkTraceCollector_AddSample benchmarks the AddSample method of TraceCollector.
 func BenchmarkTraceCollector_AddSample(b *testing.B) {
-	tc := NewTraceCollector()
+	tc := collector.NewTraceCollector()
 	startTime := time.Now()
 
 	b.ResetTimer()
@@ -362,7 +362,7 @@ func BenchmarkTraceCollector_AddSample(b *testing.B) {
 
 // BenchmarkTraceCollector_ConsumeTag benchmarks the ConsumeTag method of TraceCollector.
 func BenchmarkTraceCollector_ConsumeTag(b *testing.B) {
-	tc := NewTraceCollector()
+	tc := collector.NewTraceCollector()
 	startTime := time.Now()
 
 	// Pre-populate the TraceCollector with samples.
