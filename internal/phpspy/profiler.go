@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/rs/zerolog/log"
+	"gospy/internal/args"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -30,38 +30,38 @@ func NewProfiler(
 	}
 }
 
-func (prflr *Profiler) Start(ctx context.Context) (*bufio.Scanner, error) {
-	prflr.mu.Lock()
-	defer prflr.mu.Unlock()
+func (profiler *Profiler) Start(ctx context.Context) (*bufio.Scanner, error) {
+	profiler.mu.Lock()
+	defer profiler.mu.Unlock()
 
-	cmd := exec.CommandContext(ctx, prflr.executable, prflr.args...)
+	cmd := exec.CommandContext(ctx, profiler.executable, profiler.args...)
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe error: %w", err)
+	stdout, pipeError := cmd.StdoutPipe()
+	if pipeError != nil {
+		return nil, fmt.Errorf("stdout pipe error: %w", pipeError)
 	}
 
-	if err := cmd.Start(); err != nil {
-		return nil, err
+	if startError := cmd.Start(); startError != nil {
+		return nil, startError
 	}
 
-	prflr.cmd = cmd
+	profiler.cmd = cmd
 	scanner := bufio.NewScanner(stdout)
 	return scanner, nil
 }
 
-func (prflr *Profiler) Wait() error {
-	prflr.mu.Lock()
-	defer prflr.mu.Unlock()
+func (profiler *Profiler) Wait() error {
+	profiler.mu.Lock()
+	defer profiler.mu.Unlock()
 
-	if prflr.cmd == nil {
+	if profiler.cmd == nil {
 		return errors.New("no command to wait for")
 	}
 
-	return prflr.cmd.Wait()
+	return profiler.cmd.Wait()
 }
 
-func (prflr *Profiler) IsConfigurationValid() (bool, error) {
+func (profiler *Profiler) IsConfigurationValid() (bool, error) {
 	unsupportedFlags := []struct {
 		longKey  string
 		shortKey string
@@ -72,20 +72,20 @@ func (prflr *Profiler) IsConfigurationValid() (bool, error) {
 		{"single-line", "1"},
 	}
 	for _, keys := range unsupportedFlags {
-		if extractFlagValue[bool](prflr.args, keys.longKey, keys.shortKey, false) {
+		if args.ExtractFlagValue[bool](profiler.args, keys.longKey, keys.shortKey, false) {
 			return false, fmt.Errorf("flag -%s/--%s is unsupported by gospy", keys.shortKey, keys.longKey)
 		}
 	}
 
-	output := extractFlagValue[string](prflr.args, "output", "o", "stdout")
+	output := args.ExtractFlagValue[string](profiler.args, "output", "o", "stdout")
 	if output != "stdout" && output != "-" {
 		return false, errors.New("output must be set to stdout")
 	}
 
-	pgrepMode := extractFlagValue[string](prflr.args, "pgrep", "P", "")
+	pgrepMode := args.ExtractFlagValue[string](profiler.args, "pgrep", "P", "")
 	if pgrepMode != "" {
-		bufferSize := extractFlagValue[int](prflr.args, "buffer-size", "b", 4096)
-		eventHandlerOpts := extractFlagValue[string](prflr.args, "event-handler-opts", "J", "")
+		bufferSize := args.ExtractFlagValue[int](profiler.args, "buffer-size", "b", 4096)
+		eventHandlerOpts := args.ExtractFlagValue[string](profiler.args, "event-handler-opts", "J", "")
 		if bufferSize > 4096 && !strings.Contains(eventHandlerOpts, "m") {
 			log.Warn().Msg("using large buffer size without mutex; consider adding -J m with -b > 4096")
 		}
@@ -93,43 +93,6 @@ func (prflr *Profiler) IsConfigurationValid() (bool, error) {
 	return true, nil
 }
 
-func (prflr *Profiler) GetHZ() int {
-	return extractFlagValue[int](prflr.args, "rate-hz", "H", 99)
-}
-
-func extractFlagValue[T any](flags []string, longKey, shortKey string, defaultValue T) T {
-	shortKey, longKey = "-"+shortKey, "--"+longKey
-	flagLen := len(flags)
-
-	for i := 0; i < flagLen; i++ {
-		flag := flags[i]
-		switch {
-		case strings.HasPrefix(flag, longKey+"="):
-			return convertTo[T](strings.TrimPrefix(flag, longKey+"="))
-		case flag == shortKey && i+1 < flagLen:
-			return convertTo[T](flags[i+1])
-		case flag == longKey || flag == shortKey:
-			if _, ok := any(defaultValue).(bool); ok {
-				return convertTo[T]("true")
-			}
-		}
-	}
-	return defaultValue
-}
-
-func convertTo[T any](value string) T {
-	var result T
-	switch any(result).(type) {
-	case string:
-		return any(value).(T)
-	case int:
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return any(intValue).(T)
-		}
-	case bool:
-		if boolValue, err := strconv.ParseBool(value); err == nil {
-			return any(boolValue).(T)
-		}
-	}
-	return result
+func (profiler *Profiler) GetHZ() int {
+	return args.ExtractFlagValue[int](profiler.args, "rate-hz", "H", 99)
 }
