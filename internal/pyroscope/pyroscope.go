@@ -8,7 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
 
-	"gospy/internal/collector"
+	"github.com/hakastein/gospy/internal/collector"
 )
 
 // RequestStats represents the statistics of a single request.

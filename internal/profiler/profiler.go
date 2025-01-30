@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"gospy/internal/phpspy"
+	"github.com/hakastein/gospy/internal/phpspy"
 	"path/filepath"
 )
 

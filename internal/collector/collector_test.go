@@ -1,15 +1,15 @@
 package collector_test
 
 import (
-	"gospy/internal/collector"
+	"github.com/hakastein/gospy/internal/collector"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hakastein/gospy/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gospy/internal/types"
 )
 
 // setupTraceCollector initializes a new TraceCollector instance for testing.

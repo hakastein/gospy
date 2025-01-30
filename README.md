@@ -18,7 +18,7 @@ With dynamic tags, you can profile the entire app or specific slices, like certa
 
 - [Installation](#installation)
     - [Building from Source](#building-from-source)
-    - [Using Pre-built Binaries](#using-pre-built-binaries)
+    - [Using Pre-built Binaries](#using-pre-built-binary)
 - [Usage](#usage)
     - [Basic Usage](#basic-usage)
     - [Running in a Container](#running-in-a-container)
@@ -46,10 +46,9 @@ You need 1.23.3 or higher
    go build -ldflags "-X main.Version=$(git describe --tags)" -o gospy
    ```
 
-### Using Pre-built Binaries
+### Using Pre-built Binary
 
-Pre-built binaries for various platforms can be found in the [Releases](https://github.com/hakastein/gospy/releases)
-section.
+Pre-built binary can be found in the [Releases](https://github.com/hakastein/gospy/releases) section.
 
 ## Usage
 
