@@ -2,9 +2,9 @@ package supervisor
 
 import (
 	"context"
+	"github.com/hakastein/gospy/internal/profiler"
+	"github.com/hakastein/gospy/internal/types"
 	"github.com/rs/zerolog/log"
-	"gospy/internal/profiler"
-	"gospy/internal/types"
 )
 
 // ManageProfiler run profiler and parser, collect parses, transform parses into folded stacks format, send to foldedStacksChannel

@@ -3,9 +3,9 @@ package phpspy_test
 import (
 	"bufio"
 	"context"
-	"gospy/internal/phpspy"
-	"gospy/internal/tag"
-	"gospy/internal/types"
+	"github.com/hakastein/gospy/internal/phpspy"
+	"github.com/hakastein/gospy/internal/tag"
+	"github.com/hakastein/gospy/internal/types"
 	"os"
 	"testing"
 )

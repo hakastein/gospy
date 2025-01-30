@@ -1,9 +1,9 @@
 package transform_test
 
 import (
+	"github.com/hakastein/gospy/internal/tag"
+	"github.com/hakastein/gospy/internal/transform"
 	"github.com/stretchr/testify/assert"
-	"gospy/internal/tag"
-	"gospy/internal/transform"
 	"regexp"
 	"testing"
 )
