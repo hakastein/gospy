@@ -5,14 +5,18 @@ import (
 	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
-	lru "github.com/hashicorp/golang-lru"
 )
 
 // EntryPointValidator validates entry points against predefined patterns with caching.
 type EntryPointValidator struct {
 	patterns []string
-	cache    *lru.Cache
+	cache    Cache
 	mu       sync.RWMutex
+}
+
+type Cache interface {
+	Get(key interface{}) (interface{}, bool)
+	Add(key, value interface{}) bool
 }
 
 // hasWildcard checks if the pattern contains any wildcard characters.
@@ -20,14 +24,8 @@ func hasWildcard(pattern string) bool {
 	return strings.ContainsAny(pattern, "*?[")
 }
 
-// NewEntryPointValidator creates a new EntryPointValidator with the given patterns and cache capacity.
-// It panics if the cache cannot be created.
-func NewEntryPointValidator(patterns []string, cacheCapacity int) *EntryPointValidator {
-	cache, err := lru.New(cacheCapacity)
-	if err != nil {
-		panic("failed to create LRU cache: " + err.Error())
-	}
-
+// New creates a new EntryPointValidator with the given patterns and cache driver.
+func New(patterns []string, cache Cache) *EntryPointValidator {
 	return &EntryPointValidator{
 		patterns: patterns,
 		cache:    cache,
