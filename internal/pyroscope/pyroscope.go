@@ -44,6 +44,7 @@ func (s *Worker) Start(ctx context.Context) {
 			data    *collector.TagCollection
 			body    *bytes.Buffer
 			bodyLen int
+			ok      bool
 		)
 		for {
 			select {
@@ -51,8 +52,8 @@ func (s *Worker) Start(ctx context.Context) {
 				log.Info().Msg("pyroscope worker shutting down")
 				return
 			default:
-				data = s.collector.ConsumeTag()
-				if data == nil {
+				data, ok = s.collector.ConsumeTag()
+				if ok == false {
 					// No data available. Sleep briefly.
 					time.Sleep(100 * time.Millisecond)
 					continue
