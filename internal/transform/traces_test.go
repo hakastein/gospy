@@ -2,7 +2,7 @@ package transform_test
 
 import (
 	"errors"
-	"gospy/internal/transform"
+	"github.com/hakastein/gospy/internal/transform"
 	"testing"
 
 	"github.com/stretchr/testify/assert"

@@ -76,7 +76,7 @@ func (cl *Client) send(tags string, from time.Time, until time.Time, body io.Rea
 		responseBody, _ := io.ReadAll(resp.Body)
 		jsonParseErr := json.Unmarshal(responseBody, &result)
 		if jsonParseErr != nil {
-			panic(fmt.Errorf("error parsing response: %w", jsonParseErr))
+			return resp.StatusCode, fmt.Errorf("response isn't json: %s", responseBody)
 		}
 		return resp.StatusCode, fmt.Errorf("http code: %s, error: %s, message: %s", resp.Status, result.Code, result.Message)
 	}

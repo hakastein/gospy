@@ -2,9 +2,9 @@ package parser
 
 import (
 	"fmt"
-	"gospy/internal/phpspy"
-	"gospy/internal/tag"
-	"gospy/internal/types"
+	"github.com/hakastein/gospy/internal/phpspy"
+	"github.com/hakastein/gospy/internal/tag"
+	"github.com/hakastein/gospy/internal/types"
 )
 
 func Init(

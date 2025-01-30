@@ -1,4 +1,4 @@
-module gospy
+module github.com/hakastein/gospy
 
 go 1.23.3
 

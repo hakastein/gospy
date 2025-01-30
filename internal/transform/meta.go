@@ -1,8 +1,8 @@
 package transform
 
 import (
+	"github.com/hakastein/gospy/internal/tag"
 	"github.com/rs/zerolog/log"
-	"gospy/internal/tag"
 	"maps"
 	"slices"
 	"sort"

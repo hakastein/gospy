@@ -3,19 +3,19 @@ package phpspy
 import (
 	"bufio"
 	"context"
-	"gospy/internal/tag"
-	"gospy/internal/transform"
+	"github.com/hakastein/gospy/internal/tag"
+	"github.com/hakastein/gospy/internal/transform"
 	"strings"
 	"time"
 
+	"github.com/hakastein/gospy/internal/types"
+	"github.com/hakastein/gospy/internal/validator"
 	"github.com/rs/zerolog/log"
-	"gospy/internal/types"
-	"gospy/internal/validator"
 )
 
 const (
 	entryPointValidatorCacheSize = 1000
-	traceCapacity                = 50
+	traceCapacity                = 100
 )
 
 type Parser struct {
