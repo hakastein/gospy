@@ -5,6 +5,7 @@ import (
 	"context"
 	"github.com/hakastein/gospy/internal/tag"
 	"github.com/hakastein/gospy/internal/transform"
+	lru "github.com/hashicorp/golang-lru"
 	"strings"
 	"time"
 
@@ -36,6 +37,11 @@ func NewParser(
 	tagEntrypoint bool,
 	keepEntrypointName bool,
 ) *Parser {
+	cache, err := lru.New(entryPointValidatorCacheSize)
+	if err != nil {
+		panic("failed to create LRU cache: " + err.Error())
+	}
+
 	return &Parser{
 		entryPoints:        entryPoints,
 		tagsMapping:        tagsMapping,
@@ -43,7 +49,7 @@ func NewParser(
 		keepEntrypointName: keepEntrypointName,
 		currentTrace:       make([]string, 0, traceCapacity),
 		currentMeta:        make([]string, 0, len(tagsMapping)),
-		epValidator:        validator.NewEntryPointValidator(entryPoints, entryPointValidatorCacheSize),
+		epValidator:        validator.New(entryPoints, cache),
 	}
 }
 

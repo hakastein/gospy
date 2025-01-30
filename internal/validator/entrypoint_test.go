@@ -1,13 +1,32 @@
-package validator
+package validator_test
 
 import (
-	"testing"
-
+	"github.com/hakastein/gospy/internal/validator"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"testing"
 )
 
-func setupValidator(patterns []string, cacheCapacity int) *EntryPointValidator {
-	return NewEntryPointValidator(patterns, cacheCapacity)
+type CacheMock struct {
+	mock.Mock
+}
+
+func (m *CacheMock) Get(key interface{}) (interface{}, bool) {
+	args := m.Called(key)
+	return args.Get(0), args.Bool(1)
+}
+
+func (m *CacheMock) Add(key, value interface{}) bool {
+	args := m.Called(key, value)
+	return args.Bool(0)
+}
+
+func NewCacheMock() *CacheMock {
+	cacheMock := new(CacheMock)
+	cacheMock.On("Add", mock.AnythingOfType("string"), mock.AnythingOfType("bool")).Return(true)
+	cacheMock.On("Get", mock.AnythingOfType("string")).Return(true, false)
+
+	return cacheMock
 }
 
 func TestPHPEntryPointValidator(t *testing.T) {
@@ -27,50 +46,50 @@ func TestPHPEntryPointValidator(t *testing.T) {
 		"config.yaml",
 		"/app/controllers/test.txt",
 	}
-	cacheCapacity := 100
 
 	t.Run("ValidPHPEntryPoints", func(t *testing.T) {
 		t.Parallel()
-		validator := setupValidator(patterns, cacheCapacity)
+		v := validator.New(patterns, NewCacheMock())
 		for _, ep := range validEntryPoints {
 			t.Run(ep, func(t *testing.T) {
-				assert.True(t, validator.IsValid(ep), "Expected entry point '%s' to be valid", ep)
+				assert.True(t, v.IsValid(ep), "Expected entry point '%s' to be valid", ep)
 			})
 		}
 	})
 
 	t.Run("InvalidPHPEntryPoints", func(t *testing.T) {
 		t.Parallel()
-		validator := setupValidator(patterns, cacheCapacity)
+		v := validator.New(patterns, NewCacheMock())
 		for _, ep := range invalidEntryPoints {
 			t.Run(ep, func(t *testing.T) {
-				assert.False(t, validator.IsValid(ep), "Expected entry point '%s' to be invalid", ep)
+				assert.False(t, v.IsValid(ep), "Expected entry point '%s' to be invalid", ep)
 			})
 		}
 	})
 
 	t.Run("EmptyPatterns", func(t *testing.T) {
 		t.Parallel()
-		validator := setupValidator([]string{}, cacheCapacity)
-		assert.True(t, validator.IsValid("any/entry/point"), "Any entry point should be valid when no patterns are defined")
+		v := validator.New([]string{}, NewCacheMock())
+		assert.True(t, v.IsValid("any/entry/point"), "Any entry point should be valid when no patterns are defined")
 	})
 
 	t.Run("EmptyEntryPoint", func(t *testing.T) {
 		t.Parallel()
-		validator := setupValidator(patterns, cacheCapacity)
-		assert.False(t, validator.IsValid(""), "Empty entry point should be invalid")
+		v := validator.New(patterns, NewCacheMock())
+		assert.False(t, v.IsValid(""), "Empty entry point should be invalid if patterns are defined")
 	})
 
 	t.Run("CacheUsage", func(t *testing.T) {
 		t.Parallel()
-		validator := setupValidator(patterns, cacheCapacity)
+
+		cacheMock := NewCacheMock()
+
+		v := validator.New(patterns, cacheMock)
 		entryPoint := "index.php"
 
-		validator.IsValid(entryPoint)
-		// Check cache to confirm entry point was stored
-		validator.mu.RLock()
-		_, found := validator.cache.Get(entryPoint)
-		validator.mu.RUnlock()
-		assert.True(t, found, "Expected entry point '%s' to be cached", entryPoint)
+		v.IsValid(entryPoint)
+
+		cacheMock.AssertCalled(t, "Add", entryPoint, true)
+		cacheMock.AssertCalled(t, "Get", entryPoint)
 	})
 }
