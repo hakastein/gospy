@@ -56,13 +56,13 @@ func NewTraceCollector() *TraceCollector {
 
 // ConsumeTag removes the oldest tag from the traces collection and returns its data.
 // If there are no tags, it returns nil.
-func (tc *TraceCollector) ConsumeTag() *TagCollection {
+func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
 	elem := tc.queue.Front()
 	if elem == nil {
-		return nil
+		return nil, false
 	}
 
 	tags := elem.Value.(string)
@@ -76,7 +76,7 @@ func (tc *TraceCollector) ConsumeTag() *TagCollection {
 		Until: tg.until,
 		Tags:  tags,
 		Data:  tg.stacks,
-	}
+	}, true
 }
 
 // AddSample increments the sample count in a traceGroup for a given stack and updates access order.
