@@ -24,7 +24,7 @@ func (m *CacheMock) Add(key, value interface{}) bool {
 func NewCacheMock() *CacheMock {
 	cacheMock := new(CacheMock)
 	cacheMock.On("Add", mock.AnythingOfType("string"), mock.AnythingOfType("bool")).Return(true)
-	cacheMock.On("Get", mock.AnythingOfType("string")).Return(true, false)
+	cacheMock.On("Get", mock.AnythingOfType("string")).Return(false, false)
 
 	return cacheMock
 }
@@ -83,6 +83,8 @@ func TestPHPEntryPointValidator(t *testing.T) {
 		t.Parallel()
 
 		cacheMock := NewCacheMock()
+		cacheMock.On("Add", "index.php", true).Return(true)
+		cacheMock.On("Get", "index.php").Return(false, false).Once()
 
 		v := validator.New(patterns, cacheMock)
 		entryPoint := "index.php"
