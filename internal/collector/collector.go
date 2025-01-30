@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"gospy/internal/types"
+	"github.com/hakastein/gospy/internal/types"
 )
 
 // TagCollection represents the Data of traces categorized by Tags over a period of time.
