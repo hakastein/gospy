@@ -54,6 +54,10 @@ func NewTraceCollector() *TraceCollector {
 	}
 }
 
+func (tc *TraceCollector) Len() int {
+	return tc.queue.Len()
+}
+
 // ConsumeTag removes the oldest tag from the traces collection and returns its data.
 // If there are no tags, it returns nil.
 func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
