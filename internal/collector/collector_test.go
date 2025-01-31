@@ -67,6 +67,19 @@ func verifyState(t *testing.T, c *collector.TraceCollector, expected map[string]
 	}
 }
 
+func verifyOrder(t *testing.T, c *collector.TraceCollector, expectedOrder []string) {
+	t.Helper()
+
+	var actualOrder []string
+	for _, expectedTag := range expectedOrder {
+		tag, ok := c.ConsumeTag()
+		require.True(t, ok, "Missing tag %s", expectedTag)
+		actualOrder = append(actualOrder, tag.Tags)
+	}
+
+	assert.Equal(t, expectedOrder, actualOrder, "Unexpected tag order")
+}
+
 func TestTraceCollector(t *testing.T) {
 	t.Run("Empty", func(t *testing.T) {
 		c := newTestCollector()
@@ -74,7 +87,30 @@ func TestTraceCollector(t *testing.T) {
 		assert.False(t, ok)
 	})
 
-	t.Run("SingleTagWithIntermediateChecks", func(t *testing.T) {
+	t.Run("ReadOrder", func(t *testing.T) {
+		c := newTestCollector()
+		baseTime := time.Now().Truncate(time.Millisecond)
+
+		addSamples(c, []sample{
+			{"auth", "main;login", baseTime},
+			{"api", "http;handler", baseTime.Add(20 * time.Millisecond)},
+			{"auth", "main;login", baseTime.Add(10 * time.Millisecond)},
+			{"web", "http;handler", baseTime.Add(10 * time.Millisecond)},
+		})
+
+		// extract only 2 of 3 tags and check their order
+		verifyOrder(t, c, []string{"auth", "api"})
+
+		// re add extracted
+		addSamples(c, []sample{
+			{"auth", "main;login", baseTime.Add(20 * time.Millisecond)},
+			{"api", "http;handler", baseTime.Add(20 * time.Millisecond)},
+		})
+
+		verifyOrder(t, c, []string{"web", "auth", "api"})
+	})
+
+	t.Run("CorrectTimings", func(t *testing.T) {
 		c := newTestCollector()
 		baseTime := time.Now().Truncate(time.Millisecond)
 
@@ -163,39 +199,5 @@ func TestTraceCollector(t *testing.T) {
 		wg.Wait()
 
 		verifyState(t, c, expected)
-	})
-}
-
-func BenchmarkCollector(b *testing.B) {
-	b.Run("AddSamples", func(b *testing.B) {
-		c := newTestCollector()
-		baseTime := time.Now()
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			addSamples(c, []sample{{
-				tag:   "bench",
-				stack: "main;work" + strconv.Itoa(i%10),
-				time:  baseTime.Add(time.Duration(i) * time.Millisecond),
-			}})
-		}
-	})
-
-	b.Run("ConsumeTags", func(b *testing.B) {
-		c := newTestCollector()
-		baseTime := time.Now()
-
-		for i := 0; i < 10000; i++ {
-			addSamples(c, []sample{{
-				tag:   "tag" + strconv.Itoa(i%10),
-				stack: "http;handler",
-				time:  baseTime.Add(time.Duration(i) * time.Millisecond),
-			}})
-		}
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			c.ConsumeTag()
-		}
 	})
 }
