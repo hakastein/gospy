@@ -31,6 +31,7 @@ jobs:
         run: |
           make test
           make coverage
+          go tool cover -func=coverage.out -o=coverage.out
 
       - name: Upload Coverage Artifact
         uses: actions/upload-artifact@v4
