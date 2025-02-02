@@ -10,7 +10,6 @@ import (
 	"github.com/hakastein/gospy/internal/pyroscope"
 	"github.com/hakastein/gospy/internal/supervisor"
 	"github.com/hakastein/gospy/internal/tag"
-	"github.com/hakastein/gospy/internal/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
@@ -75,7 +74,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		Strs("tags", appTags).
 		Msg("gospy started")
 
-	stacksChannel := make(chan *types.Sample, 1000)
+	stacksChannel := make(chan *collector.Sample, 1000)
 	signalsChannel := make(chan os.Signal, 1)
 	statsChannel := make(chan *pyroscope.RequestStats, 1000)
 

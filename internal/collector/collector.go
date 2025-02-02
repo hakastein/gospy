@@ -8,9 +8,13 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/hakastein/gospy/internal/types"
 )
+
+type Sample struct {
+	Time  time.Time
+	Trace string
+	Tags  string
+}
 
 // TagCollection represents the Data of traces categorized by Tags over a period of time.
 type TagCollection struct {
@@ -84,7 +88,7 @@ func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 }
 
 // AddSample increments the sample count in a traceGroup for a given stack and updates access order.
-func (tc *TraceCollector) AddSample(stack *types.Sample) {
+func (tc *TraceCollector) AddSample(stack *Sample) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -110,7 +114,7 @@ func (tc *TraceCollector) AddSample(stack *types.Sample) {
 }
 
 // Subscribe starts a goroutine that listens to stacksChannel and adds samples to the TraceCollector.
-func (tc *TraceCollector) Subscribe(ctx context.Context, stacksChannel <-chan *types.Sample) {
+func (tc *TraceCollector) Subscribe(ctx context.Context, stacksChannel <-chan *Sample) {
 	go func() {
 		for {
 			select {

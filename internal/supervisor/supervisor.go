@@ -2,8 +2,9 @@ package supervisor
 
 import (
 	"context"
+	"github.com/hakastein/gospy/internal/collector"
+	"github.com/hakastein/gospy/internal/parser"
 	"github.com/hakastein/gospy/internal/profiler"
-	"github.com/hakastein/gospy/internal/types"
 	"github.com/rs/zerolog/log"
 )
 
@@ -11,8 +12,8 @@ import (
 func ManageProfiler(
 	ctx context.Context,
 	profilerInstance profiler.Profiler,
-	parserInstance types.Parser,
-	foldedStacksChannel chan *types.Sample,
+	parserInstance parser.Parser,
+	foldedStacksChannel chan *collector.Sample,
 	restart string,
 ) {
 	for {
