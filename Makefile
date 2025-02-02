@@ -34,9 +34,10 @@ bench:
 	go test -race -bench=. -benchmem -run=^$ ./cmd/... ./internal/...
 
 coverage:
-	go test -v -coverprofile cover.out ./cmd/... ./internal/...
-	go tool cover -html cover.out -o cover.html
-	open cover.html
+	go test -v -coverprofile coverage.out ./cmd/... ./internal/...
+
+coverage-html: coverage
+	go tool cover -html=coverage.out -o coverage.html && open coverage.html
 
 # Clean target
 clean:
