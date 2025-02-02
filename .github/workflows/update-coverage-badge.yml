@@ -11,7 +11,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.BADGE_TOKEN }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -33,7 +33,7 @@ jobs:
           filename: coverage.out
 
       - name: Commit and Push Changes
-        uses: stefanzweifel/git-auto-commit-action@v4
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: Update coverage badge"
           file_pattern: README.md
