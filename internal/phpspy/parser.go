@@ -3,13 +3,13 @@ package phpspy
 import (
 	"bufio"
 	"context"
+	"github.com/hakastein/gospy/internal/collector"
 	"github.com/hakastein/gospy/internal/tag"
 	"github.com/hakastein/gospy/internal/transform"
 	lru "github.com/hashicorp/golang-lru"
 	"strings"
 	"time"
 
-	"github.com/hakastein/gospy/internal/types"
 	"github.com/hakastein/gospy/internal/validator"
 	"github.com/rs/zerolog/log"
 )
@@ -57,7 +57,7 @@ func NewParser(
 func (parser *Parser) Parse(
 	ctx context.Context,
 	scanner *bufio.Scanner,
-	foldedStacks chan<- *types.Sample,
+	foldedStacks chan<- *collector.Sample,
 ) {
 	for {
 		select {
@@ -99,7 +99,7 @@ func (parser *Parser) addToMeta(line string) {
 
 // processTrace converts the current trace to a folded stack and sends it to the foldedStacks channel.
 func (parser *Parser) processTrace(
-	foldedStacks chan<- *types.Sample,
+	foldedStacks chan<- *collector.Sample,
 ) {
 	defer parser.resetState()
 
@@ -124,7 +124,7 @@ func (parser *Parser) processTrace(
 	}
 
 	parser.buildTags(entryPoint)
-	foldedStacks <- &types.Sample{Trace: sample, Tags: parser.tags.String(), Time: time.Now()}
+	foldedStacks <- &collector.Sample{Trace: sample, Tags: parser.tags.String(), Time: time.Now()}
 	log.Trace().
 		Str("sample", sample).
 		Msg("Trace processed")

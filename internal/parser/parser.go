@@ -1,10 +1,12 @@
 package parser
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"github.com/hakastein/gospy/internal/collector"
 	"github.com/hakastein/gospy/internal/phpspy"
 	"github.com/hakastein/gospy/internal/tag"
-	"github.com/hakastein/gospy/internal/types"
 )
 
 func Init(
@@ -13,8 +15,8 @@ func Init(
 	tagsMapping map[string][]tag.DynamicTag,
 	tagEntrypoint bool,
 	keepEntrypointName bool,
-) (types.Parser, error) {
-	var parser types.Parser
+) (Parser, error) {
+	var parser Parser
 
 	switch profiler {
 	case "phpspy":
@@ -24,4 +26,12 @@ func Init(
 	}
 
 	return parser, nil
+}
+
+type Parser interface {
+	Parse(
+		ctx context.Context,
+		scanner *bufio.Scanner,
+		samplesChannel chan<- *collector.Sample,
+	)
 }
