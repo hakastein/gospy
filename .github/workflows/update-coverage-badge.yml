@@ -1,0 +1,40 @@
+name: Update Coverage Badge
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  update-coverage-badge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23.3'
+
+      - name: Download Dependencies
+        run: make download-deps
+
+      - name: Run Tests with Coverage
+        run: |
+          make coverage
+          go tool cover -func=coverage.out -o=coverage.out
+
+      - name: Generate Badge
+        uses: tj-actions/coverage-badge-go@v2
+        with:
+          filename: coverage.out
+
+      - name: Commit and Push Changes
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "chore: Update coverage badge"
+          file_pattern: README.md
+          branch: main
