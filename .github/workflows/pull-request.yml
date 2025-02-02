@@ -42,10 +42,11 @@ jobs:
     needs: run-tests
     runs-on: ubuntu-latest
     steps:
-      - name: Download Coverage Artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: coverage-report
+      - name: Download Coverage Artifact
+        run: ls -R
 
       - name: Checkout Repository
         uses: actions/checkout@v4
