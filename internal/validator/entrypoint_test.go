@@ -82,16 +82,17 @@ func TestPHPEntryPointValidator(t *testing.T) {
 	t.Run("CacheUsage", func(t *testing.T) {
 		t.Parallel()
 
-		cacheMock := NewCacheMock()
-		cacheMock.On("Add", "index.php", true).Return(true)
+		cacheMock := new(CacheMock)
 		cacheMock.On("Get", "index.php").Return(false, false).Once()
+		cacheMock.On("Add", "index.php", true).Return(true)
+		cacheMock.On("Get", "index.php").Return(true, true).Once()
 
 		v := validator.New(patterns, cacheMock)
 		entryPoint := "index.php"
 
 		v.IsValid(entryPoint)
+		v.IsValid(entryPoint)
 
-		cacheMock.AssertCalled(t, "Add", entryPoint, true)
-		cacheMock.AssertCalled(t, "Get", entryPoint)
+		cacheMock.AssertExpectations(t)
 	})
 }

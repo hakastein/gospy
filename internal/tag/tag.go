@@ -80,8 +80,6 @@ func ParseInput(tagsInput []string) (string, map[string][]DynamicTag, error) {
 					TagReplace: parts[2],
 				}
 				dynamicTags[parts[0]] = append(dynamicTags[parts[0]], dt)
-			default:
-				return "", nil, fmt.Errorf("unexpected number of parameters in dynamic tag `%s`", tag)
 			}
 		} else {
 			if strings.ContainsRune(value, ',') {
