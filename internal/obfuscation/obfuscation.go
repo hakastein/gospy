@@ -5,7 +5,7 @@ import (
 	"unicode/utf8"
 )
 
-// maskString masks a string by replacing characters with '*'.
+// MaskString masks a string by replacing characters with '*'.
 // It preserves the first 'startKeep' and last 'endKeep' runes.
 // If the string length is less than or equal to startKeep + endKeep,
 // it returns a string of '*' with the same length.
