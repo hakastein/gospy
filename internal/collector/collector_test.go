@@ -316,13 +316,13 @@ func TestTraceCollector_Subscribe(t *testing.T) {
 		c.Subscribe(ctx, samplesChan)
 
 		cancel()
-
+		// wait some to be sure
+		<-time.After(100 * time.Millisecond)
 		samplesChan <- &types.Sample{
 			Tags:  "tag1",
 			Trace: "trace1",
 			Time:  baseTime,
 		}
-		// wait some to be sure
 		<-time.After(100 * time.Millisecond)
 
 		assert.Equal(t, 0, c.Len(), "Write after cancellation mustn't increase queue len")
