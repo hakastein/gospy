@@ -3,9 +3,9 @@ package phpspy_test
 import (
 	"bufio"
 	"context"
+	"github.com/hakastein/gospy/internal/collector"
 	"github.com/hakastein/gospy/internal/phpspy"
 	"github.com/hakastein/gospy/internal/tag"
-	"github.com/hakastein/gospy/internal/types"
 	"os"
 	"testing"
 )
@@ -24,7 +24,7 @@ func TestParser_Parse(t *testing.T) {
 	defer stacks.Close()
 
 	tracesScanner := bufio.NewScanner(traces)
-	samplesChannel := make(chan *types.Sample, 100)
+	samplesChannel := make(chan *collector.Sample, 100)
 
 	parser := phpspy.NewParser(
 		[]string{"server.php"},

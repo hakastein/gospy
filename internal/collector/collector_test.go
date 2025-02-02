@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/hakastein/gospy/internal/collector"
-	"github.com/hakastein/gospy/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,7 +33,7 @@ type expectedResult struct {
 
 func addSamples(c *collector.TraceCollector, samples []sample) {
 	for _, s := range samples {
-		c.AddSample(&types.Sample{
+		c.AddSample(&collector.Sample{
 			Tags:  s.tag,
 			Trace: s.stack,
 			Time:  s.time,
@@ -221,13 +220,13 @@ func TestTraceCollector(t *testing.T) {
 			{"api", "http;handler", baseTime.Add(20 * time.Millisecond)},
 		})
 
-		assert.Equal(t, c.Len(), 2)
+		assert.Equal(t, 2, c.Len())
 
 		addSamples(c, []sample{
 			{"auth", "main;login", baseTime},
 		})
 
-		assert.Equal(t, c.Len(), 2)
+		assert.Equal(t, 2, c.Len())
 	})
 
 	t.Run("MaintainsLRUOrderOnAccess", func(t *testing.T) {
@@ -294,12 +293,12 @@ func TestTraceCollector(t *testing.T) {
 func TestTraceCollector_Subscribe(t *testing.T) {
 	t.Run("SimpleWrite", func(t *testing.T) {
 		ctx := context.Background()
-		samplesChan := make(chan *types.Sample)
+		samplesChan := make(chan *collector.Sample)
 		baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
 		c := newTestCollector()
 		c.Subscribe(ctx, samplesChan)
 
-		samplesChan <- &types.Sample{
+		samplesChan <- &collector.Sample{
 			Tags:  "tag1",
 			Trace: "trace1",
 			Time:  baseTime,
@@ -310,7 +309,7 @@ func TestTraceCollector_Subscribe(t *testing.T) {
 
 	t.Run("ContextCancellation", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
-		samplesChan := make(chan *types.Sample, 1)
+		samplesChan := make(chan *collector.Sample, 1)
 		baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
 		c := newTestCollector()
 		c.Subscribe(ctx, samplesChan)
@@ -318,7 +317,7 @@ func TestTraceCollector_Subscribe(t *testing.T) {
 		cancel()
 		// wait some to be sure
 		<-time.After(100 * time.Millisecond)
-		samplesChan <- &types.Sample{
+		samplesChan <- &collector.Sample{
 			Tags:  "tag1",
 			Trace: "trace1",
 			Time:  baseTime,
@@ -326,7 +325,6 @@ func TestTraceCollector_Subscribe(t *testing.T) {
 		<-time.After(100 * time.Millisecond)
 
 		assert.Equal(t, 0, c.Len(), "Write after cancellation mustn't increase queue len")
-
 	})
 
 	t.Run("SubscribeConcurrent", func(t *testing.T) {
@@ -339,69 +337,69 @@ func TestTraceCollector_Subscribe(t *testing.T) {
 
 		var (
 			wgReaders   sync.WaitGroup
-			mu          sync.Mutex
 			wgWriters   sync.WaitGroup
+			mu          sync.Mutex
 			collected   = make(map[string]*collector.TagCollection)
-			samplesChan = make(chan *types.Sample, totalSamples)
-			writersDone = make(chan bool, workers)
+			samplesChan = make(chan *collector.Sample, totalSamples)
 			ctx         = context.Background()
 		)
-
-		defer close(writersDone)
-		defer close(samplesChan)
 
 		c := newTestCollector()
 		c.Subscribe(ctx, samplesChan)
 
 		samples, expected := generateConcurrentSamples(totalTags, samplesPerTag)
 
-		// same amount of workers to simplify concurrency logic
 		wgWriters.Add(workers)
-		wgReaders.Add(workers)
-
 		chunkSize := len(samples) / workers
 		for i := 0; i < workers; i++ {
+			start := i * chunkSize
+			end := (i + 1) * chunkSize
 			go func(start, end int) {
 				defer wgWriters.Done()
-				defer func() {
-					writersDone <- true
-				}()
 				for _, s := range samples[start:end] {
-					samplesChan <- &types.Sample{
+					samplesChan <- &collector.Sample{
 						Tags:  s.tag,
 						Trace: s.stack,
 						Time:  s.time,
 					}
 				}
-			}(i*chunkSize, (i+1)*chunkSize)
+			}(start, end)
 		}
 
+		stopReaders := make(chan struct{})
 		for i := 0; i < workers; i++ {
+			wgReaders.Add(1)
 			go func() {
 				defer wgReaders.Done()
 				for {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-						tag, ok := c.ConsumeTag()
-						if !ok {
-							select {
-							case <-writersDone:
-								return
-							default:
-								time.Sleep(10 * time.Millisecond)
-								continue
-							}
-						}
-
+					tag, ok := c.ConsumeTag()
+					if ok {
 						mu.Lock()
 						mergeTagCollections(collected, tag)
 						mu.Unlock()
+						continue
+					}
+					select {
+					case <-stopReaders:
+						return
+					default:
+						time.Sleep(10 * time.Millisecond)
 					}
 				}
 			}()
 		}
+
+		wgWriters.Wait()
+
+		go func() {
+			for {
+				if c.Len() == 0 {
+					close(stopReaders)
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
 
 		wgReaders.Wait()
 
