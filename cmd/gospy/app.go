@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/time/rate"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -42,7 +43,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		pyroscopeTimeout                 = c.Duration("pyroscope-timeout")
 		tagEntrypoint                    = c.Bool("tag-entrypoint")
 		keepEntrypointName               = c.Bool("keep-entrypoint-name")
-		app                              = c.String("app")
+		appName                          = c.String("app")
 		restart                          = c.String("restart")
 		rateLimit                        = int(c.Float64("rate-mb") * Megabyte)
 		rateBurst                        = int(c.Float64("rate-burst-mb") * Megabyte)
@@ -64,7 +65,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	log.Info().
 		Str("pyroscope_url", pyroscopeURL).
 		Str("pyroscope_auth", obfuscation.MaskString(pyroscopeAuth, 4, 2)).
-		Str("app_name", app).
+		Str("app_name", appName).
 		Bool("tag_entrypoint", tagEntrypoint).
 		Bool("keep_entrypoint_name", keepEntrypointName).
 		Str("restart", restart).
@@ -138,21 +139,23 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	traceCollector := collector.NewTraceCollector()
 	traceCollector.Subscribe(ctx, stacksChannel)
 
+	httpClient := &http.Client{
+		Timeout: pyroscopeTimeout,
+	}
+
 	pyroscopeClient := pyroscope.NewClient(
-		ctx,
 		pyroscopeURL,
 		pyroscopeAuth,
-		app,
-		staticTags,
-		samplingRateHZ,
-		pyroscopeTimeout,
+		httpClient,
 	)
+
+	pyroscopeApp := pyroscope.NewAppData(appName, staticTags, samplingRateHZ)
 
 	pyroscope.StartStatsAggregator(ctx, statsChannel, statsInterval)
 
 	for workerNumber := 1; workerNumber <= pyroscopeWorkers; workerNumber++ {
 		// each worker will consume traces by tag from the traceCollector queue
-		sender := pyroscope.NewWorker(pyroscopeClient, traceCollector, rateLimiter, statsChannel)
+		sender := pyroscope.NewWorker(pyroscopeClient, pyroscopeApp, traceCollector, rateLimiter, statsChannel)
 		sender.Start(ctx)
 	}
 

@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"bytes"
 	"container/list"
 	"context"
 	"github.com/rs/zerolog/log"
@@ -18,21 +17,34 @@ type Sample struct {
 
 // TagCollection represents the Data of traces categorized by Tags over a period of time.
 type TagCollection struct {
-	Tags  string
-	Data  map[string]int
-	From  time.Time
-	Until time.Time
+	tags  string
+	data  map[string]int
+	from  time.Time
+	until time.Time
 }
 
-func (tc *TagCollection) DataToBuffer() *bytes.Buffer {
-	var buffer bytes.Buffer
-	for sample, count := range tc.Data {
-		buffer.WriteString(sample)
-		buffer.WriteByte(' ')
-		buffer.WriteString(strconv.Itoa(count))
-		buffer.WriteByte('\n')
+func (tc *TagCollection) Len() int {
+	size := len(tc.data) - 1
+	for sample, count := range tc.data {
+		size += len(sample) + len(strconv.Itoa(count)) + 1
 	}
-	return &buffer
+	return size
+}
+
+func (tc *TagCollection) Data() map[string]int {
+	return tc.data
+}
+
+func (tc *TagCollection) From() time.Time {
+	return tc.from
+}
+
+func (tc *TagCollection) Until() time.Time {
+	return tc.until
+}
+
+func (tc *TagCollection) Tags() string {
+	return tc.tags
 }
 
 // traceGroup represents a collection of stacks with counts and a time range.
@@ -80,10 +92,10 @@ func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 	delete(tc.traces, tags)
 
 	return &TagCollection{
-		From:  tg.from,
-		Until: tg.until,
-		Tags:  tags,
-		Data:  tg.stacks,
+		from:  tg.from,
+		until: tg.until,
+		tags:  tags,
+		data:  tg.stacks,
 	}, true
 }
 

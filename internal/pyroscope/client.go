@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/rs/zerolog/log"
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
-	"strings"
-	"time"
 )
 
 // Client handles sending data to Pyroscope with rate limiting.
@@ -17,10 +15,6 @@ type Client struct {
 	httpClient *http.Client
 	url        string
 	auth       string
-	app        string
-	staticTags string
-	ctx        context.Context
-	rateHz     int
 }
 
 type ErrorResponse struct {
@@ -30,30 +24,23 @@ type ErrorResponse struct {
 
 // NewClient initializes and returns a new Client.
 func NewClient(
-	ctx context.Context,
 	url string,
 	auth string,
-	app string,
-	staticTags string,
-	rateHz int,
-	timeout time.Duration,
+	httpClient *http.Client,
 ) *Client {
 	return &Client{
-		ctx: ctx,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
-		staticTags: staticTags,
-		app:        app,
-		url:        url,
+		httpClient: httpClient,
+		url:        url + "/ingest",
 		auth:       auth,
-		rateHz:     rateHz,
 	}
 }
 
-// send sends the TagCollection data to Pyroscope and returns the HTTP status code and any error encountered.
-func (cl *Client) send(tags string, from time.Time, until time.Time, body io.Reader) (int, error) {
-	httpReq, err := http.NewRequestWithContext(cl.ctx, "POST", cl.url+"/ingest", body)
+// Send sends the TagCollection data to Pyroscope and returns the HTTP status code and any error encountered.
+func (cl *Client) Send(
+	ctx context.Context,
+	ingestData IngestData,
+) (int, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", cl.url, ingestData.getBody())
 	if err != nil {
 		return 0, fmt.Errorf("error creating request: %w", err)
 	}
@@ -63,7 +50,10 @@ func (cl *Client) send(tags string, from time.Time, until time.Time, body io.Rea
 		httpReq.Header.Set("Authorization", cl.auth)
 	}
 
-	httpReq.URL.RawQuery = makeQuery(makeAppName(cl.app, cl.staticTags, tags), from, until, cl.rateHz)
+	httpReq.URL.RawQuery = ingestData.MakeQuery()
+
+	unescaped, _ := url.QueryUnescape(httpReq.URL.RawQuery)
+	log.Debug().Str("query", unescaped).Msg("requesting pyroscope")
 
 	resp, err := cl.httpClient.Do(httpReq)
 	if err != nil {
@@ -82,37 +72,4 @@ func (cl *Client) send(tags string, from time.Time, until time.Time, body io.Rea
 	}
 
 	return resp.StatusCode, nil
-}
-
-func makeAppName(appName string, staticTags string, dynamicTags string) string {
-	var builder strings.Builder
-
-	builder.WriteString(appName)
-	builder.WriteString("{")
-	if staticTags != "" {
-		builder.WriteString(staticTags)
-		builder.WriteString(",")
-	}
-	if dynamicTags != "" {
-		builder.WriteString(dynamicTags)
-	}
-	builder.WriteString("}")
-
-	return builder.String()
-}
-
-func makeQuery(name string, from time.Time, until time.Time, rateHz int) string {
-	var builder strings.Builder
-
-	builder.WriteString("name=")
-	builder.WriteString(url.QueryEscape(name))
-	builder.WriteString("&from=")
-	builder.WriteString(strconv.FormatInt(from.Unix(), 10))
-	builder.WriteString("&until=")
-	builder.WriteString(strconv.FormatInt(until.Unix(), 10))
-	builder.WriteString("&sampleRate=")
-	builder.WriteString(strconv.Itoa(rateHz))
-	builder.WriteString("&format=folded")
-
-	return builder.String()
 }
