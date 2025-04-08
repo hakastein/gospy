@@ -8,13 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // Client handles sending data to Pyroscope server.
 type Client struct {
 	httpClient *http.Client
 	url        string
-	auth       string
+	authToken  string
 }
 
 type ErrorResponse struct {
@@ -25,13 +26,13 @@ type ErrorResponse struct {
 // NewClient initializes and returns a new Client.
 func NewClient(
 	url string,
-	auth string,
+	authToken string,
 	httpClient *http.Client,
 ) *Client {
 	return &Client{
 		httpClient: httpClient,
-		url:        url + "/ingest",
-		auth:       auth,
+		url:        strings.TrimSuffix(url, "/") + "/ingest",
+		authToken:  authToken,
 	}
 }
 
@@ -46,8 +47,8 @@ func (client *Client) Send(
 	}
 
 	httpReq.Header.Set("Content-Type", "text/plain")
-	if client.auth != "" {
-		httpReq.Header.Set("Authorization", client.auth)
+	if client.authToken != "" {
+		httpReq.Header.Set("Authorization", client.authToken)
 	}
 
 	httpReq.URL.RawQuery = payload.QueryString()
