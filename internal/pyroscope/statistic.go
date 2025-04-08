@@ -7,6 +7,8 @@ import (
 )
 
 // StartStatsAggregator starts a goroutine to aggregate and log statistics every interval.
+// StartStatsAggregator periodically reports statistics about Pyroscope data transfer
+// including total requests, bytes sent, success/failure counts, and status codes.
 func StartStatsAggregator(ctx context.Context, statsChan <-chan *RequestStats, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)

@@ -17,83 +17,88 @@ type RequestStats struct {
 	Success    bool
 }
 
-// Worker manages sending TagCollection data to the Pyroscope server.
+// Worker manages sending profile data to the Pyroscope server.
 type Worker struct {
-	pyroscopeClient *Client
-	app             *AppData
-	collector       *collector.TraceCollector
-	limiter         *rate.Limiter
-	statsChan       chan<- *RequestStats
+	client       *Client
+	appMetadata  *AppMetadata
+	collector    *collector.TraceCollector
+	rateLimiter  *rate.Limiter
+	statsChannel chan<- *RequestStats
 }
 
 // NewWorker initializes and returns a new Worker with a statistics channel.
-func NewWorker(pyroscopeClient *Client, app *AppData, collector *collector.TraceCollector, limiter *rate.Limiter, statsChan chan<- *RequestStats) *Worker {
+func NewWorker(client *Client, appMetadata *AppMetadata, collector *collector.TraceCollector, rateLimiter *rate.Limiter, statsChannel chan<- *RequestStats) *Worker {
 	return &Worker{
-		limiter:         limiter,
-		pyroscopeClient: pyroscopeClient,
-		app:             app,
-		collector:       collector,
-		statsChan:       statsChan,
+		client:       client,
+		appMetadata:  appMetadata,
+		collector:    collector,
+		rateLimiter:  rateLimiter,
+		statsChannel: statsChannel,
 	}
 }
 
-// Start a goroutine to Send data to Pyroscope.
-func (s *Worker) Start(ctx context.Context) {
+// Start launches a goroutine to send profile data to Pyroscope server.
+// It continuously consumes data from the collector and sends it to Pyroscope
+// until the context is canceled.
+func (worker *Worker) Start(ctx context.Context) {
 	go func() {
 		log.Info().Msg("pyroscope worker started")
 		var (
-			data    *collector.TagCollection
-			bodyLen int
-			ok      bool
+			profileData *collector.TagCollection
+			dataSize    int
+			ok          bool
 		)
+
 		for {
 			select {
 			case <-ctx.Done():
 				log.Info().Msg("pyroscope worker shutting down")
 				return
 			default:
-				data, ok = s.collector.ConsumeTag()
-				if ok == false {
+				profileData, ok = worker.collector.ConsumeTag()
+				if !ok {
 					// No data available. Sleep briefly.
 					time.Sleep(100 * time.Millisecond)
 					continue
 				}
 
-				bodyLen = data.Len()
+				dataSize = profileData.Len()
 
 				// Respect rate limiting
-				if err := s.limiter.WaitN(ctx, bodyLen); err != nil {
+				if err := worker.rateLimiter.WaitN(ctx, dataSize); err != nil {
 					log.Error().
 						Err(err).
 						Msg("rate limiter error")
 					continue
 				}
 
-				ingestData := s.app.IngestData(data)
+				payload := worker.appMetadata.NewPayload(profileData)
 
-				// Attempt to Send the request
-				statusCode, err := s.pyroscopeClient.Send(ctx, ingestData)
+				// Attempt to send the request
+				statusCode, err := worker.client.Send(ctx, payload)
 				if err != nil {
 					// @TODO make retry for certain type of errors
-					s.statsChan <- &RequestStats{
-						Bytes:      bodyLen,
+					worker.statsChannel <- &RequestStats{
+						Bytes:      dataSize,
 						StatusCode: statusCode,
 						Success:    false,
 					}
+					
 					log.Error().
 						Err(err).
 						Int("status_code", statusCode).
-						Msg("failed to Send data to Pyroscope")
+						Msg("failed to send data to Pyroscope")
 					continue
 				}
 
-				s.statsChan <- &RequestStats{
-					Bytes:      bodyLen,
+				worker.statsChannel <- &RequestStats{
+					Bytes:      dataSize,
 					StatusCode: statusCode,
 					Success:    true,
 				}
+				
 				log.Debug().
-					Str("tags", data.Tags()).
+					Str("tags", profileData.Tags()).
 					Int("status_code", statusCode).
 					Msg("successfully sent data to Pyroscope")
 			}

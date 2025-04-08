@@ -10,7 +10,7 @@ import (
 	"net/url"
 )
 
-// Client handles sending data to Pyroscope with rate limiting.
+// Client handles sending data to Pyroscope server.
 type Client struct {
 	httpClient *http.Client
 	url        string
@@ -35,27 +35,27 @@ func NewClient(
 	}
 }
 
-// Send sends the TagCollection data to Pyroscope and returns the HTTP status code and any error encountered.
-func (cl *Client) Send(
+// Send sends the profile data to Pyroscope and returns the HTTP status code and any error encountered.
+func (client *Client) Send(
 	ctx context.Context,
-	ingestData IngestData,
+	payload Payload,
 ) (int, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", cl.url, ingestData.getBody())
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", client.url, payload.BodyReader())
 	if err != nil {
 		return 0, fmt.Errorf("error creating request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "text/plain")
-	if cl.auth != "" {
-		httpReq.Header.Set("Authorization", cl.auth)
+	if client.auth != "" {
+		httpReq.Header.Set("Authorization", client.auth)
 	}
 
-	httpReq.URL.RawQuery = ingestData.MakeQuery()
+	httpReq.URL.RawQuery = payload.QueryString()
 
 	unescaped, _ := url.QueryUnescape(httpReq.URL.RawQuery)
 	log.Debug().Str("query", unescaped).Msg("requesting pyroscope")
 
-	resp, err := cl.httpClient.Do(httpReq)
+	resp, err := client.httpClient.Do(httpReq)
 	if err != nil {
 		return 0, fmt.Errorf("error sending request: %w", err)
 	}

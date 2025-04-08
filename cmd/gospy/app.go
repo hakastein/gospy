@@ -149,13 +149,13 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		httpClient,
 	)
 
-	pyroscopeApp := pyroscope.NewAppData(appName, staticTags, samplingRateHZ)
+	pyroscopeIngester := pyroscope.NewAppMetadata(appName, staticTags, samplingRateHZ)
 
 	pyroscope.StartStatsAggregator(ctx, statsChannel, statsInterval)
 
 	for workerNumber := 1; workerNumber <= pyroscopeWorkers; workerNumber++ {
 		// each worker will consume traces by tag from the traceCollector queue
-		sender := pyroscope.NewWorker(pyroscopeClient, pyroscopeApp, traceCollector, rateLimiter, statsChannel)
+		sender := pyroscope.NewWorker(pyroscopeClient, pyroscopeIngester, traceCollector, rateLimiter, statsChannel)
 		sender.Start(ctx)
 	}
 
