@@ -3,10 +3,10 @@ package collector
 import (
 	"container/list"
 	"context"
-	"github.com/rs/zerolog/log"
-	"strconv"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type Sample struct {
@@ -23,10 +23,31 @@ type TagCollection struct {
 	until time.Time
 }
 
+func NewTagCollection(from time.Time, until time.Time, tags string, data map[string]int) *TagCollection {
+	return &TagCollection{
+		from:  from,
+		until: until,
+		tags:  tags,
+		data:  data,
+	}
+}
+
 func (tc *TagCollection) Len() int {
+	if len(tc.data) == 0 {
+		return 0
+	}
 	size := len(tc.data) - 1
 	for sample, count := range tc.data {
-		size += len(sample) + len(strconv.Itoa(count)) + 1
+		size += len(sample)
+		size += 1
+		if count == 0 {
+			size += 1
+		}
+		c := count
+		for c > 0 {
+			size++
+			c /= 10
+		}
 	}
 	return size
 }
@@ -91,12 +112,12 @@ func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 	tc.queue.Remove(elem)
 	delete(tc.traces, tags)
 
-	return &TagCollection{
-		from:  tg.from,
-		until: tg.until,
-		tags:  tags,
-		data:  tg.stacks,
-	}, true
+	return NewTagCollection(
+		tg.from,
+		tg.until,
+		tags,
+		tg.stacks,
+	), true
 }
 
 // AddSample increments the sample count in a traceGroup for a given stack and updates access order.

@@ -13,7 +13,7 @@ MAIN_PKG = ./cmd/gospy
 VERSION ?= dev
 
 # Linker flags to inject version information
-LDFLAGS = -X main.Version=$(VERSION)
+LDFLAGS = -X github.com/hakastein/gospy/internal/version.version=$(VERSION)
 
 # Environment variables for Go build
 GO_ENV_VARS = CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH)
@@ -63,4 +63,10 @@ dev:
 	echo "Building with VERSION=$$VERSION" ; \
 	make build VERSION=$$VERSION
 
-.PHONY: build clean download-deps version dev
+vet:
+	go vet ./cmd/... ./internal/...
+
+fmt:
+	go fmt ./cmd/... ./internal/...
+
+.PHONY: build clean download-deps version dev vet fmt

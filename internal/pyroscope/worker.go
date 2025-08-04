@@ -12,9 +12,9 @@ import (
 
 // RequestStats represents the statistics of a single request.
 type RequestStats struct {
-	Bytes      int
-	StatusCode int
-	Success    bool
+	Bytes   int
+	Success bool
+	Error   error
 }
 
 // Worker manages sending profile data to the Pyroscope server.
@@ -75,31 +75,28 @@ func (worker *Worker) Start(ctx context.Context) {
 				payload := worker.appMetadata.NewPayload(profileData)
 
 				// Attempt to send the request
-				statusCode, err := worker.client.Send(ctx, payload)
+				err := worker.client.Send(ctx, payload)
 				if err != nil {
 					// @TODO make retry for certain type of errors
 					worker.statsChannel <- &RequestStats{
-						Bytes:      dataSize,
-						StatusCode: statusCode,
-						Success:    false,
+						Bytes:   dataSize,
+						Success: false,
 					}
-					
+
 					log.Error().
 						Err(err).
-						Int("status_code", statusCode).
 						Msg("failed to send data to Pyroscope")
 					continue
 				}
 
 				worker.statsChannel <- &RequestStats{
-					Bytes:      dataSize,
-					StatusCode: statusCode,
-					Success:    true,
+					Bytes:   dataSize,
+					Success: true,
+					Error:   err,
 				}
-				
+
 				log.Debug().
 					Str("tags", profileData.Tags()).
-					Int("status_code", statusCode).
 					Msg("successfully sent data to Pyroscope")
 			}
 		}

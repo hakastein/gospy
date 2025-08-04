@@ -3,6 +3,17 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"github.com/urfave/cli/v2"
+	"golang.org/x/time/rate"
+
 	"github.com/hakastein/gospy/internal/collector"
 	"github.com/hakastein/gospy/internal/obfuscation"
 	"github.com/hakastein/gospy/internal/parser"
@@ -10,15 +21,7 @@ import (
 	"github.com/hakastein/gospy/internal/pyroscope"
 	"github.com/hakastein/gospy/internal/supervisor"
 	"github.com/hakastein/gospy/internal/tag"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-	"github.com/urfave/cli/v2"
-	"golang.org/x/time/rate"
-	"net/http"
-	"os"
-	"os/signal"
-	"sync"
-	"syscall"
+	"github.com/hakastein/gospy/internal/version"
 )
 
 func setupLogger(verbose int, instanceName string) {
@@ -71,7 +74,7 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 		Str("restart", restart).
 		Int("rate_bytes", rateLimit).
 		Int("rate_burst", rateBurst).
-		Str("version", Version).
+		Str("version", version.Get()).
 		Strs("tags", appTags).
 		Msg("gospy started")
 

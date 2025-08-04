@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"io"
 	"net/http"
-	"net/url"
+	"runtime"
 	"strings"
+
+	"github.com/rs/zerolog/log"
+
+	"github.com/hakastein/gospy/internal/version"
 )
 
 // Client handles sending data to Pyroscope server.
@@ -40,25 +43,25 @@ func NewClient(
 func (client *Client) Send(
 	ctx context.Context,
 	payload Payload,
-) (int, error) {
+) error {
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", client.url, payload.BodyReader())
 	if err != nil {
-		return 0, fmt.Errorf("error creating request: %w", err)
+		return fmt.Errorf("error creating request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "text/plain")
+	httpReq.Header.Set("User-Agent", fmt.Sprintf("gospy/%s/%s", version.Get(), runtime.Version()))
 	if client.authToken != "" {
-		httpReq.Header.Set("Authorization", client.authToken)
+		httpReq.Header.Set("Authorization", "Bearer"+client.authToken)
 	}
 
 	httpReq.URL.RawQuery = payload.QueryString()
 
-	unescaped, _ := url.QueryUnescape(httpReq.URL.RawQuery)
-	log.Debug().Str("query", unescaped).Msg("requesting pyroscope")
+	log.Debug().Str("query", httpReq.URL.RawQuery).Msg("requesting pyroscope")
 
 	resp, err := client.httpClient.Do(httpReq)
 	if err != nil {
-		return 0, fmt.Errorf("error sending request: %w", err)
+		return fmt.Errorf("error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -67,10 +70,10 @@ func (client *Client) Send(
 		responseBody, _ := io.ReadAll(resp.Body)
 		jsonParseErr := json.Unmarshal(responseBody, &result)
 		if jsonParseErr != nil {
-			return resp.StatusCode, fmt.Errorf("response isn't json: %s", responseBody)
+			return fmt.Errorf("response isn't json: %s", responseBody)
 		}
-		return resp.StatusCode, fmt.Errorf("http code: %s, error: %s, message: %s", resp.Status, result.Code, result.Message)
+		return fmt.Errorf("http code: %s, error: %s, message: %s", resp.Status, result.Code, result.Message)
 	}
 
-	return resp.StatusCode, nil
+	return nil
 }

@@ -14,7 +14,13 @@ type TagData interface {
 	From() time.Time
 	Until() time.Time
 	Data() map[string]int
+	Len() int
 }
+
+const (
+	AppNameStringEstimatedLength  = 50
+	AppQueryStringEstimatedLength = 150
+)
 
 // AppMetadata represents pyroscope application's static information.
 type AppMetadata struct {
@@ -49,48 +55,57 @@ func (app *AppMetadata) NewPayload(data TagData) Payload {
 // fullAppName combines the app name with static and dynamic tags in Pyroscope format.
 func (app *AppMetadata) fullAppName(dynamicTags string) string {
 	var builder strings.Builder
+	builder.Grow(AppNameStringEstimatedLength)
 
 	builder.WriteString(app.appName)
-	builder.WriteString("{")
+	builder.WriteRune('{')
 	if app.staticTags != "" {
 		builder.WriteString(app.staticTags)
-		builder.WriteString(",")
+	}
+	if app.staticTags != "" && dynamicTags != "" {
+		builder.WriteRune(',')
 	}
 	if dynamicTags != "" {
 		builder.WriteString(dynamicTags)
 	}
-	builder.WriteString("}")
+	builder.WriteRune('}')
 
 	return builder.String()
 }
 
 // BodyReader returns an io.Reader that produces the profile data in Pyroscope's folded format.
 func (payload *Payload) BodyReader() io.Reader {
-	var buffer bytes.Buffer
+	b := make([]byte, 0, payload.profileData.Len())
 	first := true
 	for sample, count := range payload.profileData.Data() {
 		if !first {
-			buffer.WriteByte('\n')
+			b = append(b, '\n')
 		} else {
 			first = false
 		}
-		buffer.WriteString(sample)
-		buffer.WriteByte(' ')
-		buffer.WriteString(strconv.Itoa(count))
+		b = append(b, sample...)
+		b = append(b, ' ')
+		b = strconv.AppendInt(b, int64(count), 10)
 	}
-	return &buffer
+	return bytes.NewReader(b)
+
 }
 
 // QueryString generates the URL query string with all parameters for the Pyroscope API.
 func (payload *Payload) QueryString() string {
 	var builder strings.Builder
+	builder.Grow(AppQueryStringEstimatedLength)
+
+	name := url.QueryEscape(payload.metadata.fullAppName(payload.profileData.Tags()))
+	from := payload.profileData.From().Unix()
+	to := payload.profileData.Until().Unix()
 
 	builder.WriteString("name=")
-	builder.WriteString(url.QueryEscape(payload.metadata.fullAppName(payload.profileData.Tags())))
+	builder.WriteString(name)
 	builder.WriteString("&from=")
-	builder.WriteString(strconv.FormatInt(payload.profileData.From().Unix(), 10))
+	builder.WriteString(strconv.FormatInt(from, 10))
 	builder.WriteString("&until=")
-	builder.WriteString(strconv.FormatInt(payload.profileData.Until().Unix(), 10))
+	builder.WriteString(strconv.FormatInt(to, 10))
 	builder.WriteString("&sampleRate=")
 	builder.WriteString(strconv.Itoa(payload.metadata.sampleRate))
 	builder.WriteString("&format=folded")

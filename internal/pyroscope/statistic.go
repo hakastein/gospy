@@ -2,8 +2,9 @@ package pyroscope
 
 import (
 	"context"
-	"github.com/rs/zerolog/log"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // StartStatsAggregator starts a goroutine to aggregate and log statistics every interval.
@@ -19,7 +20,7 @@ func StartStatsAggregator(ctx context.Context, statsChan <-chan *RequestStats, i
 			totalBytes      int
 			successRequests int
 			failedRequests  int
-			statusCodes     = make(map[int]int)
+			errors          = make(map[error]int)
 		)
 
 		for {
@@ -35,7 +36,7 @@ func StartStatsAggregator(ctx context.Context, statsChan <-chan *RequestStats, i
 				} else {
 					failedRequests++
 				}
-				statusCodes[stat.StatusCode]++
+				errors[stat.Error]++
 			case <-ticker.C:
 				if totalRequests > 0 {
 					log.Info().
@@ -43,12 +44,12 @@ func StartStatsAggregator(ctx context.Context, statsChan <-chan *RequestStats, i
 						Int("total_bytes", totalBytes).
 						Int("success_requests", successRequests).
 						Int("failed_requests", failedRequests).
-						Interface("status_codes", statusCodes).
+						Interface("errors", errors).
 						Msg("pyroscope sending statistics")
 
 					// Reset statistics
 					totalRequests, totalBytes, successRequests, failedRequests = 0, 0, 0, 0
-					statusCodes = make(map[int]int)
+					errors = make(map[error]int)
 				}
 			case <-ctx.Done():
 				return

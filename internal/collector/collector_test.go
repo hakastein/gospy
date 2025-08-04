@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hakastein/gospy/internal/collector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hakastein/gospy/internal/collector"
 )
 
 func newTestCollector() *collector.TraceCollector {
@@ -203,5 +204,47 @@ func TestTraceCollector_Subscribe(t *testing.T) {
 		<-time.After(100 * time.Millisecond)
 
 		assert.Equal(t, 0, c.Len(), "Write after cancellation mustn't increase queue len")
+	})
+}
+
+func TestTagCollection(t *testing.T) {
+	t.Run("Getters", func(t *testing.T) {
+		now := time.Now()
+		data := map[string]int{"trace1": 1}
+		expectedData := map[string]int{"trace1": 1}
+		tc := collector.NewTagCollection(now, now.Add(time.Second), "tags", data)
+
+		assert.Equal(t, "tags", tc.Tags())
+		assert.Equal(t, now, tc.From())
+		assert.Equal(t, now.Add(time.Second), tc.Until())
+		assert.Equal(t, expectedData, tc.Data())
+	})
+
+	t.Run("Len", func(t *testing.T) {
+		t.Run("Empty", func(t *testing.T) {
+			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", nil)
+			assert.Equal(t, 0, tc.Len())
+
+			tc = collector.NewTagCollection(time.Time{}, time.Time{}, "", make(map[string]int))
+			assert.Equal(t, 0, tc.Len())
+		})
+
+		t.Run("Single", func(t *testing.T) {
+			// "trace1 123" -> len is 10
+			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", map[string]int{"trace1": 123})
+			expectedLen := len("trace1") + 1 + 3
+			assert.Equal(t, expectedLen, tc.Len())
+		})
+
+		t.Run("Multiple", func(t *testing.T) {
+			// "trace1 123\ntrace2 45" -> len is 10 + 1 + 9 = 20
+			expectedLen := 20
+			data := map[string]int{
+				"trace1": 123,
+				"trace2": 45,
+			}
+			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", data)
+			assert.Equal(t, expectedLen, tc.Len())
+		})
 	})
 }
