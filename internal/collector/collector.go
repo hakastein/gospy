@@ -92,6 +92,8 @@ func NewTraceCollector() *TraceCollector {
 }
 
 func (tc *TraceCollector) Len() int {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
 	return tc.queue.Len()
 }
 
@@ -99,7 +101,6 @@ func (tc *TraceCollector) Len() int {
 // If there are no tags, it returns nil.
 func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 	tc.mu.Lock()
-	defer tc.mu.Unlock()
 
 	elem := tc.queue.Front()
 	if elem == nil {
@@ -111,6 +112,8 @@ func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 
 	tc.queue.Remove(elem)
 	delete(tc.traces, tags)
+
+	tc.mu.Unlock()
 
 	return NewTagCollection(
 		tg.from,

@@ -2,6 +2,7 @@ package collector_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -246,5 +247,65 @@ func TestTagCollection(t *testing.T) {
 			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", data)
 			assert.Equal(t, expectedLen, tc.Len())
 		})
+	})
+}
+
+// setupCollectorWithData is a helper function to create and pre-populate a collector.
+func setupCollectorWithData(numSamples, numTags int) *collector.TraceCollector {
+	tc := collector.NewTraceCollector()
+	for i := 0; i < numSamples; i++ {
+		sample := &collector.Sample{
+			Time:  time.Now(),
+			Trace: fmt.Sprintf("main;func;%d", i),
+			Tags:  fmt.Sprintf("tag%d", i%numTags),
+		}
+		tc.AddSample(sample)
+	}
+	return tc
+}
+
+func BenchmarkTagCollection_Len(b *testing.B) {
+	data := make(map[string]int)
+	for i := 0; i < 100; i++ {
+		data[fmt.Sprintf("trace;number;%d", i)] = i * i
+	}
+	tc := collector.NewTagCollection(time.Now(), time.Now(), "tags", data)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_ = tc.Len()
+	}
+}
+
+func BenchmarkTraceCollector_AddSample(b *testing.B) {
+	numTags := 10
+	tc := setupCollectorWithData(1000, numTags)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		tc.AddSample(&collector.Sample{
+			Time:  time.Now(),
+			Trace: "main;new_func",
+			Tags:  fmt.Sprintf("tag%d", i%numTags),
+		})
+	}
+}
+
+func BenchmarkTraceCollector_ConsumeTag(b *testing.B) {
+	b.ReportAllocs()
+	tc := setupCollectorWithData(b.N, b.N)
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, ok := tc.ConsumeTag()
+			if !ok {
+				b.FailNow()
+			}
+		}
 	})
 }
