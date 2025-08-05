@@ -233,8 +233,13 @@ func TestTagCollection(t *testing.T) {
 		t.Run("Single", func(t *testing.T) {
 			// "trace1 123" -> len is 10
 			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", map[string]int{"trace1": 123})
-			expectedLen := len("trace1") + 1 + 3
-			assert.Equal(t, expectedLen, tc.Len())
+			assert.Equal(t, 10, tc.Len())
+		})
+
+		t.Run("Zero", func(t *testing.T) {
+			// "trace1 0" -> len is 8
+			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", map[string]int{"trace1": 0})
+			assert.Equal(t, 8, tc.Len())
 		})
 
 		t.Run("Multiple", func(t *testing.T) {

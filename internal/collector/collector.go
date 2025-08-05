@@ -9,6 +9,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// For fast counting. We don't expect trace counts to exceed 1 billion
+var countThresholds = []int{10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000}
+
 type Sample struct {
 	Time  time.Time
 	Trace string
@@ -36,18 +39,23 @@ func (tc *TagCollection) Len() int {
 	if len(tc.data) == 0 {
 		return 0
 	}
-	size := len(tc.data) - 1
+	size := len(tc.data)*2 - 1 // new lines and whitespaces
 	for sample, count := range tc.data {
 		size += len(sample)
-		size += 1
 		if count == 0 {
 			size += 1
+			continue
 		}
-		c := count
-		for c > 0 {
-			size++
-			c /= 10
+		// count digits
+		numDigits := 1
+		for _, t := range countThresholds {
+			if count < t {
+				break
+			}
+			numDigits++
 		}
+		size += numDigits
+
 	}
 	return size
 }

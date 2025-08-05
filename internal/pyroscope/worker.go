@@ -17,7 +17,7 @@ type RequestStats struct {
 	Error   error
 }
 
-// Worker manages sending profile data to the Pyroscope server.
+// Worker manages to send profile data to the Pyroscope server.
 type Worker struct {
 	client       *Client
 	appMetadata  *AppMetadata

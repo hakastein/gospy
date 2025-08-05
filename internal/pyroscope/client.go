@@ -52,7 +52,7 @@ func (client *Client) Send(
 	httpReq.Header.Set("Content-Type", "text/plain")
 	httpReq.Header.Set("User-Agent", fmt.Sprintf("gospy/%s/%s", version.Get(), runtime.Version()))
 	if client.authToken != "" {
-		httpReq.Header.Set("Authorization", "Bearer"+client.authToken)
+		httpReq.Header.Set("Authorization", "Bearer "+client.authToken)
 	}
 
 	httpReq.URL.RawQuery = payload.QueryString()
@@ -65,14 +65,19 @@ func (client *Client) Send(
 	}
 	defer resp.Body.Close()
 
+	responseBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusOK && len(responseBody) != 0 {
+		return fmt.Errorf("server has returned body with 200 ok")
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		var result ErrorResponse
-		responseBody, _ := io.ReadAll(resp.Body)
 		jsonParseErr := json.Unmarshal(responseBody, &result)
 		if jsonParseErr != nil {
-			return fmt.Errorf("response isn't json: %s", responseBody)
+			return fmt.Errorf("http code: %d, response isn't json: %s", resp.StatusCode, responseBody)
 		}
-		return fmt.Errorf("http code: %s, error: %s, message: %s", resp.Status, result.Code, result.Message)
+		return fmt.Errorf("http code: %d, error: %s, message: %s", resp.StatusCode, result.Code, result.Message)
 	}
 
 	return nil
