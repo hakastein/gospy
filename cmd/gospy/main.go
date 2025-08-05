@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/hakastein/gospy/internal/version"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
 	"os"
@@ -31,11 +32,6 @@ var validRestartOptions = map[string]bool{
 	RestartNo:        true,
 }
 
-// Version variables to be replaced during build time using ldflags
-var (
-	Version = "dev"
-)
-
 func main() {
 	var verbosity int
 	cli.VersionFlag = &cli.BoolFlag{
@@ -46,7 +42,7 @@ func main() {
 	app := &cli.App{
 		Name:    "gospy",
 		Usage:   "A Go wrapper for sampling profilers that sends traces to Pyroscope",
-		Version: Version,
+		Version: version.Get(),
 		Authors: []*cli.Author{
 			{
 				Name:  "Anton Kolesov",

@@ -1,14 +1,16 @@
 package collector
 
 import (
-	"bytes"
 	"container/list"
 	"context"
-	"github.com/rs/zerolog/log"
-	"strconv"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
+
+// For fast counting. We don't expect trace counts to exceed 1 billion
+var countThresholds = []int{10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000}
 
 type Sample struct {
 	Time  time.Time
@@ -18,21 +20,60 @@ type Sample struct {
 
 // TagCollection represents the Data of traces categorized by Tags over a period of time.
 type TagCollection struct {
-	Tags  string
-	Data  map[string]int
-	From  time.Time
-	Until time.Time
+	tags  string
+	data  map[string]int
+	from  time.Time
+	until time.Time
 }
 
-func (tc *TagCollection) DataToBuffer() *bytes.Buffer {
-	var buffer bytes.Buffer
-	for sample, count := range tc.Data {
-		buffer.WriteString(sample)
-		buffer.WriteByte(' ')
-		buffer.WriteString(strconv.Itoa(count))
-		buffer.WriteByte('\n')
+func NewTagCollection(from time.Time, until time.Time, tags string, data map[string]int) *TagCollection {
+	return &TagCollection{
+		from:  from,
+		until: until,
+		tags:  tags,
+		data:  data,
 	}
-	return &buffer
+}
+
+func (tc *TagCollection) Len() int {
+	if len(tc.data) == 0 {
+		return 0
+	}
+	size := len(tc.data)*2 - 1 // new lines and whitespaces
+	for sample, count := range tc.data {
+		size += len(sample)
+		if count == 0 {
+			size += 1
+			continue
+		}
+		// count digits
+		numDigits := 1
+		for _, t := range countThresholds {
+			if count < t {
+				break
+			}
+			numDigits++
+		}
+		size += numDigits
+
+	}
+	return size
+}
+
+func (tc *TagCollection) Data() map[string]int {
+	return tc.data
+}
+
+func (tc *TagCollection) From() time.Time {
+	return tc.from
+}
+
+func (tc *TagCollection) Until() time.Time {
+	return tc.until
+}
+
+func (tc *TagCollection) Tags() string {
+	return tc.tags
 }
 
 // traceGroup represents a collection of stacks with counts and a time range.
@@ -59,6 +100,8 @@ func NewTraceCollector() *TraceCollector {
 }
 
 func (tc *TraceCollector) Len() int {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
 	return tc.queue.Len()
 }
 
@@ -66,7 +109,6 @@ func (tc *TraceCollector) Len() int {
 // If there are no tags, it returns nil.
 func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 	tc.mu.Lock()
-	defer tc.mu.Unlock()
 
 	elem := tc.queue.Front()
 	if elem == nil {
@@ -79,12 +121,14 @@ func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 	tc.queue.Remove(elem)
 	delete(tc.traces, tags)
 
-	return &TagCollection{
-		From:  tg.from,
-		Until: tg.until,
-		Tags:  tags,
-		Data:  tg.stacks,
-	}, true
+	tc.mu.Unlock()
+
+	return NewTagCollection(
+		tg.from,
+		tg.until,
+		tags,
+		tg.stacks,
+	), true
 }
 
 // AddSample increments the sample count in a traceGroup for a given stack and updates access order.

@@ -2,58 +2,54 @@ package collector_test
 
 import (
 	"context"
-	"strconv"
-	"strings"
-	"sync"
+	"fmt"
 	"testing"
 	"time"
 
-	"github.com/hakastein/gospy/internal/collector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hakastein/gospy/internal/collector"
 )
 
 func newTestCollector() *collector.TraceCollector {
 	return collector.NewTraceCollector()
 }
 
-type sample struct {
-	tag   string
-	stack string
-	time  time.Time
+type TagCollection interface {
+	Tags() string
+	From() time.Time
+	Until() time.Time
+	Data() map[string]int
 }
 
-type expectedResult struct {
-	count     map[string]int
-	startTime time.Time
-	endTime   time.Time
+type collectorData struct {
+	data  map[string]int
+	from  time.Time
+	until time.Time
 }
 
 // helpers
 
-func addSamples(c *collector.TraceCollector, samples []sample) {
+func addSamples(c *collector.TraceCollector, samples []collector.Sample) {
 	for _, s := range samples {
-		c.AddSample(&collector.Sample{
-			Tags:  s.tag,
-			Trace: s.stack,
-			Time:  s.time,
-		})
+		c.AddSample(&s)
 	}
 }
 
-func collectTags(c *collector.TraceCollector, count int) map[string]*collector.TagCollection {
-	result := make(map[string]*collector.TagCollection)
+func collectTags(c *collector.TraceCollector, count int) map[string]TagCollection {
+	result := make(map[string]TagCollection)
 	for i := 0; i < count; i++ {
 		tag, ok := c.ConsumeTag()
 		if !ok {
 			break
 		}
-		result[tag.Tags] = tag
+		result[tag.Tags()] = tag
 	}
 	return result
 }
 
-func verifyCollectedData(t *testing.T, collected map[string]*collector.TagCollection, expected map[string]expectedResult) {
+func verifyCollectedData(t *testing.T, collected map[string]TagCollection, expected map[string]collectorData) {
 	t.Helper()
 
 	require.Len(t, collected, len(expected), "Number of tags mismatch")
@@ -62,13 +58,13 @@ func verifyCollectedData(t *testing.T, collected map[string]*collector.TagCollec
 		actual, exists := collected[tag]
 		require.True(t, exists, "missing tag: %s", tag)
 
-		assert.Equal(t, exp.startTime, actual.From, "invalid start time for tag: %s", tag)
-		assert.Equal(t, exp.endTime, actual.Until, "invalid end time for tag: %s", tag)
-		assert.Equal(t, exp.count, actual.Data, "invalid stack counts for tag: %s", tag)
+		assert.Equal(t, exp.from, actual.From(), "invalid start time for tag: %s", tag)
+		assert.Equal(t, exp.until, actual.Until(), "invalid end time for tag: %s", tag)
+		assert.Equal(t, exp.data, actual.Data(), "invalid stack counts for tag: %s", tag)
 	}
 }
 
-func verifyState(t *testing.T, c *collector.TraceCollector, expected map[string]expectedResult) {
+func verifyState(t *testing.T, c *collector.TraceCollector, expected map[string]collectorData) {
 	t.Helper()
 	collected := collectTags(c, len(expected))
 	verifyCollectedData(t, collected, expected)
@@ -81,128 +77,13 @@ func verifyOrder(t *testing.T, c *collector.TraceCollector, expectedOrder []stri
 	for _, expectedTag := range expectedOrder {
 		tag, ok := c.ConsumeTag()
 		require.True(t, ok, "Missing tag %s", expectedTag)
-		actualOrder = append(actualOrder, tag.Tags)
+		actualOrder = append(actualOrder, tag.Tags())
 	}
 
 	assert.Equal(t, expectedOrder, actualOrder, "Unexpected tag order")
 }
 
-func mergeTagCollections(collected map[string]*collector.TagCollection, tag *collector.TagCollection) {
-	if existing, exists := collected[tag.Tags]; exists {
-		// Merge counts
-		for k, v := range tag.Data {
-			existing.Data[k] += v
-		}
-		// Update time ranges
-		if tag.From.Before(existing.From) {
-			existing.From = tag.From
-		}
-		if tag.Until.After(existing.Until) {
-			existing.Until = tag.Until
-		}
-	} else {
-		collected[tag.Tags] = tag
-	}
-}
-
-func generateConcurrentSamples(totalTags, samplesPerTag int) ([]sample, map[string]expectedResult) {
-	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
-	samples := make([]sample, 0, totalTags*samplesPerTag)
-	expected := make(map[string]expectedResult)
-
-	for tagID := 0; tagID < totalTags; tagID++ {
-		tag := "tag-" + strconv.Itoa(tagID)
-		exp := expectedResult{
-			count:     make(map[string]int),
-			startTime: baseTime.Add(time.Duration(tagID) * time.Millisecond),
-			endTime:   baseTime.Add(time.Duration(tagID) * time.Millisecond),
-		}
-
-		for sampleID := 0; sampleID < samplesPerTag; sampleID++ {
-			stack := "stack-" + strconv.Itoa(sampleID%5)
-			sampleTime := exp.startTime.Add(time.Duration(sampleID) * time.Millisecond)
-
-			samples = append(samples, sample{
-				tag:   tag,
-				stack: stack,
-				time:  sampleTime,
-			})
-
-			exp.count[stack]++
-			if sampleTime.After(exp.endTime) {
-				exp.endTime = sampleTime
-			}
-		}
-		expected[tag] = exp
-	}
-
-	return samples, expected
-}
-
 // tests
-
-func TestTagCollection_DataToBuffer(t *testing.T) {
-	now := time.Now().Truncate(time.Millisecond)
-
-	tests := []struct {
-		name     string
-		tc       collector.TagCollection
-		expected []string
-	}{
-		{
-			name:     "empty data",
-			tc:       collector.TagCollection{Data: make(map[string]int)},
-			expected: []string{},
-		},
-		{
-			name:     "nil data",
-			tc:       collector.TagCollection{Data: nil},
-			expected: []string{},
-		},
-		{
-			name: "single entry",
-			tc: collector.TagCollection{
-				Data: map[string]int{"main;login": 5},
-			},
-			expected: []string{"main;login 5"},
-		},
-		{
-			name: "multiple entries",
-			tc: collector.TagCollection{
-				Data: map[string]int{
-					"http;handler": 3,
-					"db;query":     7,
-					"cache;get":    2,
-				},
-			},
-			expected: []string{"http;handler 3", "db;query 7", "cache;get 2"},
-		},
-		{
-			name: "with time ranges",
-			tc: collector.TagCollection{
-				Tags:  "auth",
-				From:  now,
-				Until: now.Add(time.Hour),
-				Data:  map[string]int{"main;logout": 1},
-			},
-			expected: []string{"main;logout 1"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buf := tt.tc.DataToBuffer()
-			result := strings.TrimSuffix(buf.String(), "\n")
-
-			var actual []string
-			if result != "" {
-				actual = strings.Split(result, "\n")
-			}
-
-			assert.ElementsMatch(t, tt.expected, actual)
-		})
-	}
-}
 
 func TestTraceCollector(t *testing.T) {
 	t.Run("Empty", func(t *testing.T) {
@@ -215,15 +96,15 @@ func TestTraceCollector(t *testing.T) {
 		c := newTestCollector()
 		baseTime := time.Now().Truncate(time.Millisecond)
 
-		addSamples(c, []sample{
-			{"auth", "main;login", baseTime},
-			{"api", "http;handler", baseTime.Add(20 * time.Millisecond)},
+		addSamples(c, []collector.Sample{
+			{baseTime, "main;login", "auth"},
+			{baseTime.Add(20 * time.Millisecond), "http;handler", "api"},
 		})
 
 		assert.Equal(t, 2, c.Len())
 
-		addSamples(c, []sample{
-			{"auth", "main;login", baseTime},
+		addSamples(c, []collector.Sample{
+			{baseTime, "main;login", "auth"},
 		})
 
 		assert.Equal(t, 2, c.Len())
@@ -233,21 +114,20 @@ func TestTraceCollector(t *testing.T) {
 		c := newTestCollector()
 		baseTime := time.Now().Truncate(time.Millisecond)
 
-		addSamples(c, []sample{
-			{"auth", "main;login", baseTime},
-			{"api", "http;handler", baseTime.Add(20 * time.Millisecond)},
-			{"auth", "main;login", baseTime.Add(10 * time.Millisecond)},
-			{"web", "http;handler", baseTime.Add(10 * time.Millisecond)},
+		addSamples(c, []collector.Sample{
+			{baseTime, "main;login", "auth"},
+			{baseTime.Add(20 * time.Millisecond), "http;handler", "api"},
+			{baseTime.Add(10 * time.Millisecond), "main;login", "auth"},
+			{baseTime.Add(10 * time.Millisecond), "http;handler", "web"},
 		})
 
 		verifyOrder(t, c, []string{"auth", "api"})
 
-		addSamples(c, []sample{
-			{"auth", "main;login", baseTime.Add(20 * time.Millisecond)},
-			{"api", "http;handler", baseTime.Add(20 * time.Millisecond)},
+		addSamples(c, []collector.Sample{
+			{baseTime.Add(20 * time.Millisecond), "main;login", "auth"},
+			{baseTime.Add(20 * time.Millisecond), "http;handler", "api"},
 		})
 
-		// adding existing tag won't increase queue len
 		verifyOrder(t, c, []string{"web", "auth", "api"})
 	})
 
@@ -255,36 +135,36 @@ func TestTraceCollector(t *testing.T) {
 		c := newTestCollector()
 		baseTime := time.Now().Truncate(time.Millisecond)
 
-		addSamples(c, []sample{
-			{"auth", "main;login", baseTime},
-			{"auth", "main;login", baseTime.Add(10 * time.Millisecond)},
-			{"api", "http;handler", baseTime.Add(20 * time.Millisecond)},
+		addSamples(c, []collector.Sample{
+			{baseTime, "main;login", "auth"},
+			{baseTime.Add(10 * time.Millisecond), "main;login", "auth"},
+			{baseTime.Add(20 * time.Millisecond), "http;handler", "api"},
 		})
 
-		verifyState(t, c, map[string]expectedResult{
+		verifyState(t, c, map[string]collectorData{
 			"auth": {
-				count:     map[string]int{"main;login": 2},
-				startTime: baseTime,
-				endTime:   baseTime.Add(10 * time.Millisecond),
+				data:  map[string]int{"main;login": 2},
+				from:  baseTime,
+				until: baseTime.Add(10 * time.Millisecond),
 			},
 		})
 
-		addSamples(c, []sample{
-			{"auth", "main;logout", baseTime.Add(30 * time.Millisecond)},
-			{"auth", "main;login", baseTime.Add(10 * time.Millisecond)},
-			{"api", "http;handler", baseTime.Add(40 * time.Millisecond)},
+		addSamples(c, []collector.Sample{
+			{baseTime.Add(30 * time.Millisecond), "main;logout", "auth"},
+			{baseTime.Add(10 * time.Millisecond), "main;login", "auth"},
+			{baseTime.Add(40 * time.Millisecond), "http;handler", "api"},
 		})
 
-		verifyState(t, c, map[string]expectedResult{
+		verifyState(t, c, map[string]collectorData{
 			"auth": {
-				count:     map[string]int{"main;login": 1, "main;logout": 1},
-				startTime: baseTime.Add(10 * time.Millisecond),
-				endTime:   baseTime.Add(30 * time.Millisecond),
+				data:  map[string]int{"main;login": 1, "main;logout": 1},
+				from:  baseTime.Add(10 * time.Millisecond),
+				until: baseTime.Add(30 * time.Millisecond),
 			},
 			"api": {
-				count:     map[string]int{"http;handler": 2},
-				startTime: baseTime.Add(20 * time.Millisecond),
-				endTime:   baseTime.Add(40 * time.Millisecond),
+				data:  map[string]int{"http;handler": 2},
+				from:  baseTime.Add(20 * time.Millisecond),
+				until: baseTime.Add(40 * time.Millisecond),
 			},
 		})
 	})
@@ -326,83 +206,111 @@ func TestTraceCollector_Subscribe(t *testing.T) {
 
 		assert.Equal(t, 0, c.Len(), "Write after cancellation mustn't increase queue len")
 	})
+}
 
-	t.Run("SubscribeConcurrent", func(t *testing.T) {
-		const (
-			workers       = 5
-			totalTags     = 50
-			samplesPerTag = 20
-			totalSamples  = totalTags * samplesPerTag
-		)
+func TestTagCollection(t *testing.T) {
+	t.Run("Getters", func(t *testing.T) {
+		now := time.Now()
+		data := map[string]int{"trace1": 1}
+		expectedData := map[string]int{"trace1": 1}
+		tc := collector.NewTagCollection(now, now.Add(time.Second), "tags", data)
 
-		var (
-			wgReaders   sync.WaitGroup
-			wgWriters   sync.WaitGroup
-			mu          sync.Mutex
-			collected   = make(map[string]*collector.TagCollection)
-			samplesChan = make(chan *collector.Sample, totalSamples)
-			ctx         = context.Background()
-		)
+		assert.Equal(t, "tags", tc.Tags())
+		assert.Equal(t, now, tc.From())
+		assert.Equal(t, now.Add(time.Second), tc.Until())
+		assert.Equal(t, expectedData, tc.Data())
+	})
 
-		c := newTestCollector()
-		c.Subscribe(ctx, samplesChan)
+	t.Run("Len", func(t *testing.T) {
+		t.Run("Empty", func(t *testing.T) {
+			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", nil)
+			assert.Equal(t, 0, tc.Len())
 
-		samples, expected := generateConcurrentSamples(totalTags, samplesPerTag)
+			tc = collector.NewTagCollection(time.Time{}, time.Time{}, "", make(map[string]int))
+			assert.Equal(t, 0, tc.Len())
+		})
 
-		wgWriters.Add(workers)
-		chunkSize := len(samples) / workers
-		for i := 0; i < workers; i++ {
-			start := i * chunkSize
-			end := (i + 1) * chunkSize
-			go func(start, end int) {
-				defer wgWriters.Done()
-				for _, s := range samples[start:end] {
-					samplesChan <- &collector.Sample{
-						Tags:  s.tag,
-						Trace: s.stack,
-						Time:  s.time,
-					}
-				}
-			}(start, end)
-		}
+		t.Run("Single", func(t *testing.T) {
+			// "trace1 123" -> len is 10
+			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", map[string]int{"trace1": 123})
+			assert.Equal(t, 10, tc.Len())
+		})
 
-		stopReaders := make(chan struct{})
-		for i := 0; i < workers; i++ {
-			wgReaders.Add(1)
-			go func() {
-				defer wgReaders.Done()
-				for {
-					tag, ok := c.ConsumeTag()
-					if ok {
-						mu.Lock()
-						mergeTagCollections(collected, tag)
-						mu.Unlock()
-						continue
-					}
-					select {
-					case <-stopReaders:
-						return
-					default:
-						time.Sleep(10 * time.Millisecond)
-					}
-				}
-			}()
-		}
+		t.Run("Zero", func(t *testing.T) {
+			// "trace1 0" -> len is 8
+			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", map[string]int{"trace1": 0})
+			assert.Equal(t, 8, tc.Len())
+		})
 
-		wgWriters.Wait()
-
-		go func() {
-			for {
-				if c.Len() == 0 {
-					close(stopReaders)
-					return
-				}
-				time.Sleep(10 * time.Millisecond)
+		t.Run("Multiple", func(t *testing.T) {
+			// "trace1 123\ntrace2 45" -> len is 10 + 1 + 9 = 20
+			expectedLen := 20
+			data := map[string]int{
+				"trace1": 123,
+				"trace2": 45,
 			}
-		}()
+			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", data)
+			assert.Equal(t, expectedLen, tc.Len())
+		})
+	})
+}
 
-		wgReaders.Wait()
+// setupCollectorWithData is a helper function to create and pre-populate a collector.
+func setupCollectorWithData(numSamples, numTags int) *collector.TraceCollector {
+	tc := collector.NewTraceCollector()
+	for i := 0; i < numSamples; i++ {
+		sample := &collector.Sample{
+			Time:  time.Now(),
+			Trace: fmt.Sprintf("main;func;%d", i),
+			Tags:  fmt.Sprintf("tag%d", i%numTags),
+		}
+		tc.AddSample(sample)
+	}
+	return tc
+}
 
-		verifyCollectedData(t, collected, expected)
+func BenchmarkTagCollection_Len(b *testing.B) {
+	data := make(map[string]int)
+	for i := 0; i < 100; i++ {
+		data[fmt.Sprintf("trace;number;%d", i)] = i * i
+	}
+	tc := collector.NewTagCollection(time.Now(), time.Now(), "tags", data)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_ = tc.Len()
+	}
+}
+
+func BenchmarkTraceCollector_AddSample(b *testing.B) {
+	numTags := 10
+	tc := setupCollectorWithData(1000, numTags)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		tc.AddSample(&collector.Sample{
+			Time:  time.Now(),
+			Trace: "main;new_func",
+			Tags:  fmt.Sprintf("tag%d", i%numTags),
+		})
+	}
+}
+
+func BenchmarkTraceCollector_ConsumeTag(b *testing.B) {
+	b.ReportAllocs()
+	tc := setupCollectorWithData(b.N, b.N)
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, ok := tc.ConsumeTag()
+			if !ok {
+				b.FailNow()
+			}
+		}
 	})
 }

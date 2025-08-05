@@ -5,14 +5,14 @@ import (
 	"unicode/utf8"
 )
 
+const defaultStartKeep = 1
+const defaultEndKeep = 1
+
 // MaskString masks a string by replacing characters with '*'.
 // It preserves the first 'startKeep' and last 'endKeep' runes.
 // If the string length is less than or equal to startKeep + endKeep,
 // it returns a string of '*' with the same length.
 func MaskString(s string, options ...int) string {
-	const defaultStartKeep = 1
-	const defaultEndKeep = 1
-
 	startKeep, endKeep := defaultStartKeep, defaultEndKeep
 	if len(options) >= 1 {
 		startKeep = options[0]

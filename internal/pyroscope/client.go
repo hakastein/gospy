@@ -6,21 +6,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"strconv"
+	"runtime"
 	"strings"
-	"time"
+
+	"github.com/rs/zerolog/log"
+
+	"github.com/hakastein/gospy/internal/version"
 )
 
-// Client handles sending data to Pyroscope with rate limiting.
+// Client handles sending data to Pyroscope server.
 type Client struct {
 	httpClient *http.Client
 	url        string
-	auth       string
-	app        string
-	staticTags string
-	ctx        context.Context
-	rateHz     int
+	authToken  string
 }
 
 type ErrorResponse struct {
@@ -30,89 +28,57 @@ type ErrorResponse struct {
 
 // NewClient initializes and returns a new Client.
 func NewClient(
-	ctx context.Context,
 	url string,
-	auth string,
-	app string,
-	staticTags string,
-	rateHz int,
-	timeout time.Duration,
+	authToken string,
+	httpClient *http.Client,
 ) *Client {
 	return &Client{
-		ctx: ctx,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
-		staticTags: staticTags,
-		app:        app,
-		url:        url,
-		auth:       auth,
-		rateHz:     rateHz,
+		httpClient: httpClient,
+		url:        strings.TrimSuffix(url, "/") + "/ingest",
+		authToken:  authToken,
 	}
 }
 
-// send sends the TagCollection data to Pyroscope and returns the HTTP status code and any error encountered.
-func (cl *Client) send(tags string, from time.Time, until time.Time, body io.Reader) (int, error) {
-	httpReq, err := http.NewRequestWithContext(cl.ctx, "POST", cl.url+"/ingest", body)
+// Send sends the profile data to Pyroscope and returns the HTTP status code and any error encountered.
+func (client *Client) Send(
+	ctx context.Context,
+	payload Payload,
+) error {
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", client.url, payload.BodyReader())
 	if err != nil {
-		return 0, fmt.Errorf("error creating request: %w", err)
+		return fmt.Errorf("error creating request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "text/plain")
-	if cl.auth != "" {
-		httpReq.Header.Set("Authorization", cl.auth)
+	httpReq.Header.Set("User-Agent", fmt.Sprintf("gospy/%s/%s", version.Get(), runtime.Version()))
+	if client.authToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+client.authToken)
 	}
 
-	httpReq.URL.RawQuery = makeQuery(makeAppName(cl.app, cl.staticTags, tags), from, until, cl.rateHz)
+	httpReq.URL.RawQuery = payload.QueryString()
 
-	resp, err := cl.httpClient.Do(httpReq)
+	log.Debug().Str("query", httpReq.URL.RawQuery).Msg("requesting pyroscope")
+
+	resp, err := client.httpClient.Do(httpReq)
 	if err != nil {
-		return 0, fmt.Errorf("error sending request: %w", err)
+		return fmt.Errorf("error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
+	responseBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusOK && len(responseBody) != 0 {
+		return fmt.Errorf("server has returned body with 200 ok")
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		var result ErrorResponse
-		responseBody, _ := io.ReadAll(resp.Body)
 		jsonParseErr := json.Unmarshal(responseBody, &result)
 		if jsonParseErr != nil {
-			return resp.StatusCode, fmt.Errorf("response isn't json: %s", responseBody)
+			return fmt.Errorf("http code: %d, response isn't json: %s", resp.StatusCode, responseBody)
 		}
-		return resp.StatusCode, fmt.Errorf("http code: %s, error: %s, message: %s", resp.Status, result.Code, result.Message)
+		return fmt.Errorf("http code: %d, error: %s, message: %s", resp.StatusCode, result.Code, result.Message)
 	}
 
-	return resp.StatusCode, nil
-}
-
-func makeAppName(appName string, staticTags string, dynamicTags string) string {
-	var builder strings.Builder
-
-	builder.WriteString(appName)
-	builder.WriteString("{")
-	if staticTags != "" {
-		builder.WriteString(staticTags)
-		builder.WriteString(",")
-	}
-	if dynamicTags != "" {
-		builder.WriteString(dynamicTags)
-	}
-	builder.WriteString("}")
-
-	return builder.String()
-}
-
-func makeQuery(name string, from time.Time, until time.Time, rateHz int) string {
-	var builder strings.Builder
-
-	builder.WriteString("name=")
-	builder.WriteString(url.QueryEscape(name))
-	builder.WriteString("&from=")
-	builder.WriteString(strconv.FormatInt(from.Unix(), 10))
-	builder.WriteString("&until=")
-	builder.WriteString(strconv.FormatInt(until.Unix(), 10))
-	builder.WriteString("&sampleRate=")
-	builder.WriteString(strconv.Itoa(rateHz))
-	builder.WriteString("&format=folded")
-
-	return builder.String()
+	return nil
 }
