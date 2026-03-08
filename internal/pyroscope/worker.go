@@ -2,6 +2,7 @@ package pyroscope
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/hakastein/gospy/internal/collector"
 )
+
+const defaultPollInterval = 100 * time.Millisecond
 
 // RequestStats represents the statistics of a single request.
 type RequestStats struct {
@@ -19,35 +22,32 @@ type RequestStats struct {
 
 // Worker manages to send profile data to the Pyroscope server.
 type Worker struct {
-	client       *Client
-	appMetadata  *AppMetadata
+	processor    *Processor
 	collector    *collector.TraceCollector
-	rateLimiter  *rate.Limiter
 	statsChannel chan<- *RequestStats
+	done         chan struct{}
+	wg           sync.WaitGroup
 }
 
 // NewWorker initializes and returns a new Worker with a statistics channel.
 func NewWorker(client *Client, appMetadata *AppMetadata, collector *collector.TraceCollector, rateLimiter *rate.Limiter, statsChannel chan<- *RequestStats) *Worker {
+	processor := NewProcessor(client, appMetadata, rateLimiter)
 	return &Worker{
-		client:       client,
-		appMetadata:  appMetadata,
+		processor:    processor,
 		collector:    collector,
-		rateLimiter:  rateLimiter,
 		statsChannel: statsChannel,
+		done:         make(chan struct{}),
 	}
 }
 
 // Start launches a goroutine to send profile data to Pyroscope server.
-// It continuously consumes data from the collector and sends it to Pyroscope
-// until the context is canceled.
 func (worker *Worker) Start(ctx context.Context) {
+	worker.wg.Add(1)
 	go func() {
+		defer worker.wg.Done()
+		defer close(worker.done)
+
 		log.Info().Msg("pyroscope worker started")
-		var (
-			profileData *collector.TagCollection
-			dataSize    int
-			ok          bool
-		)
 
 		for {
 			select {
@@ -55,50 +55,41 @@ func (worker *Worker) Start(ctx context.Context) {
 				log.Info().Msg("pyroscope worker shutting down")
 				return
 			default:
-				profileData, ok = worker.collector.ConsumeTag()
-				if !ok {
-					// No data available. Sleep briefly.
-					time.Sleep(100 * time.Millisecond)
-					continue
+				if !worker.processNext(ctx) {
+					time.Sleep(defaultPollInterval)
 				}
-
-				dataSize = profileData.Len()
-
-				// Respect rate limiting
-				if err := worker.rateLimiter.WaitN(ctx, dataSize); err != nil {
-					log.Error().
-						Err(err).
-						Msg("rate limiter error")
-					continue
-				}
-
-				payload := worker.appMetadata.NewPayload(profileData)
-
-				// Attempt to send the request
-				err := worker.client.Send(ctx, payload)
-				if err != nil {
-					// @TODO make retry for certain type of errors
-					worker.statsChannel <- &RequestStats{
-						Bytes:   dataSize,
-						Success: false,
-					}
-
-					log.Error().
-						Err(err).
-						Msg("failed to send data to Pyroscope")
-					continue
-				}
-
-				worker.statsChannel <- &RequestStats{
-					Bytes:   dataSize,
-					Success: true,
-					Error:   err,
-				}
-
-				log.Debug().
-					Str("tags", profileData.Tags()).
-					Msg("successfully sent data to Pyroscope")
 			}
 		}
 	}()
+}
+
+// processNext handles one iteration - simple coordinator logic
+func (worker *Worker) processNext(ctx context.Context) bool {
+	profileData, ok := worker.collector.ConsumeTag()
+	if !ok {
+		return false
+	}
+
+	dataSize := profileData.Len()
+	err := worker.processor.ProcessData(ctx, profileData)
+
+	// Log the results
+	if err != nil {
+		log.Error().
+			Err(err).
+			Msg("failed to send data to Pyroscope")
+	} else {
+		log.Debug().
+			Str("tags", profileData.Tags()).
+			Msg("successfully sent data to Pyroscope")
+	}
+
+	// Create and send statistics
+	stats := &RequestStats{
+		Bytes:   dataSize,
+		Success: err == nil,
+		Error:   err,
+	}
+	worker.statsChannel <- stats
+	return true
 }
