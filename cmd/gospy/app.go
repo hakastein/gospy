@@ -153,8 +153,9 @@ func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
 	)
 
 	pyroscopeIngester := pyroscope.NewAppMetadata(appName, staticTags, samplingRateHZ)
+	statsAggregator := pyroscope.NewStatsAggregator(statsChannel, statsInterval)
 
-	pyroscope.StartStatsAggregator(ctx, statsChannel, statsInterval)
+	statsAggregator.Start(ctx)
 
 	for workerNumber := 1; workerNumber <= pyroscopeWorkers; workerNumber++ {
 		// each worker will consume traces by tag from the traceCollector queue
