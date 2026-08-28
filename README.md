@@ -174,7 +174,7 @@ wait
 - `--entrypoint`: Limit traces to certain entry points (e.g., `index.php`), it
   supports [glob double](https://github.com/bmatcuk/doublestar) star expressions. **Can be used multiple times**.
 - `--instance-name`: Name of the `gospy` instance for logging purposes. Default is `gospy`.
-- `--stats-interval`: Interval at which the application will log its sending statistics. Default: `10`
+- `--stats-interval`: Interval at which the application will log its sending statistics. Set to `0` or less to disable statistics logging. Default: `10`
 - `--verbose` or `-v`: Increase verbosity. Use multiple times for higher verbosity levels (e.g., `-vv`).
 
 ### Detailed Parameter Descriptions

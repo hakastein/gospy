@@ -1,166 +1,100 @@
-package app
+package app_test
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/hakastein/gospy/internal/collector"
-	"github.com/hakastein/gospy/internal/parser"
-	"github.com/hakastein/gospy/internal/pyroscope"
-	"github.com/hakastein/gospy/internal/tag"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hakastein/gospy/internal/app"
 )
 
-type fakeProfiler struct {
-	scanner  *bufio.Scanner
-	startErr error
-	waitErr  error
+func writeProfilerScript(t *testing.T, relativePath string, body string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(t.TempDir(), relativePath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(scriptPath), 0o755))
+	require.NoError(t, os.WriteFile(scriptPath, []byte(body), 0o755))
+	return scriptPath
 }
 
-func (f *fakeProfiler) Start(ctx context.Context) (*bufio.Scanner, error) {
-	return f.scanner, f.startErr
-}
+func TestRun(t *testing.T) {
+	t.Parallel()
 
-func (f *fakeProfiler) Wait() error {
-	return f.waitErr
-}
-
-func (f *fakeProfiler) IsConfigurationValid() (bool, error) {
-	return true, nil
-}
-
-func (f *fakeProfiler) GetHZ() int {
-	return 99
-}
-
-type fakeParser struct{}
-
-func (f *fakeParser) Parse(ctx context.Context, scanner *bufio.Scanner, samples chan<- *collector.Sample) {
-	for scanner.Scan() {
-	}
-}
-
-func TestRunStopsAfterProfilerExit(t *testing.T) {
-	cfg := Config{
-		PyroscopeURL:     "http://pyroscope.test",
-		PyroscopeWorkers: 0,
-		Restart:          "no",
-		ProfilerApp:      "phpspy",
-		StatsInterval:    time.Second,
-	}
-
-	deps := dependencies{
-		newProfiler: func(profilerApp string, profilerArguments []string) (profilerInstance, error) {
-			return &fakeProfiler{
-				scanner: bufio.NewScanner(strings.NewReader("")),
-			}, nil
+	testCases := []struct {
+		name    string
+		config  func(*testing.T) app.Config
+		wantErr error
+	}{
+		{
+			name: "allows negative stats interval to disable statistics",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:   writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					StatsInterval: -time.Second,
+					Restart:       "no",
+				}
+			},
+			wantErr: nil,
 		},
-		newParser: func(profilerApp string, entryPoints []string, tagsMapping map[string][]tag.DynamicTag, tagEntrypoint bool, keepEntrypointName bool) (parserInstance, error) {
-			return &fakeParser{}, nil
+		{
+			name: "allows zero stats interval to disable statistics",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:   writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					StatsInterval: 0,
+					Restart:       "no",
+				}
+			},
+			wantErr: nil,
 		},
-		newClient: func(pyroscopeURL string, pyroscopeAuth string, pyroscopeTimeout time.Duration) *pyroscope.Client {
-			return pyroscope.NewClient(pyroscopeURL, pyroscopeAuth, nil)
+		{
+			name: "returns error when profiler executable is missing",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:   filepath.Join(t.TempDir(), "phpspy"),
+					StatsInterval: time.Second,
+				}
+			},
+			wantErr: errors.New("no such file or directory"),
 		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runWithDependencies(ctx, cfg, deps)
-	}()
-
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Run did not return after profiler exit")
-	}
-}
-
-func TestRunAcceptsProfilerPath(t *testing.T) {
-	cfg := Config{
-		PyroscopeURL:     "http://pyroscope.test",
-		PyroscopeWorkers: 0,
-		Restart:          "no",
-		ProfilerApp:      "/usr/bin/phpspy",
-		StatsInterval:    time.Second,
-	}
-
-	deps := dependencies{
-		newProfiler: func(profilerApp string, profilerArguments []string) (profilerInstance, error) {
-			return &fakeProfiler{
-				scanner: bufio.NewScanner(strings.NewReader("")),
-			}, nil
+		{
+			name: "accepts profiler path",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:   writeProfilerScript(t, filepath.Join("usr", "bin", "phpspy"), "#!/bin/sh\nexit 0\n"),
+					StatsInterval: time.Second,
+					Restart:       "no",
+				}
+			},
+			wantErr: nil,
 		},
-		newParser: func(profilerApp string, entryPoints []string, tagsMapping map[string][]tag.DynamicTag, tagEntrypoint bool, keepEntrypointName bool) (parserInstance, error) {
-			return parser.Init(profilerApp, entryPoints, tagsMapping, tagEntrypoint, keepEntrypointName)
-		},
-		newClient: func(pyroscopeURL string, pyroscopeAuth string, pyroscopeTimeout time.Duration) *pyroscope.Client {
-			return pyroscope.NewClient(pyroscopeURL, pyroscopeAuth, nil)
+		{
+			name: "returns profiler exit error",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:   writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 7\n"),
+					StatsInterval: time.Second,
+					Restart:       "no",
+				}
+			},
+			wantErr: errors.New("exit status 7"),
 		},
 	}
 
-	err := runWithDependencies(context.Background(), cfg, deps)
-	require.NoError(t, err)
-}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := app.Run(context.Background(), tc.config(t))
+			if tc.wantErr != nil {
+				require.ErrorContains(t, err, tc.wantErr.Error())
+				return
+			}
 
-func TestRunReturnsProfilerStartError(t *testing.T) {
-	cfg := Config{
-		PyroscopeURL:     "http://pyroscope.test",
-		PyroscopeWorkers: 0,
-		Restart:          "no",
-		ProfilerApp:      "phpspy",
-		StatsInterval:    time.Second,
+			require.NoError(t, err)
+		})
 	}
-
-	startErr := errors.New("start failed")
-	deps := dependencies{
-		newProfiler: func(profilerApp string, profilerArguments []string) (profilerInstance, error) {
-			return &fakeProfiler{startErr: startErr}, nil
-		},
-		newParser: func(profilerApp string, entryPoints []string, tagsMapping map[string][]tag.DynamicTag, tagEntrypoint bool, keepEntrypointName bool) (parserInstance, error) {
-			return &fakeParser{}, nil
-		},
-		newClient: func(pyroscopeURL string, pyroscopeAuth string, pyroscopeTimeout time.Duration) *pyroscope.Client {
-			return pyroscope.NewClient(pyroscopeURL, pyroscopeAuth, nil)
-		},
-	}
-
-	err := runWithDependencies(context.Background(), cfg, deps)
-	require.ErrorIs(t, err, startErr)
-}
-
-func TestRunReturnsProfilerWaitError(t *testing.T) {
-	cfg := Config{
-		PyroscopeURL:     "http://pyroscope.test",
-		PyroscopeWorkers: 0,
-		Restart:          "no",
-		ProfilerApp:      "phpspy",
-		StatsInterval:    time.Second,
-	}
-
-	waitErr := errors.New("wait failed")
-	deps := dependencies{
-		newProfiler: func(profilerApp string, profilerArguments []string) (profilerInstance, error) {
-			return &fakeProfiler{
-				scanner: bufio.NewScanner(strings.NewReader("")),
-				waitErr: waitErr,
-			}, nil
-		},
-		newParser: func(profilerApp string, entryPoints []string, tagsMapping map[string][]tag.DynamicTag, tagEntrypoint bool, keepEntrypointName bool) (parserInstance, error) {
-			return &fakeParser{}, nil
-		},
-		newClient: func(pyroscopeURL string, pyroscopeAuth string, pyroscopeTimeout time.Duration) *pyroscope.Client {
-			return pyroscope.NewClient(pyroscopeURL, pyroscopeAuth, nil)
-		},
-	}
-
-	err := runWithDependencies(context.Background(), cfg, deps)
-	require.ErrorIs(t, err, waitErr)
 }

@@ -5,11 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/hakastein/gospy/internal/args"
 	"github.com/rs/zerolog/log"
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/hakastein/gospy/internal/args"
 )
 
 // Profiler implementation of profiler.Profiler
@@ -30,24 +31,32 @@ func NewProfiler(
 	}
 }
 
-func (profiler *Profiler) Start(ctx context.Context) (*bufio.Scanner, error) {
+func (profiler *Profiler) Start(ctx context.Context) (*bufio.Scanner, *bufio.Scanner, error) {
 	profiler.mu.Lock()
 	defer profiler.mu.Unlock()
 
 	cmd := exec.CommandContext(ctx, profiler.executable, profiler.args...)
+	log.Debug().
+		Str("executable", profiler.executable).
+		Strs("args", profiler.args).
+		Msg("launching profiler process")
 
 	stdout, pipeError := cmd.StdoutPipe()
 	if pipeError != nil {
-		return nil, fmt.Errorf("stdout pipe error: %w", pipeError)
+		return nil, nil, fmt.Errorf("stdout pipe error: %w", pipeError)
+	}
+
+	stderr, pipeError := cmd.StderrPipe()
+	if pipeError != nil {
+		return nil, nil, fmt.Errorf("stderr pipe error: %w", pipeError)
 	}
 
 	if startError := cmd.Start(); startError != nil {
-		return nil, startError
+		return nil, nil, startError
 	}
 
 	profiler.cmd = cmd
-	scanner := bufio.NewScanner(stdout)
-	return scanner, nil
+	return bufio.NewScanner(stdout), bufio.NewScanner(stderr), nil
 }
 
 func (profiler *Profiler) Wait() error {

@@ -1,41 +1,35 @@
-package pyroscope
+package pyroscope_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/hakastein/gospy/internal/pyroscope"
 	"github.com/stretchr/testify/require"
 )
 
 func TestStatsAggregatorCountsOnlyRealErrors(t *testing.T) {
-	var output bytes.Buffer
-	previousLogger := log.Logger
-	log.Logger = zerolog.New(&output)
-	defer func() {
-		log.Logger = previousLogger
-	}()
+	t.Parallel()
 
-	statsChan := make(chan *RequestStats, 2)
-	statsChan <- &RequestStats{Bytes: 10, Success: true}
-	statsChan <- &RequestStats{Bytes: 5, Success: false, Error: errors.New("boom")}
+	statsChan := make(chan *pyroscope.SendResult, 2)
+	statsChan <- &pyroscope.SendResult{Bytes: 10}
+	statsChan <- &pyroscope.SendResult{Bytes: 5, Err: errors.New("boom")}
+	close(statsChan)
+
+	aggregator := pyroscope.NewStatsAggregator(statsChan, time.Hour)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	aggregator := NewStatsAggregator(statsChan, 10*time.Millisecond)
 	aggregator.Start(ctx)
+	report := <-aggregator.Reports()
+	aggregator.Wait()
 
-	time.Sleep(30 * time.Millisecond)
-	cancel()
-
-	require.Contains(t, output.String(), "\"failed_requests\":1")
-	require.Contains(t, output.String(), "\"success_requests\":1")
-	require.Contains(t, output.String(), "\"errors\":{\"boom\":1}")
-	require.NotContains(t, strings.ReplaceAll(output.String(), " ", ""), "<nil>")
+	require.Equal(t, 2, report.TotalRequests)
+	require.Equal(t, 15, report.TotalBytes)
+	require.Equal(t, 1, report.SuccessRequests)
+	require.Equal(t, 1, report.FailedRequests)
+	require.Equal(t, map[string]int{"boom": 1}, report.Errors)
 }

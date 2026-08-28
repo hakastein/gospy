@@ -62,20 +62,32 @@ func (parser *Parser) Parse(
 	for {
 		select {
 		case <-ctx.Done():
+			log.Debug().Msg("parser stopped due to context cancellation")
 			return
 		default:
 			if !scanner.Scan() {
+				if len(parser.currentTrace) > 0 {
+					if !parser.processTrace(ctx, foldedStacks) {
+						return
+					}
+				}
 				if err := scanner.Err(); err != nil {
 					log.Error().Err(err).Msg("Error reading from stdout")
 				}
-				log.Debug().Msg("Scanner has been closed")
+				log.Debug().
+					Int("pending_trace_lines", len(parser.currentTrace)).
+					Int("pending_meta_lines", len(parser.currentMeta)).
+					Msg("scanner has been closed")
 				return
 			}
 
 			line := scanner.Text()
+			log.Trace().Str("line", line).Msg("read profiler output line")
 
 			if trimmed := strings.TrimSpace(line); trimmed == "" {
-				parser.processTrace(foldedStacks)
+				if !parser.processTrace(ctx, foldedStacks) {
+					return
+				}
 				continue
 			}
 
@@ -99,12 +111,13 @@ func (parser *Parser) addToMeta(line string) {
 
 // processTrace converts the current trace to a folded stack and sends it to the foldedStacks channel.
 func (parser *Parser) processTrace(
+	ctx context.Context,
 	foldedStacks chan<- *collector.Sample,
-) {
+) bool {
 	defer parser.resetState()
 
 	if len(parser.currentTrace) == 0 {
-		return
+		return true
 	}
 
 	sample, entryPoint, convertError := transform.TracesToFoldedStacks(parser.currentTrace, parser.keepEntrypointName)
@@ -113,21 +126,30 @@ func (parser *Parser) processTrace(
 			Err(convertError).
 			Str("sample", strings.Join(parser.currentTrace, "\n")).
 			Msg("Failed to convert trace")
-		return
+		return true
 	}
 
 	if !parser.epValidator.IsValid(entryPoint) {
 		log.Debug().
 			Str("entrypoint", entryPoint).
 			Msg("Disallowed entrypoint in trace")
-		return
+		return true
 	}
 
 	parser.buildTags(entryPoint)
-	foldedStacks <- &collector.Sample{Trace: sample, Tags: parser.tags.String(), Time: time.Now()}
+	select {
+	case foldedStacks <- &collector.Sample{Trace: sample, Tags: parser.tags.String(), Time: time.Now()}:
+	case <-ctx.Done():
+		return false
+	}
+	log.Debug().
+		Str("entrypoint", entryPoint).
+		Str("tags", parser.tags.String()).
+		Msg("queued parsed sample")
 	log.Trace().
 		Str("sample", sample).
 		Msg("Trace processed")
+	return true
 }
 
 // buildTags constructs the tags string based on metadata and entry point.

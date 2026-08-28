@@ -109,6 +109,7 @@ func (tc *TraceCollector) Len() int {
 // If there are no tags, it returns nil.
 func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 	tc.mu.Lock()
+	defer tc.mu.Unlock()
 
 	elem := tc.queue.Front()
 	if elem == nil {
@@ -120,8 +121,6 @@ func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 
 	tc.queue.Remove(elem)
 	delete(tc.traces, tags)
-
-	tc.mu.Unlock()
 
 	return NewTagCollection(
 		tg.from,
@@ -155,22 +154,26 @@ func (tc *TraceCollector) AddSample(stack *Sample) {
 		tg.from = stack.Time
 	}
 	tg.stacks[stack.Trace]++
+	log.Trace().
+		Str("tags", stack.Tags).
+		Str("trace", stack.Trace).
+		Int("trace_count", tg.stacks[stack.Trace]).
+		Int("queued_tag_groups", tc.queue.Len()).
+		Msg("sample added to collector")
 }
 
-// Subscribe starts a goroutine that listens to stacksChannel and adds samples to the TraceCollector.
-func (tc *TraceCollector) Subscribe(ctx context.Context, stacksChannel <-chan *Sample) {
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				log.Info().Msg("shutdown subscriber")
+// Collect returns once stacksChannel is closed, so callers can use it as the drain barrier before shutting down downstream stages.
+func (tc *TraceCollector) Collect(ctx context.Context, stacksChannel <-chan *Sample) {
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("shutdown subscriber")
+			return
+		case sample, ok := <-stacksChannel:
+			if !ok {
 				return
-			case sample, ok := <-stacksChannel:
-				if !ok {
-					return
-				}
-				tc.AddSample(sample)
 			}
+			tc.AddSample(sample)
 		}
-	}()
+	}
 }

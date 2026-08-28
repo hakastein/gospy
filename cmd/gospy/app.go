@@ -2,26 +2,12 @@ package main
 
 import (
 	"context"
-	"errors"
-	"net/http"
-	"os"
-	"os/signal"
-	"sync"
-	"syscall"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
-	"golang.org/x/time/rate"
 
-	"github.com/hakastein/gospy/internal/collector"
-	"github.com/hakastein/gospy/internal/obfuscation"
-	"github.com/hakastein/gospy/internal/parser"
-	"github.com/hakastein/gospy/internal/profiler"
-	"github.com/hakastein/gospy/internal/pyroscope"
-	"github.com/hakastein/gospy/internal/supervisor"
-	"github.com/hakastein/gospy/internal/tag"
-	"github.com/hakastein/gospy/internal/version"
+	"github.com/hakastein/gospy/internal/app"
 )
 
 func setupLogger(verbose int, instanceName string) {
@@ -38,134 +24,29 @@ func setupLogger(verbose int, instanceName string) {
 	log.Logger = log.Logger.With().Str("instance", instanceName).Logger()
 }
 
-func run(ctx context.Context, cancel context.CancelFunc, c *cli.Context) error {
-	var (
-		pyroscopeURL                     = c.String("pyroscope")
-		pyroscopeAuth                    = c.String("pyroscope-auth")
-		pyroscopeWorkers                 = c.Int("pyroscope-workers")
-		pyroscopeTimeout                 = c.Duration("pyroscope-timeout")
-		tagEntrypoint                    = c.Bool("tag-entrypoint")
-		keepEntrypointName               = c.Bool("keep-entrypoint-name")
-		appName                          = c.String("app")
-		restart                          = c.String("restart")
-		rateLimit                        = int(c.Float64("rate-mb") * Megabyte)
-		rateBurst                        = int(c.Float64("rate-burst-mb") * Megabyte)
-		appTags                          = c.StringSlice("tag")
-		staticTags, dynamicTags, tagsErr = tag.ParseInput(appTags)
-		entryPoints                      = c.StringSlice("entrypoint")
-		statsInterval                    = c.Duration("stats-interval")
-		arguments                        = c.Args().Slice()
-	)
+func run(ctx context.Context, c *cli.Context) error {
+	arguments := c.Args().Slice()
 
-	if tagsErr != nil {
-		return tagsErr
+	cfg := app.Config{
+		PyroscopeURL:       c.String("pyroscope"),
+		PyroscopeAuth:      c.String("pyroscope-auth"),
+		PyroscopeWorkers:   c.Int("pyroscope-workers"),
+		PyroscopeTimeout:   c.Duration("pyroscope-timeout"),
+		TagEntrypoint:      c.Bool("tag-entrypoint"),
+		KeepEntrypointName: c.Bool("keep-entrypoint-name"),
+		AppName:            c.String("app"),
+		Restart:            c.String("restart"),
+		RateMB:             c.Float64("rate-mb"),
+		RateBurstMB:        c.Float64("rate-burst-mb"),
+		AppTags:            c.StringSlice("tag"),
+		Entrypoints:        c.StringSlice("entrypoint"),
+		StatsInterval:      c.Duration("stats-interval"),
 	}
 
-	if len(arguments) == 0 {
-		return errors.New("no profiler application specified")
+	if len(arguments) > 0 {
+		cfg.ProfilerApp = arguments[0]
+		cfg.ProfilerArguments = arguments[1:]
 	}
 
-	log.Info().
-		Str("pyroscope_url", pyroscopeURL).
-		Str("pyroscope_auth", obfuscation.MaskString(pyroscopeAuth, 4, 2)).
-		Str("app_name", appName).
-		Bool("tag_entrypoint", tagEntrypoint).
-		Bool("keep_entrypoint_name", keepEntrypointName).
-		Str("restart", restart).
-		Int("rate_bytes", rateLimit).
-		Int("rate_burst", rateBurst).
-		Str("version", version.Get()).
-		Strs("tags", appTags).
-		Msg("gospy started")
-
-	stacksChannel := make(chan *collector.Sample, 1000)
-	signalsChannel := make(chan os.Signal, 1)
-	statsChannel := make(chan *pyroscope.RequestStats, 1000)
-
-	profilerApp := arguments[0]
-	profilerArguments := arguments[1:]
-
-	profilerInstance, profilerError := profiler.Init(profilerApp, profilerArguments)
-	if profilerError != nil {
-		return profilerError
-	}
-	// Terminate app if profiler arguments aren't supported by gospy
-	if sup, unsupportableError := profilerInstance.IsConfigurationValid(); !sup {
-		return unsupportableError
-	}
-	// Get sample rate from profiler settings
-	samplingRateHZ := profilerInstance.GetHZ()
-
-	parserInstance, parserError := parser.Init(
-		profilerApp,
-		entryPoints,
-		dynamicTags,
-		tagEntrypoint,
-		keepEntrypointName,
-	)
-	if parserError != nil {
-		return parserError
-	}
-
-	signal.Notify(signalsChannel, syscall.SIGTERM, syscall.SIGINT)
-	// Handle OS signals
-	go func() {
-		select {
-		case sig := <-signalsChannel:
-			log.Info().Str("signal", sig.String()).Msg("signal received")
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	go func() {
-		defer close(stacksChannel)
-		defer wg.Done()
-
-		// Run profiles and parser, transform traces to stack format and send to stacksChannel
-		// Restart profiler if set
-		supervisor.ManageProfiler(
-			ctx,
-			profilerInstance,
-			parserInstance,
-			stacksChannel,
-			restart,
-		)
-	}()
-
-	rateLimiter := rate.NewLimiter(rate.Limit(rateLimit), rateBurst)
-
-	// Trace collector is queue-like struct
-	traceCollector := collector.NewTraceCollector()
-	traceCollector.Subscribe(ctx, stacksChannel)
-
-	httpClient := &http.Client{
-		Timeout: pyroscopeTimeout,
-	}
-
-	pyroscopeClient := pyroscope.NewClient(
-		pyroscopeURL,
-		pyroscopeAuth,
-		httpClient,
-	)
-
-	pyroscopeIngester := pyroscope.NewAppMetadata(appName, staticTags, samplingRateHZ)
-	statsAggregator := pyroscope.NewStatsAggregator(statsChannel, statsInterval)
-
-	statsAggregator.Start(ctx)
-
-	for workerNumber := 1; workerNumber <= pyroscopeWorkers; workerNumber++ {
-		// each worker will consume traces by tag from the traceCollector queue
-		sender := pyroscope.NewWorker(pyroscopeClient, pyroscopeIngester, traceCollector, rateLimiter, statsChannel)
-		sender.Start(ctx)
-	}
-
-	wg.Wait()
-	<-ctx.Done()
-	log.Info().Msg("shutting down")
-
-	return nil
+	return app.Run(ctx, cfg)
 }

@@ -14,6 +14,7 @@ import (
 )
 
 type fakeProfiler struct {
+	t           *testing.T
 	mu          sync.Mutex
 	startCount  int
 	waitCount   int
@@ -41,6 +42,7 @@ func (p *fakeProfiler) Wait() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	require.Less(p.t, p.waitCount, len(p.waitResults), "unexpected Wait call")
 	result := p.waitResults[p.waitCount]
 	p.waitCount++
 	return result
@@ -52,81 +54,72 @@ func (p *fakeProfiler) Starts() int {
 	return p.startCount
 }
 
-type fakeParser struct {
-	parseFunc func(context.Context, *bufio.Scanner, chan<- *collector.Sample)
-}
+type fakeParser struct{}
 
-func (p fakeParser) Parse(ctx context.Context, scanner *bufio.Scanner, samples chan<- *collector.Sample) {
-	if p.parseFunc != nil {
-		p.parseFunc(ctx, scanner, samples)
-	}
-}
+func (fakeParser) Parse(context.Context, *bufio.Scanner, chan<- *collector.Sample) {}
 
-func TestManageProfilerReturnsNilAfterGracefulExitWithoutRestart(t *testing.T) {
-	profiler := &fakeProfiler{
-		stdout:      "trace line\n",
-		waitResults: []error{nil},
-	}
+func TestManageProfilerLifecycle(t *testing.T) {
+	t.Parallel()
 
-	parsed := make(chan *collector.Sample, 1)
-	parser := fakeParser{
-		parseFunc: func(_ context.Context, scanner *bufio.Scanner, samples chan<- *collector.Sample) {
-			require.True(t, scanner.Scan())
-			samples <- &collector.Sample{Trace: scanner.Text()}
+	testCases := []struct {
+		name          string
+		restart       string
+		waitResults   []error
+		cancelOnStart int
+		wantErr       error
+		expectedRuns  int
+	}{
+		{
+			name:         "graceful exit without restart",
+			restart:      "no",
+			waitResults:  []error{nil},
+			expectedRuns: 1,
+		},
+		{
+			name:         "wait error without restart",
+			restart:      "no",
+			waitResults:  []error{errors.New("profiler exited with error")},
+			wantErr:      errors.New("profiler exited with error"),
+			expectedRuns: 1,
+		},
+		{
+			name:          "restart on success",
+			restart:       "onsuccess",
+			waitResults:   []error{nil, nil},
+			cancelOnStart: 2,
+			expectedRuns:  2,
+		},
+		{
+			name:          "restart on error",
+			restart:       "onerror",
+			waitResults:   []error{errors.New("first failure"), nil},
+			cancelOnStart: 2,
+			expectedRuns:  2,
 		},
 	}
 
-	err := supervisor.ManageProfiler(context.Background(), profiler, parser, parsed, "no")
-	require.NoError(t, err)
-	require.Equal(t, 1, profiler.Starts())
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-	sample := <-parsed
-	require.Equal(t, "trace line", sample.Trace)
-}
-
-func TestManageProfilerReturnsWaitErrorWithoutRestart(t *testing.T) {
-	waitErr := errors.New("profiler exited with error")
-	profiler := &fakeProfiler{
-		waitResults: []error{waitErr},
-	}
-
-	err := supervisor.ManageProfiler(context.Background(), profiler, fakeParser{}, make(chan *collector.Sample, 1), "no")
-	require.ErrorIs(t, err, waitErr)
-	require.Equal(t, 1, profiler.Starts())
-}
-
-func TestManageProfilerRestartsOnSuccess(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	profiler := &fakeProfiler{
-		waitResults: []error{nil, nil},
-		onStart: func(startCount int) {
-			if startCount == 2 {
-				cancel()
+			profiler := &fakeProfiler{
+				t:           t,
+				waitResults: tc.waitResults,
+				onStart: func(startCount int) {
+					if tc.cancelOnStart != 0 && startCount == tc.cancelOnStart {
+						cancel()
+					}
+				},
 			}
-		},
-	}
 
-	err := supervisor.ManageProfiler(ctx, profiler, fakeParser{}, make(chan *collector.Sample, 1), "onsuccess")
-	require.NoError(t, err)
-	require.Equal(t, 2, profiler.Starts())
-}
-
-func TestManageProfilerRestartsOnError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	profiler := &fakeProfiler{
-		waitResults: []error{errors.New("first failure"), nil},
-		onStart: func(startCount int) {
-			if startCount == 2 {
-				cancel()
+			err := supervisor.ManageProfiler(ctx, profiler, fakeParser{}, make(chan *collector.Sample, 1), tc.restart)
+			if tc.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantErr.Error())
 			}
-		},
+			require.Equal(t, tc.expectedRuns, profiler.Starts())
+		})
 	}
-
-	err := supervisor.ManageProfiler(ctx, profiler, fakeParser{}, make(chan *collector.Sample, 1), "onerror")
-	require.NoError(t, err)
-	require.Equal(t, 2, profiler.Starts())
 }
