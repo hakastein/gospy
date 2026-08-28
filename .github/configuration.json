@@ -1,0 +1,68 @@
+{
+  "categories": [
+    {
+      "title": "## 💥 Breaking Changes",
+      "labels": ["breaking"],
+      "consume": true
+    },
+    {
+      "title": "## 🚀 Features",
+      "labels": ["feature", "feat", "enhancement"],
+      "consume": true
+    },
+    {
+      "title": "## 🐛 Fixes",
+      "labels": ["fix", "bug"],
+      "consume": true
+    },
+    {
+      "title": "## ⚡ Performance",
+      "labels": ["performance", "perf"],
+      "consume": true
+    },
+    {
+      "title": "## ♻️ Refactoring",
+      "labels": ["refactor"],
+      "consume": true
+    },
+    {
+      "title": "## 🧪 Tests",
+      "labels": ["test"],
+      "consume": true
+    },
+    {
+      "title": "## 📚 Documentation",
+      "labels": ["documentation", "docs"],
+      "consume": true
+    },
+    {
+      "title": "## 🏗️ Build & CI",
+      "labels": ["ci/cd", "ci", "build"],
+      "consume": true
+    },
+    {
+      "title": "## 🧹 Chores",
+      "labels": ["chore", "style", "revert"],
+      "consume": true
+    },
+    {
+      "title": "## 📦 Uncategorized",
+      "labels": []
+    }
+  ],
+  "ignore_labels": ["ignore", "duplicate", "wontfix"],
+  "label_extractor": [
+    {
+      "pattern": "^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test){1}(\\([\\w\\-\\.]+\\))?(!)?: ([\\w ])+([\\s\\S]*)",
+      "on_property": "title",
+      "target": "$1"
+    }
+  ],
+  "sort": {
+    "order": "ASC",
+    "on_property": "mergedAt"
+  },
+  "template": "#{{CHANGELOG}}\n\n**Full Changelog**: #{{RELEASE_DIFF}}",
+  "pr_template": "- #{{TITLE}} (##{{NUMBER}}) by @#{{AUTHOR}}",
+  "empty_template": "- no user-facing changes"
+}
