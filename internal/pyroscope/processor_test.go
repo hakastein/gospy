@@ -2,8 +2,8 @@ package pyroscope_test
 
 import (
 	"context"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -17,10 +17,13 @@ import (
 )
 
 func TestProcessor_ProcessData_Success(t *testing.T) {
-	server := createOKServer()
-	defer server.Close()
-
-	processor := createProcessor(server.URL, rate.NewLimiter(1000, 1000))
+	processor := createProcessor(rate.NewLimiter(1000, 1000), func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(http.NoBody),
+			Header:     make(http.Header),
+		}, nil
+	})
 	profileData := createProfileData()
 
 	err := processor.ProcessData(context.Background(), profileData)
@@ -36,13 +39,13 @@ func TestProcessor_ProcessData_RateLimiting(t *testing.T) {
 	}{
 		{
 			name:      "without_burst",
-			rateLimit: 100, // 50 bytes per second
-			burst:     100, // no burst capacity
+			rateLimit: 100,
+			burst:     100,
 		},
 		{
 			name:      "with_burst",
-			rateLimit: 100, // 50 bytes per second
-			burst:     200, // allows burst of 100 bytes
+			rateLimit: 100,
+			burst:     200,
 		},
 	}
 
@@ -51,21 +54,21 @@ func TestProcessor_ProcessData_RateLimiting(t *testing.T) {
 			var mu sync.Mutex
 			var requests []time.Time
 
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rateLimiter := rate.NewLimiter(tt.rateLimit, tt.burst)
+			processor := createProcessor(rateLimiter, func(r *http.Request) (*http.Response, error) {
 				mu.Lock()
 				requests = append(requests, time.Now())
 				mu.Unlock()
-				w.WriteHeader(http.StatusOK)
-			}))
-			defer server.Close()
 
-			rateLimiter := rate.NewLimiter(tt.rateLimit, tt.burst)
-			processor := createProcessor(server.URL, rateLimiter)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(http.NoBody),
+					Header:     make(http.Header),
+				}, nil
+			})
 
 			profileData := createProfileData()
 			dataSize := profileData.Len()
-
-			// Send multiple batches quickly
 			batchCount := 3
 			start := time.Now()
 
@@ -80,47 +83,21 @@ func TestProcessor_ProcessData_RateLimiting(t *testing.T) {
 			assert.Len(t, requests, batchCount, "All requests should complete")
 			mu.Unlock()
 
-			if tt.burst == 1 {
-				// Without burst: should be rate limited from the start
-				expectedMinTime := time.Duration(float64(dataSize*batchCount)/float64(tt.rateLimit)) * time.Second
-				assert.GreaterOrEqual(t, elapsed, expectedMinTime*8/10, "Should respect rate limit without burst")
-			} else {
-				// With burst: first requests can go fast, then rate limited
-				// First request uses burst, subsequent ones are rate limited
-				expectedMinTime := time.Duration(float64(dataSize*(batchCount-1))/float64(tt.rateLimit)) * time.Second
-				// Allow some tolerance for timing
-				if elapsed < expectedMinTime*7/10 {
-					t.Logf("Warning: elapsed %v seems too fast for rate limit, expected >= %v", elapsed, expectedMinTime*7/10)
-				}
+			delayedBytes := max(0, dataSize*batchCount-tt.burst)
+			expectedMinTime := time.Duration(float64(delayedBytes)/float64(tt.rateLimit)) * time.Second
+			if elapsed < expectedMinTime*7/10 {
+				t.Fatalf("elapsed %v is below expected minimum %v for rate %v burst %d", elapsed, expectedMinTime*7/10, tt.rateLimit, tt.burst)
 			}
-
-			// Verify requests came with delays (except possibly the first with burst)
-			mu.Lock()
-			if len(requests) >= 2 {
-				for i := 1; i < len(requests); i++ {
-					gap := requests[i].Sub(requests[i-1])
-					if tt.burst == 1 || i > 1 { // Without burst or after burst is exhausted
-						expectedGap := time.Duration(float64(dataSize)/float64(tt.rateLimit)) * time.Second
-						assert.GreaterOrEqual(t, gap, expectedGap*7/10, "Requests should be spaced by rate limit")
-					}
-				}
-			}
-			mu.Unlock()
 		})
 	}
 }
 
-// Helper functions
-
-func createOKServer() *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-}
-
-func createProcessor(serverURL string, rateLimiter *rate.Limiter) *pyroscope.Processor {
-	httpClient := &http.Client{Timeout: 30 * time.Second} // Long timeout for rate limiting tests
-	client := pyroscope.NewClient(serverURL, "", httpClient)
+func createProcessor(rateLimiter *rate.Limiter, transport roundTripFunc) *pyroscope.Processor {
+	httpClient := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+	}
+	client := pyroscope.NewClient("http://pyroscope.test", "", httpClient)
 	appMetadata := pyroscope.NewAppMetadata("test-app", "env=test", 100)
 	return pyroscope.NewProcessor(client, appMetadata, rateLimiter)
 }

@@ -1,7 +1,7 @@
 # gospy
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/hakastein/gospy)](https://goreportcard.com/report/github.com/hakastein/gospy)
-![Coverage](https://img.shields.io/badge/Coverage-65.2%25-yellow)
+![Coverage](https://img.shields.io/badge/Coverage-87.8%25-brightgreen)
 
 ![gospy.jpg](gospy.jpg)
 
@@ -160,7 +160,7 @@ wait
 - `--pyroscope` **(Required)**: Pyroscope server URL.
 - `--pyroscope-auth`: Authentication token for Pyroscope.
 - `--pyroscope-timeput`: Timeout to pyroscope request (default: 10s)
-- `--pyroscope-workers`: Amount of workers who sends data to pyroscope. Default is `5`.
+- `--pyroscope-workers`: Amount of workers who sends data to pyroscope. Must be at least `1`. Default is `5`.
 - `--app`: App name for Pyroscope.
 - `--tag`: Static and dynamic tags in `key=value` or `key={{ "value" }}` format. **Can be used multiple times**.
 - `--tag-entrypoint`: Add entry point to tags.
@@ -174,7 +174,7 @@ wait
 - `--entrypoint`: Limit traces to certain entry points (e.g., `index.php`), it
   supports [glob double](https://github.com/bmatcuk/doublestar) star expressions. **Can be used multiple times**.
 - `--instance-name`: Name of the `gospy` instance for logging purposes. Default is `gospy`.
-- `--stats-interval`: Interval at which the application will log its sending statistics. Default: `10`
+- `--stats-interval`: Interval at which the application will log its sending statistics. Set to `0` or less to disable statistics logging. Default: `10`
 - `--verbose` or `-v`: Increase verbosity. Use multiple times for higher verbosity levels (e.g., `-vv`).
 
 ### Detailed Parameter Descriptions

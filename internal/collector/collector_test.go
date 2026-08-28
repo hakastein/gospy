@@ -170,41 +170,34 @@ func TestTraceCollector(t *testing.T) {
 	})
 }
 
-func TestTraceCollector_Subscribe(t *testing.T) {
-	t.Run("SimpleWrite", func(t *testing.T) {
-		ctx := context.Background()
-		samplesChan := make(chan *collector.Sample)
-		baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+func TestTraceCollector_Collect(t *testing.T) {
+	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("DrainsChannelUntilClosed", func(t *testing.T) {
+		samplesChan := make(chan *collector.Sample, 1)
 		c := newTestCollector()
-		c.Subscribe(ctx, samplesChan)
 
 		samplesChan <- &collector.Sample{
 			Tags:  "tag1",
 			Trace: "trace1",
 			Time:  baseTime,
 		}
+		close(samplesChan)
 
-		assert.Equal(t, 1, c.Len(), "Write into subscribed channel must increase queue len")
+		c.Collect(context.Background(), samplesChan)
+
+		assert.Equal(t, 1, c.Len(), "samples sent before close must be collected")
 	})
 
 	t.Run("ContextCancellation", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
-		samplesChan := make(chan *collector.Sample, 1)
-		baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+		samplesChan := make(chan *collector.Sample)
 		c := newTestCollector()
-		c.Subscribe(ctx, samplesChan)
 
 		cancel()
-		// wait some to be sure
-		<-time.After(100 * time.Millisecond)
-		samplesChan <- &collector.Sample{
-			Tags:  "tag1",
-			Trace: "trace1",
-			Time:  baseTime,
-		}
-		<-time.After(100 * time.Millisecond)
+		c.Collect(ctx, samplesChan)
 
-		assert.Equal(t, 0, c.Len(), "Write after cancellation mustn't increase queue len")
+		assert.Equal(t, 0, c.Len(), "cancelled collect mustn't queue anything")
 	})
 }
 
@@ -312,5 +305,47 @@ func BenchmarkTraceCollector_ConsumeTag(b *testing.B) {
 				b.FailNow()
 			}
 		}
+	})
+}
+
+func TestTraceCollector_Notify(t *testing.T) {
+	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	sample := func(tags string) *collector.Sample {
+		return &collector.Sample{Tags: tags, Trace: "trace1", Time: baseTime}
+	}
+
+	assertQuiet := func(t *testing.T, c *collector.TraceCollector) {
+		t.Helper()
+		select {
+		case <-c.Notify():
+			t.Fatal("expected no pending signal")
+		default:
+		}
+	}
+
+	t.Run("QuietBeforeAnySample", func(t *testing.T) {
+		assertQuiet(t, newTestCollector())
+	})
+
+	t.Run("SignalsOnAddSample", func(t *testing.T) {
+		c := newTestCollector()
+		c.AddSample(sample("tag1"))
+
+		select {
+		case <-c.Notify():
+		case <-time.After(time.Second):
+			t.Fatal("AddSample did not signal a waiting publisher")
+		}
+	})
+
+	t.Run("CoalescesRepeatedSignals", func(t *testing.T) {
+		c := newTestCollector()
+		for i := 0; i < 100; i++ {
+			c.AddSample(sample(fmt.Sprintf("tag%d", i)))
+		}
+
+		<-c.Notify()
+		assertQuiet(t, c)
 	})
 }
