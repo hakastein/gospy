@@ -56,3 +56,23 @@ This file provides guidance to Agents when working with code in this repository.
 - If such a command fails, the agent must always report what happened and propose solution options before taking any workaround.
 - The agent must never independently invent workarounds for such failures. This includes changing the command, altering the environment, creating temporary caches or directories, or introducing any other side effects without explicit user approval.
 - The agent must first investigate the cause of the failure and prefer fixing the real problem instead of adding a workaround.
+
+## Agent skills
+
+### Change workflow
+
+Branch as `<type>/<slug>`, title commits and pull requests as Conventional Commits, and label
+every PR — the release notes are generated from those titles and labels. See
+`docs/agents/workflow.md`, and `docs/releasing.md` for the label vocabulary.
+
+### Issue tracker
+
+Issues live as GitHub issues in `hakastein/gospy`, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each label string equal to its role name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
