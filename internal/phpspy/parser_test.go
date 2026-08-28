@@ -238,6 +238,50 @@ func TestParser_ParseWithScannerError(t *testing.T) {
 	require.Len(t, samples, 0)
 }
 
+func TestParserParseReturnsOnCancellationWhileChannelIsBlocked(t *testing.T) {
+	parser := phpspy.NewParser([]string{"/app/test.php"}, nil, false, false)
+	scanner := bufio.NewScanner(strings.NewReader("0 func1 /app/helper.php:10\n1 main /app/test.php:1\n\n"))
+	samplesChannel := make(chan *collector.Sample)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		parser.Parse(ctx, scanner, samplesChannel)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Parse did not return after context cancellation")
+	}
+}
+
+func TestParserParseFlushesFinalTraceOnEOF(t *testing.T) {
+	parser := phpspy.NewParser([]string{"/app/test.php"}, nil, false, false)
+	scanner := bufio.NewScanner(strings.NewReader("0 func1 /app/helper.php:10\n1 main /app/test.php:1"))
+	samplesChannel := make(chan *collector.Sample, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	parser.Parse(ctx, scanner, samplesChannel)
+	close(samplesChannel)
+
+	var samples []*collector.Sample
+	for sample := range samplesChannel {
+		samples = append(samples, sample)
+	}
+
+	require.Len(t, samples, 1)
+	require.Equal(t, "main;func1", samples[0].Trace)
+}
+
 // errorReader simulates a reader that always returns an error
 type errorReader struct{}
 

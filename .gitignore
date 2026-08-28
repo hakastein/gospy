@@ -1,1 +1,9 @@
 /gospy
+.worktree/
+.code-review-graph/
+.idea/
+cover.out
+cover.html
+coverage.out
+coverage.html
+*.test

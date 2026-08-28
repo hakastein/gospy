@@ -68,7 +68,7 @@ func main() {
 			},
 			&cli.IntFlag{
 				Name:  "pyroscope-workers",
-				Usage: "Amount of workers who sends data to pyroscope",
+				Usage: "Amount of workers who sends data to pyroscope; must be at least 1",
 				Value: PyroscopeWorkers,
 			},
 			&cli.StringFlag{
@@ -120,7 +120,7 @@ func main() {
 			},
 			&cli.DurationFlag{
 				Name:  "stats-interval",
-				Usage: "Interval at which the application will log its sending statistics",
+				Usage: "Interval at which the application will log its sending statistics; set to 0 or less to disable statistics logging",
 				Value: DefaultStatsInterval,
 			},
 			&cli.BoolFlag{
@@ -131,12 +131,9 @@ func main() {
 			},
 		},
 		Action: func(c *cli.Context) error {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
 			instanceName := c.String("instance-name")
 			setupLogger(verbosity, instanceName)
-			return run(ctx, cancel, c)
+			return run(context.Background(), c)
 		},
 	}
 
