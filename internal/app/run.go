@@ -26,7 +26,6 @@ import (
 )
 
 const megabyte = 1048576
-const collectorPublishPollInterval = 100 * time.Millisecond
 
 type Config struct {
 	PyroscopeURL       string
@@ -126,6 +125,10 @@ func newSource(cfg runtimeConfig) (profilerRunner, traceParser, error) {
 func validateConfig(cfg Config) error {
 	if cfg.ProfilerApp == "" {
 		return errors.New("no profiler application specified")
+	}
+
+	if cfg.PyroscopeWorkers < 1 {
+		return fmt.Errorf("pyroscope workers must be at least 1, got %d", cfg.PyroscopeWorkers)
 	}
 
 	return nil
@@ -288,10 +291,8 @@ func publishTagCollections(
 			if traces.Len() == 0 {
 				return
 			}
-		default:
+		case <-traces.Notify():
 		}
-
-		time.Sleep(collectorPublishPollInterval)
 	}
 }
 

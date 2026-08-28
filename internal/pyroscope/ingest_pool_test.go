@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hakastein/gospy/internal/collector"
-	"github.com/hakastein/gospy/internal/pyroscope"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
+
+	"github.com/hakastein/gospy/internal/collector"
+	"github.com/hakastein/gospy/internal/pyroscope"
 )
 
 func newIngestPool(

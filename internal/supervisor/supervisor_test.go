@@ -8,9 +8,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/hakastein/gospy/internal/collector"
 	"github.com/hakastein/gospy/internal/supervisor"
-	"github.com/stretchr/testify/require"
 )
 
 type fakeProfiler struct {

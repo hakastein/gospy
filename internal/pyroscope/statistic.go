@@ -21,7 +21,6 @@ type StatsAggregator struct {
 	statsChan <-chan *SendResult
 	reports   chan StatsReport
 	interval  time.Duration
-	done      chan struct{}
 	wg        sync.WaitGroup
 }
 
@@ -31,7 +30,6 @@ func NewStatsAggregator(statsChan <-chan *SendResult, interval time.Duration) *S
 		statsChan: statsChan,
 		reports:   make(chan StatsReport),
 		interval:  interval,
-		done:      make(chan struct{}),
 	}
 }
 
@@ -40,7 +38,6 @@ func (sa *StatsAggregator) Start(ctx context.Context) {
 	sa.wg.Add(1)
 	go func() {
 		defer sa.wg.Done()
-		defer close(sa.done)
 		sa.run(ctx)
 	}()
 }

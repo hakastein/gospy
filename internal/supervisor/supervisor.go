@@ -5,9 +5,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/hakastein/gospy/internal/collector"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+
+	"github.com/hakastein/gospy/internal/collector"
 )
 
 type profilerRunner interface {

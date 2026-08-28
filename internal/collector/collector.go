@@ -89,6 +89,7 @@ type TraceCollector struct {
 	mu     sync.RWMutex
 	traces map[string]*traceGroup
 	queue  *list.List
+	notify chan struct{}
 }
 
 // NewTraceCollector initializes and returns a new TraceCollector.
@@ -96,7 +97,12 @@ func NewTraceCollector() *TraceCollector {
 	return &TraceCollector{
 		traces: make(map[string]*traceGroup),
 		queue:  list.New(),
+		notify: make(chan struct{}, 1),
 	}
+}
+
+func (tc *TraceCollector) Notify() <-chan struct{} {
+	return tc.notify
 }
 
 func (tc *TraceCollector) Len() int {
@@ -160,6 +166,11 @@ func (tc *TraceCollector) AddSample(stack *Sample) {
 		Int("trace_count", tg.stacks[stack.Trace]).
 		Int("queued_tag_groups", tc.queue.Len()).
 		Msg("sample added to collector")
+
+	select {
+	case tc.notify <- struct{}{}:
+	default:
+	}
 }
 
 // Collect returns once stacksChannel is closed, so callers can use it as the drain barrier before shutting down downstream stages.

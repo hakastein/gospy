@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hakastein/gospy/internal/pyroscope"
 	"github.com/stretchr/testify/require"
+
+	"github.com/hakastein/gospy/internal/pyroscope"
 )
 
 func TestStatsAggregatorCountsOnlyRealErrors(t *testing.T) {

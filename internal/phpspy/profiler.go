@@ -5,10 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/rs/zerolog/log"
 
 	"github.com/hakastein/gospy/internal/args"
 )

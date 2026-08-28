@@ -68,7 +68,7 @@ func main() {
 			},
 			&cli.IntFlag{
 				Name:  "pyroscope-workers",
-				Usage: "Amount of workers who sends data to pyroscope",
+				Usage: "Amount of workers who sends data to pyroscope; must be at least 1",
 				Value: PyroscopeWorkers,
 			},
 			&cli.StringFlag{

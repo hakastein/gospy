@@ -307,3 +307,45 @@ func BenchmarkTraceCollector_ConsumeTag(b *testing.B) {
 		}
 	})
 }
+
+func TestTraceCollector_Notify(t *testing.T) {
+	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	sample := func(tags string) *collector.Sample {
+		return &collector.Sample{Tags: tags, Trace: "trace1", Time: baseTime}
+	}
+
+	assertQuiet := func(t *testing.T, c *collector.TraceCollector) {
+		t.Helper()
+		select {
+		case <-c.Notify():
+			t.Fatal("expected no pending signal")
+		default:
+		}
+	}
+
+	t.Run("QuietBeforeAnySample", func(t *testing.T) {
+		assertQuiet(t, newTestCollector())
+	})
+
+	t.Run("SignalsOnAddSample", func(t *testing.T) {
+		c := newTestCollector()
+		c.AddSample(sample("tag1"))
+
+		select {
+		case <-c.Notify():
+		case <-time.After(time.Second):
+			t.Fatal("AddSample did not signal a waiting publisher")
+		}
+	})
+
+	t.Run("CoalescesRepeatedSignals", func(t *testing.T) {
+		c := newTestCollector()
+		for i := 0; i < 100; i++ {
+			c.AddSample(sample(fmt.Sprintf("tag%d", i)))
+		}
+
+		<-c.Notify()
+		assertQuiet(t, c)
+	})
+}

@@ -160,7 +160,7 @@ wait
 - `--pyroscope` **(Required)**: Pyroscope server URL.
 - `--pyroscope-auth`: Authentication token for Pyroscope.
 - `--pyroscope-timeput`: Timeout to pyroscope request (default: 10s)
-- `--pyroscope-workers`: Amount of workers who sends data to pyroscope. Default is `5`.
+- `--pyroscope-workers`: Amount of workers who sends data to pyroscope. Must be at least `1`. Default is `5`.
 - `--app`: App name for Pyroscope.
 - `--tag`: Static and dynamic tags in `key=value` or `key={{ "value" }}` format. **Can be used multiple times**.
 - `--tag-entrypoint`: Add entry point to tags.
