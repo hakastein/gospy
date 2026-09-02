@@ -3,30 +3,27 @@ package phpspy
 import (
 	"bufio"
 	"context"
-	"github.com/hakastein/gospy/internal/collector"
-	"github.com/hakastein/gospy/internal/tag"
-	"github.com/hakastein/gospy/internal/transform"
-	lru "github.com/hashicorp/golang-lru"
 	"strings"
 	"time"
 
-	"github.com/hakastein/gospy/internal/validator"
 	"github.com/rs/zerolog/log"
+
+	"github.com/hakastein/gospy/internal/collector"
+	"github.com/hakastein/gospy/internal/tag"
+	"github.com/hakastein/gospy/internal/validator"
 )
 
 const (
-	entryPointValidatorCacheSize = 1000
-	traceCapacity                = 100
+	traceCapacity = 100
+	metaCapacity  = 16
 )
 
 type Parser struct {
-	entryPoints        []string
 	tagsMapping        map[string][]tag.DynamicTag
 	tagEntrypoint      bool
 	keepEntrypointName bool
 	currentTrace       []string
 	currentMeta        []string
-	tags               strings.Builder
 	epValidator        *validator.EntryPointValidator
 }
 
@@ -37,137 +34,142 @@ func NewParser(
 	tagEntrypoint bool,
 	keepEntrypointName bool,
 ) *Parser {
-	cache, err := lru.New(entryPointValidatorCacheSize)
-	if err != nil {
-		panic("failed to create LRU cache: " + err.Error())
-	}
-
 	return &Parser{
-		entryPoints:        entryPoints,
 		tagsMapping:        tagsMapping,
 		tagEntrypoint:      tagEntrypoint,
 		keepEntrypointName: keepEntrypointName,
 		currentTrace:       make([]string, 0, traceCapacity),
-		currentMeta:        make([]string, 0, len(tagsMapping)),
-		epValidator:        validator.New(entryPoints, cache),
+		currentMeta:        make([]string, 0, metaCapacity),
+		epValidator:        validator.New(entryPoints),
 	}
 }
 
-// Parse reads and processes lines from the scanner, converting them into folded stack samples.
+// Parse does not close samples; the caller owns closing it.
 func (parser *Parser) Parse(
 	ctx context.Context,
 	scanner *bufio.Scanner,
-	foldedStacks chan<- *collector.Sample,
+	samples chan<- *collector.Sample,
 ) {
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			log.Debug().Msg("parser stopped due to context cancellation")
 			return
-		default:
-			if !scanner.Scan() {
-				if len(parser.currentTrace) > 0 {
-					if !parser.processTrace(ctx, foldedStacks) {
-						return
-					}
-				}
-				if err := scanner.Err(); err != nil {
-					log.Error().Err(err).Msg("Error reading from stdout")
-				}
-				log.Debug().
-					Int("pending_trace_lines", len(parser.currentTrace)).
-					Int("pending_meta_lines", len(parser.currentMeta)).
-					Msg("scanner has been closed")
-				return
-			}
+		}
 
-			line := scanner.Text()
-			log.Trace().Str("line", line).Msg("read profiler output line")
+		if !scanner.Scan() {
+			parser.flush(ctx, samples, scanner.Err())
+			return
+		}
 
-			if trimmed := strings.TrimSpace(line); trimmed == "" {
-				if !parser.processTrace(ctx, foldedStacks) {
-					return
-				}
-				continue
-			}
-
-			if strings.HasPrefix(line, "#") {
-				parser.addToMeta(line)
-				continue
-			}
-
-			parser.addToTrace(line)
+		if err := parser.consumeLine(ctx, samples, scanner.Text()); err != nil {
+			return
 		}
 	}
 }
 
-func (parser *Parser) addToTrace(line string) {
-	parser.currentTrace = append(parser.currentTrace, line)
+func (parser *Parser) consumeLine(
+	ctx context.Context,
+	samples chan<- *collector.Sample,
+	line string,
+) error {
+	log.Trace().Str("line", line).Msg("read profiler output line")
+
+	switch {
+	case strings.TrimSpace(line) == "":
+		return parser.processTrace(ctx, samples)
+	case strings.HasPrefix(line, "#"):
+		if len(parser.tagsMapping) > 0 {
+			parser.currentMeta = append(parser.currentMeta, line)
+		}
+	default:
+		parser.currentTrace = append(parser.currentTrace, line)
+	}
+
+	return nil
 }
 
-func (parser *Parser) addToMeta(line string) {
-	parser.currentMeta = append(parser.currentMeta, line)
+func (parser *Parser) flush(
+	ctx context.Context,
+	samples chan<- *collector.Sample,
+	scanError error,
+) {
+	pendingTraceLines, pendingMetaLines := len(parser.currentTrace), len(parser.currentMeta)
+
+	if pendingTraceLines > 0 {
+		if err := parser.processTrace(ctx, samples); err != nil {
+			return
+		}
+	}
+
+	if scanError != nil {
+		log.Error().Err(scanError).Msg("Error reading from stdout")
+	}
+
+	log.Debug().
+		Int("pending_trace_lines", pendingTraceLines).
+		Int("pending_meta_lines", pendingMetaLines).
+		Msg("scanner has been closed")
 }
 
-// processTrace converts the current trace to a folded stack and sends it to the foldedStacks channel.
 func (parser *Parser) processTrace(
 	ctx context.Context,
-	foldedStacks chan<- *collector.Sample,
-) bool {
+	samples chan<- *collector.Sample,
+) error {
 	defer parser.resetState()
 
 	if len(parser.currentTrace) == 0 {
-		return true
+		return nil
 	}
 
-	sample, entryPoint, convertError := transform.TracesToFoldedStacks(parser.currentTrace, parser.keepEntrypointName)
-	if convertError != nil {
+	foldedStack, entryPoint, foldError := foldTrace(parser.currentTrace, parser.keepEntrypointName)
+	if foldError != nil {
 		log.Debug().
-			Err(convertError).
-			Str("sample", strings.Join(parser.currentTrace, "\n")).
-			Msg("Failed to convert trace")
-		return true
+			Err(foldError).
+			Str("trace", strings.Join(parser.currentTrace, "\n")).
+			Msg("Failed to fold trace")
+		return nil
 	}
 
 	if !parser.epValidator.IsValid(entryPoint) {
 		log.Debug().
 			Str("entrypoint", entryPoint).
 			Msg("Disallowed entrypoint in trace")
-		return true
+		return nil
 	}
 
-	parser.buildTags(entryPoint)
+	tags := parser.buildTags(entryPoint)
 	select {
-	case foldedStacks <- &collector.Sample{Trace: sample, Tags: parser.tags.String(), Time: time.Now()}:
+	case samples <- &collector.Sample{Trace: foldedStack, Tags: tags, Time: time.Now()}:
 	case <-ctx.Done():
-		return false
+		return ctx.Err()
 	}
+
 	log.Debug().
 		Str("entrypoint", entryPoint).
-		Str("tags", parser.tags.String()).
+		Str("tags", tags).
 		Msg("queued parsed sample")
 	log.Trace().
-		Str("sample", sample).
+		Str("folded_stack", foldedStack).
 		Msg("Trace processed")
-	return true
+
+	return nil
 }
 
-// buildTags constructs the tags string based on metadata and entry point.
-func (parser *Parser) buildTags(entryPoint string) {
-	parsedTags := transform.MetaToTags(parser.currentMeta, parser.tagsMapping)
-	parser.tags.WriteString(parsedTags)
-	if parser.tagEntrypoint {
-		if parsedTags != "" {
-			parser.tags.WriteRune(',')
-		}
-		parser.tags.WriteString("entrypoint=")
-		parser.tags.WriteString(entryPoint)
+func (parser *Parser) buildTags(entryPoint string) string {
+	parsedTags := metaToTags(parser.currentMeta, parser.tagsMapping)
+
+	if !parser.tagEntrypoint {
+		return parsedTags
 	}
+
+	if parsedTags == "" {
+		return "entrypoint=" + entryPoint
+	}
+
+	return parsedTags + ",entrypoint=" + entryPoint
 }
 
-// resetState clears the current trace, metadata, and tags for the next parsing session.
 func (parser *Parser) resetState() {
 	parser.currentTrace = parser.currentTrace[:0]
 	parser.currentMeta = parser.currentMeta[:0]
-	parser.tags.Reset()
 }

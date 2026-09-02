@@ -51,7 +51,7 @@ type runtimeConfig struct {
 type profilerRunner interface {
 	Start(ctx context.Context) (*bufio.Scanner, *bufio.Scanner, error)
 	Wait() error
-	IsConfigurationValid() (bool, error)
+	ValidateConfiguration() error
 	GetHZ() int
 }
 
@@ -70,7 +70,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	if supported, validationErr := profilerImpl.IsConfigurationValid(); !supported {
+	if validationErr := profilerImpl.ValidateConfiguration(); validationErr != nil {
 		return validationErr
 	}
 
