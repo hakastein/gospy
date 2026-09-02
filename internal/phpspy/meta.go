@@ -1,18 +1,19 @@
-package transform
+package phpspy
 
 import (
-	"github.com/hakastein/gospy/internal/tag"
-	"github.com/rs/zerolog/log"
 	"maps"
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/rs/zerolog/log"
+
+	"github.com/hakastein/gospy/internal/tag"
 )
 
-// MetaToTags extracts and maps tags from metadata lines.
-// It retains only the last occurrence of each mapped key, sorts the keys alphabetically,
-// and logs a warning when duplicate keys are detected.
-func MetaToTags(lines []string, tagsMapping map[string][]tag.DynamicTag) string {
+// Keys are sorted so an identical tag set always yields the same string: the collector
+// groups Batches by that string.
+func metaToTags(lines []string, tagsMapping map[string][]tag.DynamicTag) string {
 	if len(tagsMapping) == 0 || len(lines) == 0 {
 		return ""
 	}
@@ -38,7 +39,6 @@ func MetaToTags(lines []string, tagsMapping map[string][]tag.DynamicTag) string 
 		for _, dynamicTag := range dynamicTags {
 			mappedValue := dynamicTag.GetValue(originalValue)
 
-			// Check for duplicate keys and log a warning if a duplicate is found
 			if oldValue, alreadyExists := mappedTags[dynamicTag.TagKey]; alreadyExists {
 				log.Warn().
 					Str("originalKey", originalKey).
@@ -48,7 +48,6 @@ func MetaToTags(lines []string, tagsMapping map[string][]tag.DynamicTag) string 
 					Msg("Duplicate key detected, overwriting previous value")
 			}
 
-			// Overwrite with the latest value
 			mappedTags[dynamicTag.TagKey] = mappedValue
 		}
 	}

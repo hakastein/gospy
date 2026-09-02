@@ -1,12 +1,12 @@
-package transform
+package phpspy
 
 import (
 	"errors"
 	"strings"
 )
 
-// TracesToFoldedStacks converts trace lines to folded stack format and extracts the entry point.
-func TracesToFoldedStacks(trace []string, keepEntrypointName bool) (string, string, error) {
+// phpspy prints frames innermost first, so the entry point is the last line of the block.
+func foldTrace(trace []string, keepEntrypointName bool) (string, string, error) {
 	if len(trace) < 2 {
 		return "", "", errors.New("trace insufficient length")
 	}

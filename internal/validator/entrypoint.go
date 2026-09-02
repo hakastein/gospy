@@ -2,21 +2,17 @@ package validator
 
 import (
 	"strings"
-	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
+	lru "github.com/hashicorp/golang-lru"
 )
+
+const cacheSize = 1000
 
 // EntryPointValidator validates entry points against predefined patterns with caching.
 type EntryPointValidator struct {
 	patterns []string
-	cache    Cache
-	mu       sync.RWMutex
-}
-
-type Cache interface {
-	Get(key interface{}) (interface{}, bool)
-	Add(key, value interface{}) bool
+	cache    *lru.Cache
 }
 
 // hasWildcard checks if the pattern contains any wildcard characters.
@@ -24,8 +20,10 @@ func hasWildcard(pattern string) bool {
 	return strings.ContainsAny(pattern, "*?[")
 }
 
-// New creates a new EntryPointValidator with the given patterns and cache driver.
-func New(patterns []string, cache Cache) *EntryPointValidator {
+func New(patterns []string) *EntryPointValidator {
+	// lru.New reports an error only for a non-positive size, which cacheSize rules out.
+	cache, _ := lru.New(cacheSize)
+
 	return &EntryPointValidator{
 		patterns: patterns,
 		cache:    cache,
@@ -42,20 +40,15 @@ func matches(entryPoint, pattern string) bool {
 }
 
 // IsValid determines if the entryPoint is valid based on the patterns.
-// It utilizes an LRU cache to store and retrieve validation results.
 func (v *EntryPointValidator) IsValid(entryPoint string) bool {
 	if len(v.patterns) == 0 {
 		return true
 	}
 
-	v.mu.RLock()
 	if cached, found := v.cache.Get(entryPoint); found {
-		v.mu.RUnlock()
 		return cached.(bool)
 	}
-	v.mu.RUnlock()
 
-	// Perform pattern matching.
 	isValid := false
 	for _, pattern := range v.patterns {
 		if matches(entryPoint, pattern) {
@@ -64,10 +57,7 @@ func (v *EntryPointValidator) IsValid(entryPoint string) bool {
 		}
 	}
 
-	// Store the result in cache with write lock.
-	v.mu.Lock()
 	v.cache.Add(entryPoint, isValid)
-	v.mu.Unlock()
 
 	return isValid
 }

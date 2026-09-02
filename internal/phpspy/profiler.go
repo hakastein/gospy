@@ -10,8 +10,6 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog/log"
-
-	"github.com/hakastein/gospy/internal/args"
 )
 
 // Profiler implementation of profiler.Profiler
@@ -82,20 +80,20 @@ func (profiler *Profiler) IsConfigurationValid() (bool, error) {
 		{"single-line", "1"},
 	}
 	for _, keys := range unsupportedFlags {
-		if args.ExtractFlagValue[bool](profiler.args, keys.longKey, keys.shortKey, false) {
+		if extractFlagValue[bool](profiler.args, keys.longKey, keys.shortKey, false) {
 			return false, fmt.Errorf("flag -%s/--%s is unsupported by gospy", keys.shortKey, keys.longKey)
 		}
 	}
 
-	output := args.ExtractFlagValue[string](profiler.args, "output", "o", "stdout")
+	output := extractFlagValue[string](profiler.args, "output", "o", "stdout")
 	if output != "stdout" && output != "-" {
 		return false, errors.New("output must be set to stdout")
 	}
 
-	pgrepMode := args.ExtractFlagValue[string](profiler.args, "pgrep", "P", "")
+	pgrepMode := extractFlagValue[string](profiler.args, "pgrep", "P", "")
 	if pgrepMode != "" {
-		bufferSize := args.ExtractFlagValue[int](profiler.args, "buffer-size", "b", 4096)
-		eventHandlerOpts := args.ExtractFlagValue[string](profiler.args, "event-handler-opts", "J", "")
+		bufferSize := extractFlagValue[int](profiler.args, "buffer-size", "b", 4096)
+		eventHandlerOpts := extractFlagValue[string](profiler.args, "event-handler-opts", "J", "")
 		if bufferSize > 4096 && !strings.Contains(eventHandlerOpts, "m") {
 			log.Warn().Msg("using large buffer size without mutex; consider adding -J m with -b > 4096")
 		}
@@ -104,5 +102,5 @@ func (profiler *Profiler) IsConfigurationValid() (bool, error) {
 }
 
 func (profiler *Profiler) GetHZ() int {
-	return args.ExtractFlagValue[int](profiler.args, "rate-hz", "H", 99)
+	return extractFlagValue[int](profiler.args, "rate-hz", "H", 99)
 }

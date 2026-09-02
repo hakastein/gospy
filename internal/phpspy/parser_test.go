@@ -4,14 +4,16 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/hakastein/gospy/internal/collector"
 	"github.com/hakastein/gospy/internal/phpspy"
 	"github.com/hakastein/gospy/internal/tag"
-	"github.com/stretchr/testify/require"
 )
 
 type parserTestCase struct {
@@ -135,15 +137,125 @@ func TestParser_Parse(t *testing.T) {
 			},
 		},
 		{
-			name: "invalid trace handling - skips invalid traces but continues processing",
+			name: "invalid trace handling - skips malformed traces but continues processing",
 			input: []string{
 				"#metatdata line\n/app/index.php",
+				"0 InvalidTrace /app/src/Module.php\n1 MissingFields",
+				"0 StartFunction <internal>:-1\n1 ServiceModule::Handle /app/src/ServiceModule.php",
+				"0 <internal>:-1\n1 /app/src/ServiceModule.php:45",
 				"0 valid_func /app/some/helper.php:20\n1 main /app/test.php:1",
 			},
 			entryPoints: []string{"/app/test.php"},
 			expectedSamples: []collector.Sample{
 				{Trace: "main;valid_func", Tags: ""},
-			}, // should skip invalid trace but process valid one
+			},
+		},
+		{
+			name: "stack folding - reverses frames and keeps the entrypoint script when enabled",
+			input: []string{
+				"0 InitFunction <internal>:-1\n1 ServiceModule::HandleRequest /app/src/ServiceModule.php:45\n2 ServiceModule::Process /app/src/ServiceModule.php:30\n3 Utils::Helper /app/src/Utils.php:15",
+			},
+			entryPoints:        []string{"/app/src/Utils.php"},
+			keepEntrypointName: true,
+			expectedSamples: []collector.Sample{
+				{Trace: "Utils::Helper /app/src/Utils.php;ServiceModule::Process;ServiceModule::HandleRequest;InitFunction", Tags: ""},
+			},
+		},
+		{
+			name: "stack folding - drops the entrypoint script when disabled",
+			input: []string{
+				"0 InitFunction <internal>:-1\n1 ServiceModule::HandleRequest /app/src/ServiceModule.php:45\n2 ServiceModule::Process /app/src/ServiceModule.php:30\n3 Utils::Helper /app/src/Utils.php:15",
+			},
+			entryPoints: []string{"/app/src/Utils.php"},
+			expectedSamples: []collector.Sample{
+				{Trace: "Utils::Helper;ServiceModule::Process;ServiceModule::HandleRequest;InitFunction", Tags: ""},
+			},
+		},
+		{
+			name: "dynamic tags - sorted by tag key",
+			input: []string{
+				"# version = 1.0\n# license = MIT\n# author = John Doe\n0 func1 /app/some/helper.php:10\n1 main /app/test.php:1",
+			},
+			entryPoints: []string{"/app/test.php"},
+			tagsMapping: map[string][]tag.DynamicTag{
+				"version": {{TagKey: "v"}},
+				"author":  {{TagKey: "creator"}},
+				"license": {{TagKey: "lic"}},
+			},
+			expectedSamples: []collector.Sample{
+				{Trace: "main;func1", Tags: "creator=John Doe,lic=MIT,v=1.0"},
+			},
+		},
+		{
+			name: "dynamic tags - value is trimmed and keeps inner separators",
+			input: []string{
+				"# description =              Version 1.0 = Initial Release         \n0 func1 /app/some/helper.php:10\n1 main /app/test.php:1",
+			},
+			entryPoints: []string{"/app/test.php"},
+			tagsMapping: map[string][]tag.DynamicTag{
+				"description": {{TagKey: "description"}},
+			},
+			expectedSamples: []collector.Sample{
+				{Trace: "main;func1", Tags: "description=Version 1.0 = Initial Release"},
+			},
+		},
+		{
+			name: "dynamic tags - one meta key feeds several tags with regexp rewrite",
+			input: []string{
+				"# greetings = Hello World\n0 func1 /app/some/helper.php:10\n1 main /app/test.php:1",
+			},
+			entryPoints: []string{"/app/test.php"},
+			tagsMapping: map[string][]tag.DynamicTag{
+				"greetings": {
+					{TagKey: "hi", TagRegexp: regexp.MustCompile("World"), TagReplace: "Sekai"},
+					{TagKey: "hello"},
+				},
+			},
+			expectedSamples: []collector.Sample{
+				{Trace: "main;func1", Tags: "hello=Hello World,hi=Hello Sekai"},
+			},
+		},
+		{
+			name: "dynamic tags - last occurrence of a tag key wins",
+			input: []string{
+				"# author = Alice\n# writer = Bob\n# author = Charlie\n# writer = Dave\n# version = 3.1\n0 func1 /app/some/helper.php:10\n1 main /app/test.php:1",
+			},
+			entryPoints: []string{"/app/test.php"},
+			tagsMapping: map[string][]tag.DynamicTag{
+				"author":  {{TagKey: "creator"}},
+				"writer":  {{TagKey: "creator"}},
+				"version": {{TagKey: "v"}},
+			},
+			expectedSamples: []collector.Sample{
+				{Trace: "main;func1", Tags: "creator=Dave,v=3.1"},
+			},
+		},
+		{
+			name: "dynamic tags - unmapped and malformed meta lines are ignored",
+			input: []string{
+				"# keywithoutmapping = value\n# validKey = validValue\n# badformat\n#validKey=ignored\n# anotherBad = format1 = format2\n# author = \n# validKey = newValue\n0 func1 /app/some/helper.php:10\n1 main /app/test.php:1",
+			},
+			entryPoints: []string{"/app/test.php"},
+			tagsMapping: map[string][]tag.DynamicTag{
+				"validKey": {{TagKey: "mappedValid"}},
+				"author":   {{TagKey: "creator"}},
+			},
+			expectedSamples: []collector.Sample{
+				{Trace: "main;func1", Tags: "creator=,mappedValid=newValue"},
+			},
+		},
+		{
+			name: "dynamic tags - a trace block without meta lines carries no tags",
+			input: []string{
+				"0 func1 /app/some/helper.php:10\n1 main /app/test.php:1",
+			},
+			entryPoints: []string{"/app/test.php"},
+			tagsMapping: map[string][]tag.DynamicTag{
+				"author": {{TagKey: "creator"}},
+			},
+			expectedSamples: []collector.Sample{
+				{Trace: "main;func1", Tags: ""},
+			},
 		},
 	}
 

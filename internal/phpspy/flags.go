@@ -1,11 +1,11 @@
-package args
+package phpspy
 
 import (
 	"strconv"
 	"strings"
 )
 
-func ExtractFlagValue[T any](flags []string, longKey, shortKey string, defaultValue T) T {
+func extractFlagValue[T any](flags []string, longKey, shortKey string, defaultValue T) T {
 	shortKey, longKey = "-"+shortKey, "--"+longKey
 	flagLen := len(flags)
 

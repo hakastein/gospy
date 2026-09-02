@@ -3,24 +3,19 @@ package phpspy
 import (
 	"bufio"
 	"context"
-	"github.com/hakastein/gospy/internal/collector"
-	"github.com/hakastein/gospy/internal/tag"
-	"github.com/hakastein/gospy/internal/transform"
-	lru "github.com/hashicorp/golang-lru"
 	"strings"
 	"time"
 
-	"github.com/hakastein/gospy/internal/validator"
 	"github.com/rs/zerolog/log"
+
+	"github.com/hakastein/gospy/internal/collector"
+	"github.com/hakastein/gospy/internal/tag"
+	"github.com/hakastein/gospy/internal/validator"
 )
 
-const (
-	entryPointValidatorCacheSize = 1000
-	traceCapacity                = 100
-)
+const traceCapacity = 100
 
 type Parser struct {
-	entryPoints        []string
 	tagsMapping        map[string][]tag.DynamicTag
 	tagEntrypoint      bool
 	keepEntrypointName bool
@@ -37,27 +32,21 @@ func NewParser(
 	tagEntrypoint bool,
 	keepEntrypointName bool,
 ) *Parser {
-	cache, err := lru.New(entryPointValidatorCacheSize)
-	if err != nil {
-		panic("failed to create LRU cache: " + err.Error())
-	}
-
 	return &Parser{
-		entryPoints:        entryPoints,
 		tagsMapping:        tagsMapping,
 		tagEntrypoint:      tagEntrypoint,
 		keepEntrypointName: keepEntrypointName,
 		currentTrace:       make([]string, 0, traceCapacity),
 		currentMeta:        make([]string, 0, len(tagsMapping)),
-		epValidator:        validator.New(entryPoints, cache),
+		epValidator:        validator.New(entryPoints),
 	}
 }
 
-// Parse reads and processes lines from the scanner, converting them into folded stack samples.
+// Parse does not close samples; the caller owns closing it.
 func (parser *Parser) Parse(
 	ctx context.Context,
 	scanner *bufio.Scanner,
-	foldedStacks chan<- *collector.Sample,
+	samples chan<- *collector.Sample,
 ) {
 	for {
 		select {
@@ -67,7 +56,7 @@ func (parser *Parser) Parse(
 		default:
 			if !scanner.Scan() {
 				if len(parser.currentTrace) > 0 {
-					if !parser.processTrace(ctx, foldedStacks) {
+					if !parser.processTrace(ctx, samples) {
 						return
 					}
 				}
@@ -85,7 +74,7 @@ func (parser *Parser) Parse(
 			log.Trace().Str("line", line).Msg("read profiler output line")
 
 			if trimmed := strings.TrimSpace(line); trimmed == "" {
-				if !parser.processTrace(ctx, foldedStacks) {
+				if !parser.processTrace(ctx, samples) {
 					return
 				}
 				continue
@@ -109,10 +98,9 @@ func (parser *Parser) addToMeta(line string) {
 	parser.currentMeta = append(parser.currentMeta, line)
 }
 
-// processTrace converts the current trace to a folded stack and sends it to the foldedStacks channel.
 func (parser *Parser) processTrace(
 	ctx context.Context,
-	foldedStacks chan<- *collector.Sample,
+	samples chan<- *collector.Sample,
 ) bool {
 	defer parser.resetState()
 
@@ -120,12 +108,12 @@ func (parser *Parser) processTrace(
 		return true
 	}
 
-	sample, entryPoint, convertError := transform.TracesToFoldedStacks(parser.currentTrace, parser.keepEntrypointName)
-	if convertError != nil {
+	foldedStack, entryPoint, foldError := foldTrace(parser.currentTrace, parser.keepEntrypointName)
+	if foldError != nil {
 		log.Debug().
-			Err(convertError).
-			Str("sample", strings.Join(parser.currentTrace, "\n")).
-			Msg("Failed to convert trace")
+			Err(foldError).
+			Str("trace", strings.Join(parser.currentTrace, "\n")).
+			Msg("Failed to fold trace")
 		return true
 	}
 
@@ -138,7 +126,7 @@ func (parser *Parser) processTrace(
 
 	parser.buildTags(entryPoint)
 	select {
-	case foldedStacks <- &collector.Sample{Trace: sample, Tags: parser.tags.String(), Time: time.Now()}:
+	case samples <- &collector.Sample{Trace: foldedStack, Tags: parser.tags.String(), Time: time.Now()}:
 	case <-ctx.Done():
 		return false
 	}
@@ -147,14 +135,14 @@ func (parser *Parser) processTrace(
 		Str("tags", parser.tags.String()).
 		Msg("queued parsed sample")
 	log.Trace().
-		Str("sample", sample).
+		Str("folded_stack", foldedStack).
 		Msg("Trace processed")
 	return true
 }
 
 // buildTags constructs the tags string based on metadata and entry point.
 func (parser *Parser) buildTags(entryPoint string) {
-	parsedTags := transform.MetaToTags(parser.currentMeta, parser.tagsMapping)
+	parsedTags := metaToTags(parser.currentMeta, parser.tagsMapping)
 	parser.tags.WriteString(parsedTags)
 	if parser.tagEntrypoint {
 		if parsedTags != "" {

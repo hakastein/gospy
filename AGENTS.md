@@ -10,7 +10,7 @@ This file provides guidance to Agents when working with code in this repository.
 - `make coverage-html`: Generate HTML coverage report
 
 ## Test Commands
-- Run single test: `go test -v ./internal/args -run TestExtractFlagValue`
+- Run single test: `go test -v ./internal/phpspy -run TestParser_Parse`
 - Run benchmark: `make bench`
 
 ## Testing Standards
