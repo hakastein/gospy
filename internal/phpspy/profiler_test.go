@@ -33,23 +33,29 @@ func TestProfilerValidateConfiguration(t *testing.T) {
 			args: nil,
 		},
 		{
-			name:    "standalone long flag enables an unsupported mode",
+			name:    "long switch enables an unsupported mode",
 			args:    []string{"--version"},
 			wantErr: "flag -v/--version is unsupported by gospy",
 		},
 		{
-			name:    "standalone short flag enables an unsupported mode",
+			name:    "short switch enables an unsupported mode",
 			args:    []string{"-1"},
 			wantErr: "flag -1/--single-line is unsupported by gospy",
 		},
 		{
-			name:    "an unsupported switch stays on when another argument follows it",
+			name:    "a switch is not swallowed by the argument after it",
 			args:    []string{"-v", "--rate-hz=250"},
 			wantErr: "flag -v/--version is unsupported by gospy",
 		},
 		{
-			name: "explicitly disabled unsupported flag is accepted",
-			args: []string{"--top=false"},
+			name:    "clustered switches are read one by one",
+			args:    []string{"-1t"},
+			wantErr: "flag -t/--top is unsupported by gospy",
+		},
+		{
+			name:    "a switch written with a value is still a switch",
+			args:    []string{"--top=false"},
+			wantErr: "flag -t/--top is unsupported by gospy",
 		},
 		{
 			name: "short output flag takes the next argument",
@@ -57,22 +63,39 @@ func TestProfilerValidateConfiguration(t *testing.T) {
 		},
 		{
 			name: "long output flag takes the next argument",
-			args: []string{"--output", "stdout"},
+			args: []string{"--output", "-"},
+		},
+		{
+			name:    "the literal stdout is a file path to phpspy",
+			args:    []string{"-o", "stdout"},
+			wantErr: "phpspy must write to stdout: pass `-o -` or omit the flag, got \"stdout\"",
 		},
 		{
 			name:    "output to a file is rejected",
 			args:    []string{"--output=/tmp/profile.txt"},
-			wantErr: "output must be set to stdout",
+			wantErr: "phpspy must write to stdout: pass `-o -` or omit the flag, got \"/tmp/profile.txt\"",
 		},
 		{
-			name:    "output to a file through a separate argument is rejected",
-			args:    []string{"--output", "/tmp/profile.txt"},
-			wantErr: "output must be set to stdout",
+			name:    "output flag without a value is rejected",
+			args:    []string{"-o"},
+			wantErr: "phpspy must write to stdout: pass `-o -` or omit the flag, got \"\"",
 		},
 		{
-			name:    "short output flag swallows a following flag as its value",
-			args:    []string{"-o", "--rate-hz=250"},
-			wantErr: "output must be set to stdout",
+			name: "the default event handler is accepted",
+			args: []string{"-j", "fout"},
+		},
+		{
+			name:    "another event handler changes the output format",
+			args:    []string{"--event-handler=callgrind"},
+			wantErr: `event handler "callgrind" is unsupported by gospy, expected fout`,
+		},
+		{
+			name: "an option value that looks like a switch is not read as one",
+			args: []string{"-f", "-v"},
+		},
+		{
+			name: "arguments of the traced command are not phpspy flags",
+			args: []string{"-p", "123", "--", "php", "-v"},
 		},
 	}
 
@@ -97,7 +120,7 @@ func TestProfilerGetHZ(t *testing.T) {
 		want int
 	}{
 		{
-			name: "phpspy default when the flag is absent",
+			name: "phpspy default when no rate is given",
 			args: nil,
 			want: 99,
 		},
@@ -117,8 +140,38 @@ func TestProfilerGetHZ(t *testing.T) {
 			want: 250,
 		},
 		{
+			name: "short flag with an attached value",
+			args: []string{"-H250"},
+			want: 250,
+		},
+		{
+			name: "sleep interval sets the same rate",
+			args: []string{"-s", "5000000"},
+			want: 200,
+		},
+		{
+			name: "long sleep interval sets the same rate",
+			args: []string{"--sleep-ns=4000000"},
+			want: 250,
+		},
+		{
+			name: "the last of rate and sleep wins",
+			args: []string{"-H", "99", "-s", "5000000"},
+			want: 200,
+		},
+		{
+			name: "the last of sleep and rate wins",
+			args: []string{"-s", "5000000", "-H", "250"},
+			want: 250,
+		},
+		{
 			name: "non-numeric value falls back to the default",
 			args: []string{"--rate-hz=fast"},
+			want: 99,
+		},
+		{
+			name: "a rate given to the traced command is not phpspy's",
+			args: []string{"-p", "123", "--", "php", "-H", "250"},
 			want: 99,
 		},
 	}

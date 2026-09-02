@@ -6,30 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/rs/zerolog/log"
 )
 
-const (
-	defaultBufferSize = 4096
-	defaultRateHz     = 99
-)
-
-var (
-	unsupportedFlags = []flag{
-		{long: "version", short: "v"},
-		{long: "top", short: "t"},
-		{long: "help", short: "h"},
-		{long: "single-line", short: "1"},
-	}
-	outputFlag           = flag{long: "output", short: "o"}
-	pgrepFlag            = flag{long: "pgrep", short: "P"}
-	bufferSizeFlag       = flag{long: "buffer-size", short: "b"}
-	eventHandlerOptsFlag = flag{long: "event-handler-opts", short: "J"}
-	rateHzFlag           = flag{long: "rate-hz", short: "H"}
-)
+// Modes that make phpspy print something other than a stream of trace blocks on stdout.
+var unsupportedModes = []option{
+	{long: "version", short: "v"},
+	{long: "top", short: "t"},
+	{long: "help", short: "h"},
+	{long: "single-line", short: "1"},
+}
 
 // Profiler implementation of profiler.Profiler
 type Profiler struct {
@@ -89,27 +79,51 @@ func (profiler *Profiler) Wait() error {
 }
 
 func (profiler *Profiler) ValidateConfiguration() error {
-	for _, unsupported := range unsupportedFlags {
-		if unsupported.enabled(profiler.args) {
+	args := parseArgs(profiler.args)
+
+	for _, unsupported := range unsupportedModes {
+		if args.present(unsupported.long) {
 			return fmt.Errorf("flag -%s/--%s is unsupported by gospy", unsupported.short, unsupported.long)
 		}
 	}
 
-	if output := outputFlag.text(profiler.args, "stdout"); output != "stdout" && output != "-" {
-		return errors.New("output must be set to stdout")
+	if output := args.text(optionOutput, stdoutPath); output != stdoutPath {
+		return fmt.Errorf("phpspy must write to stdout: pass `-o %s` or omit the flag, got %q", stdoutPath, output)
 	}
 
-	if pgrepFlag.text(profiler.args, "") != "" {
-		bufferSize := bufferSizeFlag.number(profiler.args, defaultBufferSize)
-		eventHandlerOpts := eventHandlerOptsFlag.text(profiler.args, "")
-		if bufferSize > defaultBufferSize && !strings.Contains(eventHandlerOpts, "m") {
-			log.Warn().Msg("using large buffer size without mutex; consider adding -J m with -b > 4096")
+	if handler := args.text(optionEventHandler, foutHandler); handler != foutHandler {
+		return fmt.Errorf("event handler %q is unsupported by gospy, expected %s", handler, foutHandler)
+	}
+
+	if args.present(optionPgrep) {
+		bufferSize := args.number(optionBufferSize, defaultBufferSize)
+		if bufferSize > pipeBufSize && !strings.Contains(args.text(optionEventHandlerOpts, ""), "m") {
+			log.Warn().
+				Int("buffer_size", bufferSize).
+				Int("pipe_buf", pipeBufSize).
+				Msg("buffer above PIPE_BUF without a mutex interlaces writes in pgrep mode; add -J m")
 		}
 	}
 
 	return nil
 }
 
+// phpspy routes --rate-hz and --sleep-ns to the same interval.
 func (profiler *Profiler) GetHZ() int {
-	return rateHzFlag.number(profiler.args, defaultRateHz)
+	rate := defaultRateHz
+
+	for _, given := range parseArgs(profiler.args) {
+		switch given.long {
+		case optionRateHz:
+			if hz, err := strconv.Atoi(given.value); err == nil && hz > 0 {
+				rate = hz
+			}
+		case optionSleepNs:
+			if sleep, err := strconv.Atoi(given.value); err == nil && sleep > 0 {
+				rate = nanosecondsPerSecond / sleep
+			}
+		}
+	}
+
+	return rate
 }
