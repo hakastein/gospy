@@ -1,7 +1,7 @@
 # gospy
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/hakastein/gospy)](https://goreportcard.com/report/github.com/hakastein/gospy)
-![Coverage](https://img.shields.io/badge/Coverage-87.8%25-brightgreen)
+![Coverage](https://img.shields.io/badge/Coverage-88.7%25-brightgreen)
 
 ![gospy.jpg](gospy.jpg)
 
