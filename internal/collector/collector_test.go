@@ -12,340 +12,260 @@ import (
 	"github.com/hakastein/gospy/internal/collector"
 )
 
-func newTestCollector() *collector.TraceCollector {
-	return collector.NewTraceCollector()
+type pipe struct {
+	samples chan *collector.Sample
+	batches chan *collector.TagCollection
+	done    chan struct{}
 }
 
-type TagCollection interface {
-	Tags() string
-	From() time.Time
-	Until() time.Time
-	Data() map[string]int
-}
-
-type collectorData struct {
-	data  map[string]int
-	from  time.Time
-	until time.Time
-}
-
-// helpers
-
-func addSamples(c *collector.TraceCollector, samples []collector.Sample) {
-	for _, s := range samples {
-		c.AddSample(&s)
-	}
-}
-
-func collectTags(c *collector.TraceCollector, count int) map[string]TagCollection {
-	result := make(map[string]TagCollection)
-	for i := 0; i < count; i++ {
-		tag, ok := c.ConsumeTag()
-		if !ok {
-			break
-		}
-		result[tag.Tags()] = tag
-	}
-	return result
-}
-
-func verifyCollectedData(t *testing.T, collected map[string]TagCollection, expected map[string]collectorData) {
+func startPipe(t *testing.T, ctx context.Context, buffer int) *pipe {
 	t.Helper()
 
-	require.Len(t, collected, len(expected), "Number of tags mismatch")
-
-	for tag, exp := range expected {
-		actual, exists := collected[tag]
-		require.True(t, exists, "missing tag: %s", tag)
-
-		assert.Equal(t, exp.from, actual.From(), "invalid start time for tag: %s", tag)
-		assert.Equal(t, exp.until, actual.Until(), "invalid end time for tag: %s", tag)
-		assert.Equal(t, exp.data, actual.Data(), "invalid stack counts for tag: %s", tag)
-	}
-}
-
-func verifyState(t *testing.T, c *collector.TraceCollector, expected map[string]collectorData) {
-	t.Helper()
-	collected := collectTags(c, len(expected))
-	verifyCollectedData(t, collected, expected)
-}
-
-func verifyOrder(t *testing.T, c *collector.TraceCollector, expectedOrder []string) {
-	t.Helper()
-
-	var actualOrder []string
-	for _, expectedTag := range expectedOrder {
-		tag, ok := c.ConsumeTag()
-		require.True(t, ok, "Missing tag %s", expectedTag)
-		actualOrder = append(actualOrder, tag.Tags())
+	p := &pipe{
+		samples: make(chan *collector.Sample),
+		batches: make(chan *collector.TagCollection, buffer),
+		done:    make(chan struct{}),
 	}
 
-	assert.Equal(t, expectedOrder, actualOrder, "Unexpected tag order")
-}
+	go func() {
+		defer close(p.done)
+		collector.Collect(ctx, p.samples, p.batches)
+	}()
 
-// tests
-
-func TestTraceCollector(t *testing.T) {
-	t.Run("Empty", func(t *testing.T) {
-		c := newTestCollector()
-		_, ok := c.ConsumeTag()
-		assert.False(t, ok)
-	})
-
-	t.Run("Len", func(t *testing.T) {
-		c := newTestCollector()
-		baseTime := time.Now().Truncate(time.Millisecond)
-
-		addSamples(c, []collector.Sample{
-			{baseTime, "main;login", "auth"},
-			{baseTime.Add(20 * time.Millisecond), "http;handler", "api"},
-		})
-
-		assert.Equal(t, 2, c.Len())
-
-		addSamples(c, []collector.Sample{
-			{baseTime, "main;login", "auth"},
-		})
-
-		assert.Equal(t, 2, c.Len())
-	})
-
-	t.Run("MaintainsLRUOrderOnAccess", func(t *testing.T) {
-		c := newTestCollector()
-		baseTime := time.Now().Truncate(time.Millisecond)
-
-		addSamples(c, []collector.Sample{
-			{baseTime, "main;login", "auth"},
-			{baseTime.Add(20 * time.Millisecond), "http;handler", "api"},
-			{baseTime.Add(10 * time.Millisecond), "main;login", "auth"},
-			{baseTime.Add(10 * time.Millisecond), "http;handler", "web"},
-		})
-
-		verifyOrder(t, c, []string{"auth", "api"})
-
-		addSamples(c, []collector.Sample{
-			{baseTime.Add(20 * time.Millisecond), "main;login", "auth"},
-			{baseTime.Add(20 * time.Millisecond), "http;handler", "api"},
-		})
-
-		verifyOrder(t, c, []string{"web", "auth", "api"})
-	})
-
-	t.Run("AccumulatesCorrectTimeRanges", func(t *testing.T) {
-		c := newTestCollector()
-		baseTime := time.Now().Truncate(time.Millisecond)
-
-		addSamples(c, []collector.Sample{
-			{baseTime, "main;login", "auth"},
-			{baseTime.Add(10 * time.Millisecond), "main;login", "auth"},
-			{baseTime.Add(20 * time.Millisecond), "http;handler", "api"},
-		})
-
-		verifyState(t, c, map[string]collectorData{
-			"auth": {
-				data:  map[string]int{"main;login": 2},
-				from:  baseTime,
-				until: baseTime.Add(10 * time.Millisecond),
-			},
-		})
-
-		addSamples(c, []collector.Sample{
-			{baseTime.Add(30 * time.Millisecond), "main;logout", "auth"},
-			{baseTime.Add(10 * time.Millisecond), "main;login", "auth"},
-			{baseTime.Add(40 * time.Millisecond), "http;handler", "api"},
-		})
-
-		verifyState(t, c, map[string]collectorData{
-			"auth": {
-				data:  map[string]int{"main;login": 1, "main;logout": 1},
-				from:  baseTime.Add(10 * time.Millisecond),
-				until: baseTime.Add(30 * time.Millisecond),
-			},
-			"api": {
-				data:  map[string]int{"http;handler": 2},
-				from:  baseTime.Add(20 * time.Millisecond),
-				until: baseTime.Add(40 * time.Millisecond),
-			},
-		})
-	})
-}
-
-func TestTraceCollector_Collect(t *testing.T) {
-	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	t.Run("DrainsChannelUntilClosed", func(t *testing.T) {
-		samplesChan := make(chan *collector.Sample, 1)
-		c := newTestCollector()
-
-		samplesChan <- &collector.Sample{
-			Tags:  "tag1",
-			Trace: "trace1",
-			Time:  baseTime,
+	t.Cleanup(func() {
+		select {
+		case <-p.done:
+		case <-time.After(5 * time.Second):
+			t.Error("Collect did not return")
 		}
-		close(samplesChan)
-
-		c.Collect(context.Background(), samplesChan)
-
-		assert.Equal(t, 1, c.Len(), "samples sent before close must be collected")
 	})
 
-	t.Run("ContextCancellation", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		samplesChan := make(chan *collector.Sample)
-		c := newTestCollector()
-
-		cancel()
-		c.Collect(ctx, samplesChan)
-
-		assert.Equal(t, 0, c.Len(), "cancelled collect mustn't queue anything")
-	})
+	return p
 }
 
-func TestTagCollection(t *testing.T) {
-	t.Run("Getters", func(t *testing.T) {
-		now := time.Now()
-		data := map[string]int{"trace1": 1}
-		expectedData := map[string]int{"trace1": 1}
-		tc := collector.NewTagCollection(now, now.Add(time.Second), "tags", data)
+func (p *pipe) next(t *testing.T) *collector.TagCollection {
+	t.Helper()
 
-		assert.Equal(t, "tags", tc.Tags())
-		assert.Equal(t, now, tc.From())
-		assert.Equal(t, now.Add(time.Second), tc.Until())
-		assert.Equal(t, expectedData, tc.Data())
-	})
-
-	t.Run("Len", func(t *testing.T) {
-		t.Run("Empty", func(t *testing.T) {
-			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", nil)
-			assert.Equal(t, 0, tc.Len())
-
-			tc = collector.NewTagCollection(time.Time{}, time.Time{}, "", make(map[string]int))
-			assert.Equal(t, 0, tc.Len())
-		})
-
-		t.Run("Single", func(t *testing.T) {
-			// "trace1 123" -> len is 10
-			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", map[string]int{"trace1": 123})
-			assert.Equal(t, 10, tc.Len())
-		})
-
-		t.Run("Zero", func(t *testing.T) {
-			// "trace1 0" -> len is 8
-			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", map[string]int{"trace1": 0})
-			assert.Equal(t, 8, tc.Len())
-		})
-
-		t.Run("Multiple", func(t *testing.T) {
-			// "trace1 123\ntrace2 45" -> len is 10 + 1 + 9 = 20
-			expectedLen := 20
-			data := map[string]int{
-				"trace1": 123,
-				"trace2": 45,
-			}
-			tc := collector.NewTagCollection(time.Time{}, time.Time{}, "", data)
-			assert.Equal(t, expectedLen, tc.Len())
-		})
-	})
-}
-
-// setupCollectorWithData is a helper function to create and pre-populate a collector.
-func setupCollectorWithData(numSamples, numTags int) *collector.TraceCollector {
-	tc := collector.NewTraceCollector()
-	for i := 0; i < numSamples; i++ {
-		sample := &collector.Sample{
-			Time:  time.Now(),
-			Trace: fmt.Sprintf("main;func;%d", i),
-			Tags:  fmt.Sprintf("tag%d", i%numTags),
-		}
-		tc.AddSample(sample)
-	}
-	return tc
-}
-
-func BenchmarkTagCollection_Len(b *testing.B) {
-	data := make(map[string]int)
-	for i := 0; i < 100; i++ {
-		data[fmt.Sprintf("trace;number;%d", i)] = i * i
-	}
-	tc := collector.NewTagCollection(time.Now(), time.Now(), "tags", data)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_ = tc.Len()
+	select {
+	case batch, ok := <-p.batches:
+		require.True(t, ok, "batches closed before the expected batch")
+		return batch
+	case <-time.After(5 * time.Second):
+		t.Fatal("collector emitted no batch")
+		return nil
 	}
 }
 
-func BenchmarkTraceCollector_AddSample(b *testing.B) {
-	numTags := 10
-	tc := setupCollectorWithData(1000, numTags)
+func (p *pipe) drain(t *testing.T) []*collector.TagCollection {
+	t.Helper()
 
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		tc.AddSample(&collector.Sample{
-			Time:  time.Now(),
-			Trace: "main;new_func",
-			Tags:  fmt.Sprintf("tag%d", i%numTags),
-		})
-	}
-}
-
-func BenchmarkTraceCollector_ConsumeTag(b *testing.B) {
-	b.ReportAllocs()
-	tc := setupCollectorWithData(b.N, b.N)
-	b.ResetTimer()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_, ok := tc.ConsumeTag()
+	var batches []*collector.TagCollection
+	for {
+		select {
+		case batch, ok := <-p.batches:
 			if !ok {
-				b.FailNow()
+				return batches
 			}
+			batches = append(batches, batch)
+		case <-time.After(5 * time.Second):
+			t.Fatal("collector did not close its output")
+			return nil
 		}
-	})
+	}
 }
 
-func TestTraceCollector_Notify(t *testing.T) {
+func sample(at time.Time, trace, tags string) *collector.Sample {
+	return &collector.Sample{Time: at, Trace: trace, Tags: tags}
+}
+
+func TestCollectEmitsBatchPerTag(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := startPipe(t, ctx, 0)
 
-	sample := func(tags string) *collector.Sample {
-		return &collector.Sample{Tags: tags, Trace: "trace1", Time: baseTime}
+	p.samples <- sample(baseTime, "main;login", "auth")
+	batch := p.next(t)
+
+	assert.Equal(t, "auth", batch.Tags())
+	assert.Equal(t, map[string]int{"main;login": 1}, batch.Data())
+	assert.Equal(t, baseTime, batch.From())
+	assert.Equal(t, baseTime, batch.Until())
+
+	p.samples <- sample(baseTime.Add(time.Second), "http;handler", "api")
+	batch = p.next(t)
+
+	assert.Equal(t, "api", batch.Tags())
+	assert.Equal(t, map[string]int{"http;handler": 1}, batch.Data())
+
+	close(p.samples)
+	require.Empty(t, p.drain(t))
+}
+
+func TestCollectAggregatesEverySample(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := startPipe(t, ctx, 16)
+
+	samples := []*collector.Sample{
+		sample(baseTime.Add(10*time.Millisecond), "main;login", "auth"),
+		sample(baseTime, "main;login", "auth"),
+		sample(baseTime.Add(20*time.Millisecond), "http;handler", "api"),
+		sample(baseTime.Add(30*time.Millisecond), "main;logout", "auth"),
+		sample(baseTime.Add(40*time.Millisecond), "http;handler", "api"),
+	}
+	for _, s := range samples {
+		p.samples <- s
+	}
+	close(p.samples)
+
+	traces := make(map[string]map[string]int)
+	from := make(map[string]time.Time)
+	until := make(map[string]time.Time)
+	for _, batch := range p.drain(t) {
+		tags := batch.Tags()
+		if _, seen := traces[tags]; !seen {
+			traces[tags] = make(map[string]int)
+			from[tags] = batch.From()
+			until[tags] = batch.Until()
+		}
+		for trace, count := range batch.Data() {
+			traces[tags][trace] += count
+		}
+		require.False(t, batch.From().After(batch.Until()), "batch time range must not be inverted")
+		if batch.From().Before(from[tags]) {
+			from[tags] = batch.From()
+		}
+		if batch.Until().After(until[tags]) {
+			until[tags] = batch.Until()
+		}
 	}
 
-	assertQuiet := func(t *testing.T, c *collector.TraceCollector) {
-		t.Helper()
-		select {
-		case <-c.Notify():
-			t.Fatal("expected no pending signal")
-		default:
+	assert.Equal(t, map[string]map[string]int{
+		"auth": {"main;login": 2, "main;logout": 1},
+		"api":  {"http;handler": 2},
+	}, traces)
+	assert.Equal(t, baseTime, from["auth"])
+	assert.Equal(t, baseTime.Add(30*time.Millisecond), until["auth"])
+	assert.Equal(t, baseTime.Add(20*time.Millisecond), from["api"])
+	assert.Equal(t, baseTime.Add(40*time.Millisecond), until["api"])
+}
+
+func TestCollectShipsBufferedBurstAsOneBatch(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	samples := make(chan *collector.Sample, 4)
+	for i := 0; i < cap(samples); i++ {
+		samples <- sample(baseTime.Add(time.Duration(i)*time.Second), "main;login", "auth")
+	}
+	close(samples)
+
+	batches := make(chan *collector.TagCollection, cap(samples))
+	collector.Collect(ctx, samples, batches)
+
+	batch, ok := <-batches
+	require.True(t, ok, "collector emitted no batch")
+	assert.Equal(t, map[string]int{"main;login": 4}, batch.Data())
+	assert.Equal(t, baseTime, batch.From())
+	assert.Equal(t, baseTime.Add(3*time.Second), batch.Until())
+
+	_, ok = <-batches
+	assert.False(t, ok, "collector must close its output once drained")
+}
+
+func TestCollectEmitsBatchesInTagArrivalOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := startPipe(t, ctx, 0)
+
+	for i, tags := range []string{"auth", "api", "web"} {
+		p.samples <- sample(baseTime.Add(time.Duration(i)*time.Second), "main;handler", tags)
+		assert.Equal(t, tags, p.next(t).Tags())
+	}
+
+	close(p.samples)
+	require.Empty(t, p.drain(t))
+}
+
+func TestCollectClosesOutputWhenInputIsClosed(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	p := startPipe(t, ctx, 1)
+	close(p.samples)
+
+	require.Empty(t, p.drain(t))
+}
+
+func TestCollectStopsOnContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p := startPipe(t, ctx, 0)
+
+	cancel()
+
+	require.Empty(t, p.drain(t), "cancelled collect must not emit batches")
+}
+
+func TestTagCollectionGetters(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	batch := collector.NewTagCollection(now, now.Add(time.Second), "tags", map[string]int{"trace1": 1})
+
+	assert.Equal(t, "tags", batch.Tags())
+	assert.Equal(t, now, batch.From())
+	assert.Equal(t, now.Add(time.Second), batch.Until())
+	assert.Equal(t, map[string]int{"trace1": 1}, batch.Data())
+}
+
+func BenchmarkCollect(b *testing.B) {
+	const numTags = 10
+
+	samples := make(chan *collector.Sample)
+	batches := make(chan *collector.TagCollection, numTags)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		collector.Collect(context.Background(), samples, batches)
+	}()
+	go func() {
+		for range batches {
+		}
+	}()
+
+	now := time.Now()
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		samples <- &collector.Sample{
+			Time:  now,
+			Trace: "main;func",
+			Tags:  fmt.Sprintf("tag%d", i%numTags),
 		}
 	}
 
-	t.Run("QuietBeforeAnySample", func(t *testing.T) {
-		assertQuiet(t, newTestCollector())
-	})
-
-	t.Run("SignalsOnAddSample", func(t *testing.T) {
-		c := newTestCollector()
-		c.AddSample(sample("tag1"))
-
-		select {
-		case <-c.Notify():
-		case <-time.After(time.Second):
-			t.Fatal("AddSample did not signal a waiting publisher")
-		}
-	})
-
-	t.Run("CoalescesRepeatedSignals", func(t *testing.T) {
-		c := newTestCollector()
-		for i := 0; i < 100; i++ {
-			c.AddSample(sample(fmt.Sprintf("tag%d", i)))
-		}
-
-		<-c.Notify()
-		assertQuiet(t, c)
-	})
+	b.StopTimer()
+	close(samples)
+	<-done
 }

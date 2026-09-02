@@ -3,14 +3,10 @@ package collector
 import (
 	"container/list"
 	"context"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
-
-// For fast counting. We don't expect trace counts to exceed 1 billion
-var countThresholds = []int{10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000}
 
 type Sample struct {
 	Time  time.Time
@@ -35,31 +31,6 @@ func NewTagCollection(from time.Time, until time.Time, tags string, data map[str
 	}
 }
 
-func (tc *TagCollection) Len() int {
-	if len(tc.data) == 0 {
-		return 0
-	}
-	size := len(tc.data)*2 - 1 // new lines and whitespaces
-	for sample, count := range tc.data {
-		size += len(sample)
-		if count == 0 {
-			size += 1
-			continue
-		}
-		// count digits
-		numDigits := 1
-		for _, t := range countThresholds {
-			if count < t {
-				break
-			}
-			numDigits++
-		}
-		size += numDigits
-
-	}
-	return size
-}
-
 func (tc *TagCollection) Data() map[string]int {
 	return tc.data
 }
@@ -76,50 +47,64 @@ func (tc *TagCollection) Tags() string {
 	return tc.tags
 }
 
-// traceGroup represents a collection of stacks with counts and a time range.
 type traceGroup struct {
-	stacks        map[string]int
-	from          time.Time
-	until         time.Time
-	queuePosition *list.Element
+	stacks map[string]int
+	from   time.Time
+	until  time.Time
 }
 
-// TraceCollector manages trace groups organized by tags and tracks access order.
-type TraceCollector struct {
-	mu     sync.RWMutex
+// traceCollector cuts the oldest accumulated batch first.
+type traceCollector struct {
 	traces map[string]*traceGroup
 	queue  *list.List
-	notify chan struct{}
 }
 
-// NewTraceCollector initializes and returns a new TraceCollector.
-func NewTraceCollector() *TraceCollector {
-	return &TraceCollector{
+// Collect closes batches once samples is closed and drained.
+func Collect(ctx context.Context, samples <-chan *Sample, batches chan<- *TagCollection) {
+	defer close(batches)
+
+	tc := &traceCollector{
 		traces: make(map[string]*traceGroup),
 		queue:  list.New(),
-		notify: make(chan struct{}, 1),
+	}
+
+	var pending *TagCollection
+	for {
+		// A batch is cut once the input looks momentarily empty - best-effort, a sample can
+		// arrive right after the check - so a burst ships as one request, not one per sample.
+		if pending == nil && len(samples) == 0 {
+			pending = tc.consume()
+		}
+
+		if pending == nil && samples == nil {
+			return
+		}
+
+		var output chan<- *TagCollection
+		if pending != nil {
+			output = batches
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("collector shutting down")
+			return
+		case output <- pending:
+			pending = nil
+		case sample, ok := <-samples:
+			if !ok {
+				samples = nil
+				continue
+			}
+			tc.add(sample)
+		}
 	}
 }
 
-func (tc *TraceCollector) Notify() <-chan struct{} {
-	return tc.notify
-}
-
-func (tc *TraceCollector) Len() int {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-	return tc.queue.Len()
-}
-
-// ConsumeTag removes the oldest tag from the traces collection and returns its data.
-// If there are no tags, it returns nil.
-func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
+func (tc *traceCollector) consume() *TagCollection {
 	elem := tc.queue.Front()
 	if elem == nil {
-		return nil, false
+		return nil
 	}
 
 	tags := elem.Value.(string)
@@ -128,63 +113,33 @@ func (tc *TraceCollector) ConsumeTag() (*TagCollection, bool) {
 	tc.queue.Remove(elem)
 	delete(tc.traces, tags)
 
-	return NewTagCollection(
-		tg.from,
-		tg.until,
-		tags,
-		tg.stacks,
-	), true
+	return NewTagCollection(tg.from, tg.until, tags, tg.stacks)
 }
 
-// AddSample increments the sample count in a traceGroup for a given stack and updates access order.
-func (tc *TraceCollector) AddSample(stack *Sample) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	tg, exists := tc.traces[stack.Tags]
+func (tc *traceCollector) add(sample *Sample) {
+	tg, exists := tc.traces[sample.Tags]
 	if !exists {
 		tg = &traceGroup{
 			stacks: make(map[string]int),
-			from:   stack.Time,
-			until:  stack.Time,
+			from:   sample.Time,
+			until:  sample.Time,
 		}
-		tc.traces[stack.Tags] = tg
-		// Push tag into end of the queue
-		tg.queuePosition = tc.queue.PushBack(stack.Tags)
+		tc.traces[sample.Tags] = tg
+		tc.queue.PushBack(sample.Tags)
 	}
 
-	if stack.Time.After(tg.until) {
-		tg.until = stack.Time
+	if sample.Time.After(tg.until) {
+		tg.until = sample.Time
 	}
-	if stack.Time.Before(tg.from) {
-		tg.from = stack.Time
+	if sample.Time.Before(tg.from) {
+		tg.from = sample.Time
 	}
-	tg.stacks[stack.Trace]++
+	tg.stacks[sample.Trace]++
+
 	log.Trace().
-		Str("tags", stack.Tags).
-		Str("trace", stack.Trace).
-		Int("trace_count", tg.stacks[stack.Trace]).
+		Str("tags", sample.Tags).
+		Str("trace", sample.Trace).
+		Int("trace_count", tg.stacks[sample.Trace]).
 		Int("queued_tag_groups", tc.queue.Len()).
 		Msg("sample added to collector")
-
-	select {
-	case tc.notify <- struct{}{}:
-	default:
-	}
-}
-
-// Collect returns once stacksChannel is closed, so callers can use it as the drain barrier before shutting down downstream stages.
-func (tc *TraceCollector) Collect(ctx context.Context, stacksChannel <-chan *Sample) {
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info().Msg("shutdown subscriber")
-			return
-		case sample, ok := <-stacksChannel:
-			if !ok {
-				return
-			}
-			tc.AddSample(sample)
-		}
-	}
 }

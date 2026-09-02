@@ -5,16 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/time/rate"
 
 	"github.com/hakastein/gospy/internal/collector"
 	"github.com/hakastein/gospy/internal/obfuscation"
@@ -25,7 +22,7 @@ import (
 	"github.com/hakastein/gospy/internal/version"
 )
 
-const megabyte = 1048576
+const sampleBuffer = 1000
 
 type Config struct {
 	PyroscopeURL       string
@@ -62,19 +59,6 @@ type traceParser interface {
 	Parse(ctx context.Context, scanner *bufio.Scanner, samplesChannel chan<- *collector.Sample)
 }
 
-type sampleCollection struct {
-	traces        *collector.TraceCollector
-	collectorDone <-chan struct{}
-}
-
-type ingestPipeline struct {
-	stats         chan *pyroscope.SendResult
-	aggregator    *pyroscope.StatsAggregator
-	statsLogged   <-chan struct{}
-	pool          *pyroscope.IngestPool
-	publisherDone <-chan struct{}
-}
-
 func Run(ctx context.Context, cfg Config) error {
 	runtimeCfg, err := prepareConfig(cfg)
 	if err != nil {
@@ -90,10 +74,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return validationErr
 	}
 
-	httpClient := &http.Client{Timeout: runtimeCfg.PyroscopeTimeout}
-	client := pyroscope.NewClient(runtimeCfg.PyroscopeURL, runtimeCfg.PyroscopeAuth, httpClient)
-
-	return runPipeline(ctx, runtimeCfg.Config, runtimeCfg.staticTags, profilerImpl, parserImpl, client)
+	return runPipeline(ctx, runtimeCfg, profilerImpl, parserImpl)
 }
 
 func prepareConfig(cfg Config) (runtimeConfig, error) {
@@ -136,11 +117,9 @@ func validateConfig(cfg Config) error {
 
 func runPipeline(
 	ctx context.Context,
-	cfg Config,
-	staticTags string,
+	cfg runtimeConfig,
 	profilerImpl profilerRunner,
 	parserImpl traceParser,
-	client *pyroscope.Client,
 ) error {
 	log.Info().
 		Str("pyroscope_url", cfg.PyroscopeURL).
@@ -149,8 +128,8 @@ func runPipeline(
 		Bool("tag_entrypoint", cfg.TagEntrypoint).
 		Bool("keep_entrypoint_name", cfg.KeepEntrypointName).
 		Str("restart", cfg.Restart).
-		Int("rate_bytes", cfg.rateLimit()).
-		Int("rate_burst", cfg.rateBurst()).
+		Float64("rate_mb", cfg.RateMB).
+		Float64("rate_burst_mb", cfg.RateBurstMB).
 		Str("version", version.Get()).
 		Strs("tags", cfg.AppTags).
 		Msg("gospy started")
@@ -164,31 +143,40 @@ func runPipeline(
 	stopSignals := startSignalForwarder(profilerCtx, profilerCancel)
 	defer stopSignals()
 
-	stacks := make(chan *collector.Sample, 1000)
-	inputClosed := make(chan struct{})
-	samples := startSampleCollector(drainCtx, stacks)
+	stacks := make(chan *collector.Sample, sampleBuffer)
+	ingest := pyroscope.StartIngest(drainCtx, cfg.ingestConfig(profilerImpl.GetHZ()))
 
-	limiter := rate.NewLimiter(rate.Limit(cfg.rateLimit()), cfg.rateBurst())
-	metadata := pyroscope.NewAppMetadata(cfg.AppName, staticTags, profilerImpl.GetHZ())
-	ingest := startIngestPipeline(drainCtx, cfg, client, metadata, limiter, samples.traces, inputClosed)
+	collectorDone := make(chan struct{})
+	go func() {
+		defer close(collectorDone)
+		collector.Collect(drainCtx, stacks, ingest.In())
+	}()
 
 	runErr := supervisor.ManageProfiler(profilerCtx, profilerImpl, parserImpl, stacks, cfg.Restart)
 
 	close(stacks)
-	<-samples.collectorDone
-	close(inputClosed)
-	<-ingest.publisherDone
-	ingest.pool.Wait()
-
-	if ingest.stats != nil {
-		close(ingest.stats)
-		ingest.aggregator.Wait()
-		<-ingest.statsLogged
-	}
+	<-collectorDone
+	ingest.Wait()
 	drainCancel()
 
 	log.Info().Msg("shutting down")
 	return runErr
+}
+
+func (cfg runtimeConfig) ingestConfig(sampleRate int) pyroscope.Config {
+	return pyroscope.Config{
+		URL:           cfg.PyroscopeURL,
+		AuthToken:     cfg.PyroscopeAuth,
+		AppName:       cfg.AppName,
+		StaticTags:    cfg.staticTags,
+		SampleRate:    sampleRate,
+		Workers:       cfg.PyroscopeWorkers,
+		Timeout:       cfg.PyroscopeTimeout,
+		RateMB:        cfg.RateMB,
+		RateBurstMB:   cfg.RateBurstMB,
+		StatsInterval: cfg.StatsInterval,
+		Logger:        log.Logger,
+	}
 }
 
 func startSignalForwarder(ctx context.Context, cancel context.CancelFunc) func() {
@@ -207,99 +195,4 @@ func startSignalForwarder(ctx context.Context, cancel context.CancelFunc) func()
 	return func() {
 		signal.Stop(signals)
 	}
-}
-
-func startSampleCollector(ctx context.Context, stacks <-chan *collector.Sample) sampleCollection {
-	traces := collector.NewTraceCollector()
-	collectorDone := make(chan struct{})
-	go func() {
-		defer close(collectorDone)
-		traces.Collect(ctx, stacks)
-	}()
-
-	return sampleCollection{
-		traces:        traces,
-		collectorDone: collectorDone,
-	}
-}
-
-func startIngestPipeline(
-	ctx context.Context,
-	cfg Config,
-	client *pyroscope.Client,
-	metadata *pyroscope.AppMetadata,
-	limiter *rate.Limiter,
-	traces *collector.TraceCollector,
-	inputClosed <-chan struct{},
-) ingestPipeline {
-	batches := make(chan *collector.TagCollection, cfg.PyroscopeWorkers)
-	publisherDone := make(chan struct{})
-	go func() {
-		defer close(publisherDone)
-		defer close(batches)
-		publishTagCollections(ctx, traces, inputClosed, batches)
-	}()
-
-	var (
-		stats       chan *pyroscope.SendResult
-		aggregator  *pyroscope.StatsAggregator
-		statsLogged chan struct{}
-	)
-	if cfg.StatsInterval > 0 && zerolog.GlobalLevel() <= zerolog.InfoLevel {
-		stats = make(chan *pyroscope.SendResult, 1000)
-		aggregator = pyroscope.NewStatsAggregator(stats, cfg.StatsInterval)
-		aggregator.Start(ctx)
-		statsLogged = make(chan struct{})
-		go func() {
-			defer close(statsLogged)
-			pyroscope.LogStatsReports(ctx, aggregator.Reports())
-		}()
-	}
-
-	pool := pyroscope.NewIngestPool(client, metadata, limiter, cfg.PyroscopeWorkers, stats)
-	pool.Start(ctx, batches)
-
-	return ingestPipeline{
-		stats:         stats,
-		aggregator:    aggregator,
-		statsLogged:   statsLogged,
-		pool:          pool,
-		publisherDone: publisherDone,
-	}
-}
-
-func publishTagCollections(
-	ctx context.Context,
-	traces *collector.TraceCollector,
-	inputClosed <-chan struct{},
-	batches chan<- *collector.TagCollection,
-) {
-	for {
-		if batch, ok := traces.ConsumeTag(); ok {
-			select {
-			case batches <- batch:
-			case <-ctx.Done():
-				return
-			}
-			continue
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-inputClosed:
-			if traces.Len() == 0 {
-				return
-			}
-		case <-traces.Notify():
-		}
-	}
-}
-
-func (cfg Config) rateLimit() int {
-	return int(cfg.RateMB * megabyte)
-}
-
-func (cfg Config) rateBurst() int {
-	return int(cfg.RateBurstMB * megabyte)
 }

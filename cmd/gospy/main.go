@@ -2,35 +2,22 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"github.com/hakastein/gospy/internal/version"
-	"github.com/rs/zerolog/log"
-	"github.com/urfave/cli/v2"
 	"os"
 	"time"
+
+	"github.com/rs/zerolog/log"
+	"github.com/urfave/cli/v2"
+
+	"github.com/hakastein/gospy/internal/supervisor"
+	"github.com/hakastein/gospy/internal/version"
 )
 
 const (
-	DefaultRateMB        = 4       // Default ingestion rate limit in MB for Pyroscope
-	Megabyte             = 1048576 // Number of bytes in a megabyte
-	PyroscopeWorkers     = 5       // Amount of pyroscope senders
+	DefaultRateMB        = 4
+	PyroscopeWorkers     = 5
 	PyroscopeTimeout     = 10 * time.Second
 	DefaultStatsInterval = 10 * time.Second
 )
-
-const (
-	RestartAlways    = "always"
-	RestartOnError   = "onerror"
-	RestartOnSuccess = "onsuccess"
-	RestartNo        = "no"
-)
-
-var validRestartOptions = map[string]bool{
-	RestartAlways:    true,
-	RestartOnError:   true,
-	RestartOnSuccess: true,
-	RestartNo:        true,
-}
 
 func main() {
 	var verbosity int
@@ -97,11 +84,8 @@ func main() {
 				Name:  "restart",
 				Usage: "Restart profiler on exit (always, onerror, onsuccess, no). Default: no",
 				Value: "no",
-				Action: func(c *cli.Context, restart string) error {
-					if !validRestartOptions[restart] {
-						return fmt.Errorf("invalid restart option: %s", restart)
-					}
-					return nil
+				Action: func(_ *cli.Context, restart string) error {
+					return supervisor.ValidateRestart(restart)
 				},
 			},
 			&cli.StringSliceFlag{
