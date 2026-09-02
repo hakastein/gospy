@@ -1,6 +1,7 @@
 package pyroscope
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,43 +9,36 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"time"
 
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 
 	"github.com/hakastein/gospy/internal/version"
 )
 
-// Client handles sending data to Pyroscope server.
-type Client struct {
+type client struct {
 	httpClient *http.Client
 	url        string
 	authToken  string
+	logger     zerolog.Logger
 }
 
-type ErrorResponse struct {
+type errorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-// NewClient initializes and returns a new Client.
-func NewClient(
-	url string,
-	authToken string,
-	httpClient *http.Client,
-) *Client {
-	return &Client{
-		httpClient: httpClient,
+func newClient(url, authToken string, timeout time.Duration, transport http.RoundTripper, logger zerolog.Logger) *client {
+	return &client{
+		httpClient: &http.Client{Timeout: timeout, Transport: transport},
 		url:        strings.TrimSuffix(url, "/") + "/ingest",
 		authToken:  authToken,
+		logger:     logger,
 	}
 }
 
-// Send sends the profile data to Pyroscope and returns the HTTP status code and any error encountered.
-func (client *Client) Send(
-	ctx context.Context,
-	payload Payload,
-) error {
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", client.url, payload.BodyReader())
+func (client *client) send(ctx context.Context, profile payload) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, client.url, bytes.NewReader(profile.body))
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
@@ -55,9 +49,9 @@ func (client *Client) Send(
 		httpReq.Header.Set("Authorization", "Bearer "+client.authToken)
 	}
 
-	httpReq.URL.RawQuery = payload.QueryString()
+	httpReq.URL.RawQuery = profile.query
 
-	log.Debug().Str("query", httpReq.URL.RawQuery).Msg("requesting pyroscope")
+	client.logger.Debug().Str("query", httpReq.URL.RawQuery).Msg("requesting pyroscope")
 
 	resp, err := client.httpClient.Do(httpReq)
 	if err != nil {
@@ -72,7 +66,7 @@ func (client *Client) Send(
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var result ErrorResponse
+		var result errorResponse
 		jsonParseErr := json.Unmarshal(responseBody, &result)
 		if jsonParseErr != nil {
 			return fmt.Errorf("http code: %d, response isn't json: %s", resp.StatusCode, responseBody)

@@ -59,6 +59,57 @@ type fakeParser struct{}
 
 func (fakeParser) Parse(context.Context, *bufio.Scanner, chan<- *collector.Sample) {}
 
+func TestValidateRestart(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		restart string
+		wantErr bool
+	}{
+		{
+			name:    "no",
+			restart: supervisor.RestartNo,
+		},
+		{
+			name:    "always",
+			restart: supervisor.RestartAlways,
+		},
+		{
+			name:    "onerror",
+			restart: supervisor.RestartOnError,
+		},
+		{
+			name:    "onsuccess",
+			restart: supervisor.RestartOnSuccess,
+		},
+		{
+			name:    "unknown policy",
+			restart: "sometimes",
+			wantErr: true,
+		},
+		{
+			name:    "empty text",
+			restart: "",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := supervisor.ValidateRestart(tc.restart)
+			if tc.wantErr {
+				require.ErrorContains(t, err, "invalid restart option")
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestManageProfilerLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -72,27 +123,27 @@ func TestManageProfilerLifecycle(t *testing.T) {
 	}{
 		{
 			name:         "graceful exit without restart",
-			restart:      "no",
+			restart:      supervisor.RestartNo,
 			waitResults:  []error{nil},
 			expectedRuns: 1,
 		},
 		{
 			name:         "wait error without restart",
-			restart:      "no",
+			restart:      supervisor.RestartNo,
 			waitResults:  []error{errors.New("profiler exited with error")},
 			wantErr:      errors.New("profiler exited with error"),
 			expectedRuns: 1,
 		},
 		{
 			name:          "restart on success",
-			restart:       "onsuccess",
+			restart:       supervisor.RestartOnSuccess,
 			waitResults:   []error{nil, nil},
 			cancelOnStart: 2,
 			expectedRuns:  2,
 		},
 		{
 			name:          "restart on error",
-			restart:       "onerror",
+			restart:       supervisor.RestartOnError,
 			waitResults:   []error{errors.New("first failure"), nil},
 			cancelOnStart: 2,
 			expectedRuns:  2,

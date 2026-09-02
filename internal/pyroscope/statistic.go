@@ -5,123 +5,119 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
-type StatsReport struct {
-	TotalRequests   int
-	TotalBytes      int
-	SuccessRequests int
-	FailedRequests  int
-	Errors          map[string]int
+const sendResultBuffer = 1000
+
+type sendResult struct {
+	bytes int
+	err   error
 }
 
-// StatsAggregator manages statistics collection and reporting
-type StatsAggregator struct {
-	statsChan <-chan *SendResult
-	reports   chan StatsReport
-	interval  time.Duration
-	wg        sync.WaitGroup
+type statsReport struct {
+	totalRequests   int
+	totalBytes      int
+	successRequests int
+	failedRequests  int
+	errors          map[string]int
 }
 
-// NewStatsAggregator creates a new statistics aggregator
-func NewStatsAggregator(statsChan <-chan *SendResult, interval time.Duration) *StatsAggregator {
-	return &StatsAggregator{
-		statsChan: statsChan,
-		reports:   make(chan StatsReport),
-		interval:  interval,
-	}
+// A nil *statistics is the disabled mode: record and stop do nothing.
+type statistics struct {
+	results  chan *sendResult
+	done     chan struct{}
+	interval time.Duration
+	logger   zerolog.Logger
+	stopOnce sync.Once
 }
 
-// Start begins the statistics aggregation process
-func (sa *StatsAggregator) Start(ctx context.Context) {
-	sa.wg.Add(1)
-	go func() {
-		defer sa.wg.Done()
-		sa.run(ctx)
-	}()
-}
-
-func (sa *StatsAggregator) Wait() {
-	sa.wg.Wait()
-}
-
-func (sa *StatsAggregator) Reports() <-chan StatsReport {
-	return sa.reports
-}
-
-// run is the main aggregation loop - extracted for easier testing
-func (sa *StatsAggregator) run(ctx context.Context) {
-	ticker := time.NewTicker(sa.interval)
-	defer ticker.Stop()
-	defer close(sa.reports)
-
-	report := StatsReport{
-		Errors: make(map[string]int),
+func startStatistics(ctx context.Context, interval time.Duration, logger zerolog.Logger) *statistics {
+	stats := &statistics{
+		results:  make(chan *sendResult, sendResultBuffer),
+		done:     make(chan struct{}),
+		interval: interval,
+		logger:   logger,
 	}
 
-	for {
-		select {
-		case stat, ok := <-sa.statsChan:
-			if !ok {
-				sa.flush(report)
-				return
-			}
-			report.TotalRequests++
-			report.TotalBytes += stat.Bytes
-			if stat.Err == nil {
-				report.SuccessRequests++
-			} else {
-				report.FailedRequests++
-			}
-			if stat.Err != nil {
-				report.Errors[stat.Err.Error()]++
-			}
-		case <-ticker.C:
-			sa.flush(report)
-			if report.TotalRequests > 0 {
-				report = StatsReport{Errors: make(map[string]int)}
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
+	go stats.run(ctx)
+
+	return stats
 }
 
-func (sa *StatsAggregator) flush(report StatsReport) {
-	if report.TotalRequests == 0 {
+func (stats *statistics) record(ctx context.Context, bytes int, err error) {
+	if stats == nil {
 		return
 	}
 
-	sa.reports <- cloneStatsReport(report)
+	select {
+	case stats.results <- &sendResult{bytes: bytes, err: err}:
+	case <-ctx.Done():
+	}
 }
 
-func cloneStatsReport(report StatsReport) StatsReport {
-	cloned := report
-	cloned.Errors = make(map[string]int, len(report.Errors))
-	for key, value := range report.Errors {
-		cloned.Errors[key] = value
+// stop flushes the last report; every producer must have finished recording by then.
+func (stats *statistics) stop() {
+	if stats == nil {
+		return
 	}
 
-	return cloned
+	stats.stopOnce.Do(func() { close(stats.results) })
+	<-stats.done
 }
 
-func LogStatsReports(ctx context.Context, reports <-chan StatsReport) {
+func (stats *statistics) run(ctx context.Context) {
+	defer close(stats.done)
+
+	ticker := time.NewTicker(stats.interval)
+	defer ticker.Stop()
+
+	report := newStatsReport()
+
 	for {
 		select {
-		case report, ok := <-reports:
+		case result, ok := <-stats.results:
 			if !ok {
+				stats.flush(report)
 				return
 			}
-			log.Info().
-				Int("total_requests", report.TotalRequests).
-				Int("total_bytes", report.TotalBytes).
-				Int("success_requests", report.SuccessRequests).
-				Int("failed_requests", report.FailedRequests).
-				Interface("errors", report.Errors).
-				Msg("pyroscope sending statistics")
+			report.add(result)
+		case <-ticker.C:
+			stats.flush(report)
+			report = newStatsReport()
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+func (stats *statistics) flush(report statsReport) {
+	if report.totalRequests == 0 {
+		return
+	}
+
+	stats.logger.Info().
+		Int("total_requests", report.totalRequests).
+		Int("total_bytes", report.totalBytes).
+		Int("success_requests", report.successRequests).
+		Int("failed_requests", report.failedRequests).
+		Interface("errors", report.errors).
+		Msg("pyroscope sending statistics")
+}
+
+func newStatsReport() statsReport {
+	return statsReport{errors: make(map[string]int)}
+}
+
+func (report *statsReport) add(result *sendResult) {
+	report.totalRequests++
+	report.totalBytes += result.bytes
+
+	if result.err == nil {
+		report.successRequests++
+		return
+	}
+
+	report.failedRequests++
+	report.errors[result.err.Error()]++
 }

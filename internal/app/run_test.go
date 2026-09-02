@@ -37,7 +37,6 @@ func TestRun(t *testing.T) {
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
 					PyroscopeWorkers: 1,
 					StatsInterval:    -time.Second,
-					Restart:          "no",
 				}
 			},
 			wantErr: nil,
@@ -49,7 +48,6 @@ func TestRun(t *testing.T) {
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
 					PyroscopeWorkers: 1,
 					StatsInterval:    0,
-					Restart:          "no",
 				}
 			},
 			wantErr: nil,
@@ -72,7 +70,6 @@ func TestRun(t *testing.T) {
 					ProfilerApp:      writeProfilerScript(t, filepath.Join("usr", "bin", "phpspy"), "#!/bin/sh\nexit 0\n"),
 					PyroscopeWorkers: 1,
 					StatsInterval:    time.Second,
-					Restart:          "no",
 				}
 			},
 			wantErr: nil,
@@ -84,7 +81,6 @@ func TestRun(t *testing.T) {
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 7\n"),
 					PyroscopeWorkers: 1,
 					StatsInterval:    time.Second,
-					Restart:          "no",
 				}
 			},
 			wantErr: errors.New("exit status 7"),
@@ -95,7 +91,6 @@ func TestRun(t *testing.T) {
 				return app.Config{
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
 					PyroscopeWorkers: 0,
-					Restart:          "no",
 				}
 			},
 			wantErr: errors.New("pyroscope workers must be at least 1"),
@@ -106,7 +101,6 @@ func TestRun(t *testing.T) {
 				return app.Config{
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
 					PyroscopeWorkers: -1,
-					Restart:          "no",
 				}
 			},
 			wantErr: errors.New("pyroscope workers must be at least 1"),
@@ -133,7 +127,6 @@ func TestRunDrainsEmittedTracesWithoutHanging(t *testing.T) {
 		ProfilerApp: writeProfilerScript(t, "phpspy",
 			"#!/bin/sh\nprintf '0 func1 /app/helper.php:10\\n1 main /app/index.php:1\\n\\n'\nexit 0\n"),
 		PyroscopeWorkers: 1,
-		Restart:          "no",
 		RateMB:           1,
 		RateBurstMB:      1,
 	}
