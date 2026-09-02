@@ -12,6 +12,25 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+const (
+	defaultBufferSize = 4096
+	defaultRateHz     = 99
+)
+
+var (
+	unsupportedFlags = []flag{
+		{long: "version", short: "v"},
+		{long: "top", short: "t"},
+		{long: "help", short: "h"},
+		{long: "single-line", short: "1"},
+	}
+	outputFlag           = flag{long: "output", short: "o"}
+	pgrepFlag            = flag{long: "pgrep", short: "P"}
+	bufferSizeFlag       = flag{long: "buffer-size", short: "b"}
+	eventHandlerOptsFlag = flag{long: "event-handler-opts", short: "J"}
+	rateHzFlag           = flag{long: "rate-hz", short: "H"}
+)
+
 // Profiler implementation of profiler.Profiler
 type Profiler struct {
 	executable string
@@ -69,38 +88,28 @@ func (profiler *Profiler) Wait() error {
 	return profiler.cmd.Wait()
 }
 
-func (profiler *Profiler) IsConfigurationValid() (bool, error) {
-	unsupportedFlags := []struct {
-		longKey  string
-		shortKey string
-	}{
-		{"version", "v"},
-		{"top", "t"},
-		{"help", "h"},
-		{"single-line", "1"},
-	}
-	for _, keys := range unsupportedFlags {
-		if extractFlagValue[bool](profiler.args, keys.longKey, keys.shortKey, false) {
-			return false, fmt.Errorf("flag -%s/--%s is unsupported by gospy", keys.shortKey, keys.longKey)
+func (profiler *Profiler) ValidateConfiguration() error {
+	for _, unsupported := range unsupportedFlags {
+		if unsupported.enabled(profiler.args) {
+			return fmt.Errorf("flag -%s/--%s is unsupported by gospy", unsupported.short, unsupported.long)
 		}
 	}
 
-	output := extractFlagValue[string](profiler.args, "output", "o", "stdout")
-	if output != "stdout" && output != "-" {
-		return false, errors.New("output must be set to stdout")
+	if output := outputFlag.text(profiler.args, "stdout"); output != "stdout" && output != "-" {
+		return errors.New("output must be set to stdout")
 	}
 
-	pgrepMode := extractFlagValue[string](profiler.args, "pgrep", "P", "")
-	if pgrepMode != "" {
-		bufferSize := extractFlagValue[int](profiler.args, "buffer-size", "b", 4096)
-		eventHandlerOpts := extractFlagValue[string](profiler.args, "event-handler-opts", "J", "")
-		if bufferSize > 4096 && !strings.Contains(eventHandlerOpts, "m") {
+	if pgrepFlag.text(profiler.args, "") != "" {
+		bufferSize := bufferSizeFlag.number(profiler.args, defaultBufferSize)
+		eventHandlerOpts := eventHandlerOptsFlag.text(profiler.args, "")
+		if bufferSize > defaultBufferSize && !strings.Contains(eventHandlerOpts, "m") {
 			log.Warn().Msg("using large buffer size without mutex; consider adding -J m with -b > 4096")
 		}
 	}
-	return true, nil
+
+	return nil
 }
 
 func (profiler *Profiler) GetHZ() int {
-	return extractFlagValue[int](profiler.args, "rate-hz", "H", 99)
+	return rateHzFlag.number(profiler.args, defaultRateHz)
 }

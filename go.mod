@@ -4,7 +4,7 @@ go 1.23.3
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.7.1
-	github.com/hashicorp/golang-lru v1.0.2
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/rs/zerolog v1.33.0
 	github.com/stretchr/testify v1.10.0
 	github.com/urfave/cli/v2 v2.27.5

@@ -22,7 +22,7 @@ func TestProfilerStartExposesStderrScanner(t *testing.T) {
 	require.NoError(t, profiler.Wait())
 }
 
-func TestProfilerIsConfigurationValid(t *testing.T) {
+func TestProfilerValidateConfiguration(t *testing.T) {
 	testCases := []struct {
 		name    string
 		args    []string
@@ -43,6 +43,11 @@ func TestProfilerIsConfigurationValid(t *testing.T) {
 			wantErr: "flag -1/--single-line is unsupported by gospy",
 		},
 		{
+			name:    "an unsupported switch stays on when another argument follows it",
+			args:    []string{"-v", "--rate-hz=250"},
+			wantErr: "flag -v/--version is unsupported by gospy",
+		},
+		{
 			name: "explicitly disabled unsupported flag is accepted",
 			args: []string{"--top=false"},
 		},
@@ -51,8 +56,17 @@ func TestProfilerIsConfigurationValid(t *testing.T) {
 			args: []string{"-o", "-"},
 		},
 		{
+			name: "long output flag takes the next argument",
+			args: []string{"--output", "stdout"},
+		},
+		{
 			name:    "output to a file is rejected",
 			args:    []string{"--output=/tmp/profile.txt"},
+			wantErr: "output must be set to stdout",
+		},
+		{
+			name:    "output to a file through a separate argument is rejected",
+			args:    []string{"--output", "/tmp/profile.txt"},
 			wantErr: "output must be set to stdout",
 		},
 		{
@@ -64,16 +78,14 @@ func TestProfilerIsConfigurationValid(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			valid, err := phpspy.NewProfiler("phpspy", tc.args).IsConfigurationValid()
+			err := phpspy.NewProfiler("phpspy", tc.args).ValidateConfiguration()
 
 			if tc.wantErr == "" {
 				require.NoError(t, err)
-				require.True(t, valid)
 				return
 			}
 
 			require.EqualError(t, err, tc.wantErr)
-			require.False(t, valid)
 		})
 	}
 }
@@ -95,14 +107,19 @@ func TestProfilerGetHZ(t *testing.T) {
 			want: 250,
 		},
 		{
+			name: "long flag with a separate value",
+			args: []string{"--rate-hz", "250"},
+			want: 250,
+		},
+		{
 			name: "short flag with a separate value",
 			args: []string{"-H", "250"},
 			want: 250,
 		},
 		{
-			name: "non-numeric value yields the zero rate",
+			name: "non-numeric value falls back to the default",
 			args: []string{"--rate-hz=fast"},
-			want: 0,
+			want: 99,
 		},
 	}
 

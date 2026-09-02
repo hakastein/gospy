@@ -4,15 +4,18 @@ import (
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
-	lru "github.com/hashicorp/golang-lru"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
-const cacheSize = 1000
+const (
+	cacheSize = 1000
+	noTTL     = 0
+)
 
 // EntryPointValidator validates entry points against predefined patterns with caching.
 type EntryPointValidator struct {
 	patterns []string
-	cache    *lru.Cache
+	cache    *expirable.LRU[string, bool]
 }
 
 // hasWildcard checks if the pattern contains any wildcard characters.
@@ -21,12 +24,9 @@ func hasWildcard(pattern string) bool {
 }
 
 func New(patterns []string) *EntryPointValidator {
-	// lru.New reports an error only for a non-positive size, which cacheSize rules out.
-	cache, _ := lru.New(cacheSize)
-
 	return &EntryPointValidator{
 		patterns: patterns,
-		cache:    cache,
+		cache:    expirable.NewLRU[string, bool](cacheSize, nil, noTTL),
 	}
 }
 
@@ -46,7 +46,7 @@ func (v *EntryPointValidator) IsValid(entryPoint string) bool {
 	}
 
 	if cached, found := v.cache.Get(entryPoint); found {
-		return cached.(bool)
+		return cached
 	}
 
 	isValid := false

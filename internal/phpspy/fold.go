@@ -5,47 +5,41 @@ import (
 	"strings"
 )
 
-// phpspy prints frames innermost first, so the entry point is the last line of the block.
-func foldTrace(trace []string, keepEntrypointName bool) (string, string, error) {
+// phpspy prints frames innermost first as "index function path:line", so the entry point
+// is the last line of the block.
+func foldTrace(trace []string, keepEntrypointName bool) (foldedStack string, entryPoint string, err error) {
 	if len(trace) < 2 {
 		return "", "", errors.New("trace insufficient length")
 	}
 
-	var (
-		foldedStack strings.Builder
-		entryPoint  string
-	)
-
 	lastIndex := len(trace) - 1
-	for i := lastIndex; i >= 0; i-- {
-		tokens := strings.Fields(trace[i])
-		// 0 - number of trace
-		// 1 - function
-		// 2 - path with line number
-		if len(tokens) < 3 {
+	entryFrame := strings.Fields(trace[lastIndex])
+	if len(entryFrame) < 3 {
+		return "", "", errors.New("invalid trace format")
+	}
+
+	colonIdx := strings.LastIndex(entryFrame[2], ":")
+	if colonIdx == -1 {
+		return "", "", errors.New("invalid file info in trace")
+	}
+	entryPoint = entryFrame[2][:colonIdx]
+
+	var stack strings.Builder
+	stack.WriteString(entryFrame[1])
+	if keepEntrypointName {
+		stack.WriteString(" ")
+		stack.WriteString(entryPoint)
+	}
+
+	for i := lastIndex - 1; i >= 0; i-- {
+		frame := strings.Fields(trace[i])
+		if len(frame) < 3 {
 			return "", "", errors.New("invalid trace format")
 		}
 
-		foldedStack.WriteString(tokens[1])
-
-		// Last line in trace is entry point
-		if i == lastIndex {
-			fileInfo := tokens[2]
-			colonIdx := strings.LastIndex(fileInfo, ":")
-			if colonIdx == -1 {
-				return "", "", errors.New("invalid file info in trace")
-			}
-			entryPoint = fileInfo[:colonIdx]
-			if keepEntrypointName {
-				foldedStack.WriteString(" ")
-				foldedStack.WriteString(entryPoint)
-			}
-		}
-
-		if i > 0 {
-			foldedStack.WriteString(";")
-		}
+		stack.WriteString(";")
+		stack.WriteString(frame[1])
 	}
 
-	return foldedStack.String(), entryPoint, nil
+	return stack.String(), entryPoint, nil
 }
