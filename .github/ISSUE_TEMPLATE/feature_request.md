@@ -2,7 +2,7 @@
 name: Feature request
 about: Propose a change to what gospy does
 title: "feat: "
-labels: feature
+labels: feature, needs-triage
 ---
 
 ## The problem

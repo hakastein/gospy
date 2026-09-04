@@ -2,7 +2,7 @@
 name: Bug report
 about: Something in gospy behaves differently than documented or expected
 title: "fix: "
-labels: fix
+labels: fix, needs-triage
 ---
 
 ## What happened
