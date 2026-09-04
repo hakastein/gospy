@@ -125,6 +125,18 @@ func validateConfig(cfg Config) error {
 		return fmt.Errorf("pyroscope url must be http or https, got %q", cfg.PyroscopeURL)
 	}
 
+	if cfg.RateMB < 0 {
+		return fmt.Errorf("pyroscope rate limit must not be negative, got %v MB", cfg.RateMB)
+	}
+
+	if cfg.RateBurstMB < 0 {
+		return fmt.Errorf("pyroscope rate limit burst must not be negative, got %v MB", cfg.RateBurstMB)
+	}
+
+	if cfg.RateMB > 0 && cfg.RateBurstMB == 0 {
+		return errors.New("pyroscope rate limit burst must be above zero when a rate limit is set")
+	}
+
 	if pyroscopeURL.Scheme == "http" && cfg.PyroscopeAuth != "" {
 		log.Warn().
 			Str("pyroscope_url", cfg.PyroscopeURL).

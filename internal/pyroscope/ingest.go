@@ -19,7 +19,9 @@ const (
 
 // Config: a nil Transport keeps the real one, Logger takes the module's logs and gates
 // statistics, Workers below one becomes one, and a Timeout at or below zero becomes ten seconds.
-// A URL that does not parse is reported as a failed send, never silently dropped.
+// A RateMB at or below zero is unlimited, and RateBurstMB only paces how fast a batch is paid
+// for, never how large a batch may be. A URL that does not parse is reported as a failed send,
+// never silently dropped.
 type Config struct {
 	URL, AuthToken, AppName, StaticTags string
 	SampleRate, Workers                 int
@@ -55,7 +57,7 @@ func StartIngest(ctx context.Context, cfg Config) *Ingest {
 		input:    make(chan *collector.TagCollection, workers),
 		client:   newClient(cfg.URL, cfg.AuthToken, timeout, cfg.Transport, cfg.Logger),
 		metadata: newAppMetadata(cfg.AppName, cfg.StaticTags, cfg.SampleRate),
-		limiter:  rate.NewLimiter(rate.Limit(megabytesToBytes(cfg.RateMB)), megabytesToBytes(cfg.RateBurstMB)),
+		limiter:  newLimiter(cfg.RateMB, cfg.RateBurstMB),
 		logger:   cfg.Logger,
 	}
 
@@ -113,7 +115,7 @@ func (ingest *Ingest) deliver(ctx context.Context, batch *collector.TagCollectio
 		Time("until", batch.Until()).
 		Msg("pyroscope ingest worker processing batch")
 
-	err := ingest.limiter.WaitN(ctx, len(profile.body))
+	err := ingest.pace(ctx, len(profile.body))
 	if err == nil {
 		err = ingest.client.send(ctx, profile)
 	}
@@ -129,6 +131,37 @@ func (ingest *Ingest) deliver(ctx context.Context, batch *collector.TagCollectio
 	}
 
 	ingest.stats.record(ctx, len(profile.body), err)
+}
+
+// pace pays for the body one burst at a time: WaitN refuses outright anything larger than the
+// burst, which would drop a batch that grew past it rather than slow it down.
+func (ingest *Ingest) pace(ctx context.Context, size int) error {
+	if ingest.limiter.Limit() == rate.Inf {
+		return ctx.Err()
+	}
+
+	burst := max(ingest.limiter.Burst(), 1)
+	for remaining := size; remaining > 0; {
+		chunk := min(remaining, burst)
+		if err := ingest.limiter.WaitN(ctx, chunk); err != nil {
+			return err
+		}
+
+		remaining -= chunk
+	}
+
+	return ctx.Err()
+}
+
+// newLimiter reads a rate at or below zero as unlimited: rate.Limit(0) lets the first burst
+// through and then blocks every later batch forever, taking shutdown down with it.
+func newLimiter(rateMB, burstMB float64) *rate.Limiter {
+	bytesPerSecond := megabytesToBytes(rateMB)
+	if bytesPerSecond <= 0 {
+		return rate.NewLimiter(rate.Inf, 1)
+	}
+
+	return rate.NewLimiter(rate.Limit(bytesPerSecond), max(megabytesToBytes(burstMB), 1))
 }
 
 func megabytesToBytes(megabytes float64) int {
