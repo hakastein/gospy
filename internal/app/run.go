@@ -41,6 +41,7 @@ type Config struct {
 	Restart            string
 	RateMB             float64
 	RateBurstMB        float64
+	PyroscopeRetry     pyroscope.Retry
 	AppTags            []string
 	Entrypoints        []string
 	BatchInterval      time.Duration
@@ -223,6 +224,7 @@ func (cfg runtimeConfig) ingestConfig(sampleRate int) pyroscope.Config {
 		Timeout:       cfg.PyroscopeTimeout,
 		RateMB:        cfg.RateMB,
 		RateBurstMB:   cfg.RateBurstMB,
+		Retry:         cfg.PyroscopeRetry,
 		StatsInterval: cfg.StatsInterval,
 		Logger:        log.Logger,
 		Transport:     cfg.Transport,
