@@ -63,18 +63,33 @@ func (transport *captureTransport) captured() []capturedRequest {
 	return append([]capturedRequest(nil), transport.requests...)
 }
 
+func fixturePath(t *testing.T, fixture string) string {
+	t.Helper()
+
+	path, err := filepath.Abs(filepath.Join("testdata", "phpspy", fixture))
+	require.NoError(t, err)
+	require.FileExists(t, path)
+
+	return path
+}
+
 func replayProfiler(t *testing.T, fixture string) string {
 	t.Helper()
 
-	fixturePath, err := filepath.Abs(filepath.Join("testdata", "phpspy", fixture))
-	require.NoError(t, err)
-	require.FileExists(t, fixturePath)
-
-	return writeProfilerScript(t, "phpspy", "#!/bin/sh\ncat "+fixturePath+"\n")
+	return writeProfilerScript(t, "phpspy", "#!/bin/sh\ncat "+fixturePath(t, fixture)+"\n")
 }
 
-// The collector cuts a batch whenever its input looks empty, so one profiler session can
-// arrive as several requests.
+func timeRange(t *testing.T, request capturedRequest) (int64, int64) {
+	t.Helper()
+
+	from, err := strconv.ParseInt(request.query.Get("from"), 10, 64)
+	require.NoError(t, err)
+	until, err := strconv.ParseInt(request.query.Get("until"), 10, 64)
+	require.NoError(t, err)
+
+	return from, until
+}
+
 func countStacks(t *testing.T, requests []capturedRequest) map[string]map[string]int {
 	t.Helper()
 
@@ -182,7 +197,7 @@ func TestRunSendsProfilerOutputToPyroscope(t *testing.T) {
 			finishedAt := time.Now()
 
 			requests := transport.captured()
-			require.NotEmpty(t, requests, "the profiler session produced no Pyroscope request")
+			require.Len(t, requests, len(tc.wantProfiles), "a session within one batch window must ship one request per tag set")
 
 			for _, request := range requests {
 				require.Equal(t, http.MethodPost, request.method)
@@ -190,11 +205,7 @@ func TestRunSendsProfilerOutputToPyroscope(t *testing.T) {
 				require.Equal(t, "folded", request.query.Get("format"))
 				require.Equal(t, tc.wantSampleRate, request.query.Get("sampleRate"))
 
-				from, err := strconv.ParseInt(request.query.Get("from"), 10, 64)
-				require.NoError(t, err)
-				until, err := strconv.ParseInt(request.query.Get("until"), 10, 64)
-				require.NoError(t, err)
-
+				from, until := timeRange(t, request)
 				require.GreaterOrEqual(t, from, startedAt.Unix())
 				require.GreaterOrEqual(t, until, from)
 				require.LessOrEqual(t, until, finishedAt.Unix())
@@ -203,4 +214,43 @@ func TestRunSendsProfilerOutputToPyroscope(t *testing.T) {
 			require.Equal(t, tc.wantProfiles, countStacks(t, requests))
 		})
 	}
+}
+
+func TestRunShipsABurstAsOneRequestPerTagSet(t *testing.T) {
+	t.Parallel()
+
+	fixture := fixturePath(t, "peek-global.txt")
+	transport := &captureTransport{}
+
+	require.NoError(t, app.Run(context.Background(), app.Config{
+		ProfilerApp:        writeProfilerScript(t, "phpspy", "#!/bin/sh\ncat "+fixture+"\nsleep 1\ncat "+fixture+"\n"),
+		AppName:            "checkout",
+		AppTags:            []string{"env=production", `uri={{ "glopeek server.REQUEST_URI" }}`},
+		KeepEntrypointName: true,
+		ProfilerArguments:  []string{"-P", "php-fpm", "-g", "server.REQUEST_URI", "-H", "99"},
+		PyroscopeURL:       pyroscopeURL,
+		PyroscopeWorkers:   1,
+		BatchInterval:      time.Minute,
+		RateMB:             unthrottledRateMB,
+		RateBurstMB:        unthrottledRateMB,
+		Transport:          transport,
+	}))
+
+	requests := transport.captured()
+	require.Len(t, requests, 2, "the burst must ship as one request per tag set")
+
+	for _, request := range requests {
+		from, until := timeRange(t, request)
+		require.Greater(t, until, from, "the batch must cover the span its samples arrived over")
+	}
+
+	require.Equal(t, map[string]map[string]int{
+		"checkout{env=production,uri=/orders/42}": {
+			`main /srv/app/public/index.php;App\Kernel::handle;App\Controller\OrderController::show;App\Repository\OrderRepository::find;PDO::prepare`: 4,
+			`main /srv/app/public/index.php;App\Kernel::handle;App\Controller\OrderController::show;json_encode`:                                       2,
+		},
+		"checkout{env=production,uri=/cart}": {
+			`main /srv/app/public/index.php;App\Kernel::handle;App\Controller\CartController::add;usleep`: 2,
+		},
+	}, countStacks(t, requests))
 }
