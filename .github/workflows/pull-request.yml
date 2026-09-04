@@ -4,29 +4,67 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  run-tests:
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.23.3'
+          go-version: stable
+          cache: true
 
-      - name: Cache Go Modules
-        uses: actions/cache@v3
+      - name: Check Formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt reported unformatted files"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: make vet
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          version: v2.13.2
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: true
 
       - name: Download Dependencies
         run: make download-deps
 
-      - name: Run Tests with Coverage
+      - name: Run Tests
+        run: make test
+
+      - name: Report Coverage
         run: |
-          make test
+          make coverage
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')
+          echo "### Test coverage: ${total}" >> "$GITHUB_STEP_SUMMARY"

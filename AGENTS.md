@@ -5,7 +5,8 @@ This file provides guidance to Agents when working with code in this repository.
 ## Build Commands
 - `make build`: Build with default settings
 - `make dev`: Build with development versioning
-- `make test`: Run all tests
+- `make test`: Run all tests with the race detector
+- `make lint`: Run golangci-lint and the gofmt check (same as CI)
 - `make coverage`: Generate test coverage (coverage.out)
 - `make coverage-html`: Generate HTML coverage report
 
