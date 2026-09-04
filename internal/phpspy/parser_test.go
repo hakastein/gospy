@@ -151,6 +151,62 @@ func TestParser_Parse(t *testing.T) {
 			},
 		},
 		{
+			name: "stack folding - a single frame folds to a one-node stack",
+			input: []string{
+				"0 main /app/index.php:12",
+			},
+			entryPoints:   []string{"/app/index.php"},
+			tagEntrypoint: true,
+			expectedSamples: []collector.Sample{
+				{Trace: "main", Tags: "entrypoint=/app/index.php"},
+			},
+		},
+		{
+			name: "stack folding - a single frame keeps the entrypoint script when enabled",
+			input: []string{
+				"0 main /app/index.php:12",
+			},
+			entryPoints:        []string{"/app/index.php"},
+			keepEntrypointName: true,
+			expectedSamples: []collector.Sample{
+				{Trace: "main /app/index.php", Tags: ""},
+			},
+		},
+		{
+			name: "stack folding - a path containing spaces keeps its full location",
+			input: []string{
+				"0 helper /app/my libs/helper.php:10\n1 main /app/my app/index.php:1",
+			},
+			entryPoints:        []string{"/app/my app/index.php"},
+			keepEntrypointName: true,
+			tagEntrypoint:      true,
+			expectedSamples: []collector.Sample{
+				{Trace: "main /app/my app/index.php;helper", Tags: "entrypoint=/app/my_app/index.php"},
+			},
+		},
+		{
+			name: "stack folding - a frame without a location is rejected",
+			input: []string{
+				"0 main /app/index.php:1",
+				"0 main",
+				"0 main /app/index.php",
+			},
+			entryPoints: []string{"/app/index.php"},
+			expectedSamples: []collector.Sample{
+				{Trace: "main", Tags: ""},
+			},
+		},
+		{
+			name: "entrypoint tag - reserved characters in the path are sanitized",
+			input: []string{
+				"0 func1 /app/some/helper.php:10\n1 main /app/we=ird}.php:1",
+			},
+			tagEntrypoint: true,
+			expectedSamples: []collector.Sample{
+				{Trace: "main;func1", Tags: "entrypoint=/app/we_ird_.php"},
+			},
+		},
+		{
 			name: "stack folding - reverses frames and keeps the entrypoint script when enabled",
 			input: []string{
 				"0 InitFunction <internal>:-1\n1 ServiceModule::HandleRequest /app/src/ServiceModule.php:45\n2 ServiceModule::Process /app/src/ServiceModule.php:30\n3 Utils::Helper /app/src/Utils.php:15",
@@ -183,11 +239,11 @@ func TestParser_Parse(t *testing.T) {
 				"license": {{TagKey: "lic"}},
 			},
 			expectedSamples: []collector.Sample{
-				{Trace: "main;func1", Tags: "creator=John Doe,lic=MIT,v=1.0"},
+				{Trace: "main;func1", Tags: "creator=John_Doe,lic=MIT,v=1.0"},
 			},
 		},
 		{
-			name: "dynamic tags - value is trimmed and keeps inner separators",
+			name: "dynamic tags - value is trimmed and inner reserved characters are sanitized",
 			input: []string{
 				"# description =              Version 1.0 = Initial Release         \n0 func1 /app/some/helper.php:10\n1 main /app/test.php:1",
 			},
@@ -196,7 +252,7 @@ func TestParser_Parse(t *testing.T) {
 				"description": {{TagKey: "description"}},
 			},
 			expectedSamples: []collector.Sample{
-				{Trace: "main;func1", Tags: "description=Version 1.0 = Initial Release"},
+				{Trace: "main;func1", Tags: "description=Version_1.0___Initial_Release"},
 			},
 		},
 		{
@@ -212,7 +268,7 @@ func TestParser_Parse(t *testing.T) {
 				},
 			},
 			expectedSamples: []collector.Sample{
-				{Trace: "main;func1", Tags: "hello=Hello World,hi=Hello Sekai"},
+				{Trace: "main;func1", Tags: "hello=Hello_World,hi=Hello_Sekai"},
 			},
 		},
 		{

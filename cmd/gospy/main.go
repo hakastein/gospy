@@ -64,7 +64,7 @@ func main() {
 			},
 			&cli.StringSliceFlag{
 				Name:  "tag",
-				Usage: "Static and dynamic tags (key=value or key=%value%)",
+				Usage: `Static and dynamic tags: key=value, or key={{"meta.key"}} / key={{"meta.key" "regex" "replacement"}}`,
 			},
 			&cli.BoolFlag{
 				Name:  "tag-entrypoint",
