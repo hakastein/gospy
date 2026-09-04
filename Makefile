@@ -7,6 +7,7 @@ GOARCH ?= amd64
 CGO_ENABLED ?= 0
 
 GO_CMD = go
+GOLANGCI_LINT ?= golangci-lint
 MAIN_PKG = ./cmd/gospy
 
 # Default versioning variables
@@ -28,7 +29,7 @@ build:
 	$(call build_app)
 
 test:
-	go clean -testcache && go test ./cmd/... ./internal/...
+	go clean -testcache && go test -race ./cmd/... ./internal/...
 
 bench:
 	go test -race -bench=. -benchmem -run=^$ ./cmd/... ./internal/...
@@ -66,7 +67,17 @@ dev:
 vet:
 	go vet ./cmd/... ./internal/...
 
+# Same checks the CI lint job runs
+lint:
+	$(GOLANGCI_LINT) run ./...
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "gofmt needs to run on:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
+
 fmt:
 	go fmt ./cmd/... ./internal/...
 
-.PHONY: build clean download-deps version dev vet fmt
+.PHONY: build test bench coverage coverage-html clean download-deps version dev vet fmt lint
