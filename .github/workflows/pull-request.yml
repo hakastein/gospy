@@ -3,6 +3,9 @@ name: Pull Request Checks
 on:
   pull_request:
     branches: [main]
+  # The release workflow calls this so a tag is gated by the same checks a pull
+  # request is, instead of publishing whatever the tagged commit happens to be.
+  workflow_call:
 
 permissions:
   contents: read

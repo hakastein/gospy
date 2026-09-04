@@ -7,3 +7,4 @@ cover.html
 coverage.out
 coverage.html
 *.test
+/dist/

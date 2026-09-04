@@ -40,10 +40,17 @@ coverage:
 coverage-html: coverage
 	go tool cover -html=coverage.out -o coverage.html && open coverage.html
 
+# Build the release archives locally, exactly as the release workflow does, but
+# without publishing anything. Needs goreleaser and syft on PATH; drop docker
+# because the multi-arch image build needs buildx and qemu.
+snapshot:
+	goreleaser release --snapshot --clean --skip=publish,docker
+
 # Clean target
 clean:
 	$(GO_CMD) clean
 	rm -f $(PACKAGE_NAME)
+	rm -rf dist
 
 # Download dependencies
 download-deps:
@@ -80,4 +87,4 @@ lint:
 fmt:
 	go fmt ./cmd/... ./internal/...
 
-.PHONY: build test bench coverage coverage-html clean download-deps version dev vet fmt lint
+.PHONY: build test bench coverage coverage-html snapshot clean download-deps version dev vet fmt lint

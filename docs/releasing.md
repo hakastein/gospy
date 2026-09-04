@@ -5,18 +5,63 @@ request so it lands in the right section of the next release.
 
 ## Cutting a release
 
-Push an annotated tag matching `vX.Y.Z` to `main`:
+Push an annotated tag matching `vX.Y.Z`:
 
 ```bash
 git tag -a v0.12.0 -m "v0.12.0"
 git push origin v0.12.0
 ```
 
-That triggers [`.github/workflows/release.yml`](../.github/workflows/release.yml), which builds
-the binary, assembles the changelog from every pull request merged since the previous tag,
-publishes a GitHub release and attaches `vX.Y.Z.tar.gz`.
+**Tag a commit whose checks are green.** The tag may sit on any branch, but it should be on
+`main` — that is what the published archives and image are taken to mean. Before building
+anything, [`.github/workflows/release.yml`](../.github/workflows/release.yml) calls
+[`pull-request.yml`](../.github/workflows/pull-request.yml) and runs the same Lint and Test jobs
+a pull request goes through, against the tagged commit. A red gate stops the release, so a tag on
+a broken commit publishes nothing rather than publishing a broken binary.
 
 No tag, no release — merging to `main` on its own publishes nothing.
+
+To retry a failed release, fix the problem, delete the tag locally and remotely, and push it
+again at the new commit.
+
+## What a release publishes
+
+The build is driven by [`.goreleaser.yaml`](../.goreleaser.yaml).
+
+| Artifact | Notes |
+| --- | --- |
+| `gospy_<version>_<os>_<arch>.tar.gz` | linux and darwin, amd64 and arm64. Each holds `gospy`, `LICENSE` and `README.md`. |
+| `checksums.txt` | SHA-256 of every uploaded file, archives and SBOMs alike. |
+| `gospy_<version>_<os>_<arch>.tar.gz.sbom.json` | SPDX bill of materials per archive, catalogued by syft. |
+| `ghcr.io/hakastein/gospy:<version>` and `:latest` | Multi-arch (linux amd64 and arm64) manifest. `latest` is not moved by a prerelease tag. |
+
+`<version>` is the tag without the leading `v`, so `v0.12.0` produces
+`gospy_0.12.0_linux_amd64.tar.gz` and `ghcr.io/hakastein/gospy:0.12.0`. A tag carrying a
+prerelease suffix (`v1.0.0-rc1`) is published as a GitHub prerelease automatically.
+
+Archives and `checksums.txt` carry a [GitHub build
+attestation](https://github.com/hakastein/gospy/attestations), so a download can be traced back
+to the workflow run and commit that produced it:
+
+```bash
+gh attestation verify gospy_0.12.0_linux_amd64.tar.gz --repo hakastein/gospy
+```
+
+### The container image
+
+gospy drives phpspy, and phpspy attaches to the PHP process with `ptrace`, so gospy has to run in
+the same container as php-fpm. The published image therefore holds the binary and nothing else —
+it is a source to copy from, not a runtime:
+
+```dockerfile
+COPY --from=ghcr.io/hakastein/gospy:0.12.0 /gospy /usr/local/bin/gospy
+```
+
+### Verifying the build locally
+
+`make snapshot` runs the same goreleaser pipeline without publishing, and writes the archives,
+checksums and SBOMs to `dist/`. It needs `goreleaser` and `syft` on `PATH`; add `--skip=sbom` by
+hand if syft is missing.
 
 ## How a pull request is categorised
 
@@ -71,8 +116,12 @@ Apply `ignore`, `duplicate` or `wontfix`. These take precedence over every categ
 
 ## Available labels
 
-`breaking`, `feature`, `enhancement`, `fix`, `bug`, `performance`, `refactor`, `test`,
-`documentation`, `ci/cd`, `chore`, plus the excluding `duplicate` and `wontfix`.
+`breaking`, `feature`, `feat`, `enhancement`, `fix`, `bug`, `performance`, `perf`, `refactor`,
+`test`, `documentation`, `docs`, `ci/cd`, `ci`, `build`, `chore`, `style`, `revert`, plus the
+excluding `ignore`, `duplicate` and `wontfix`.
+
+The conventional-commit types (`feat`, `perf`, `docs`, `ci`, `build`, `style`, `revert`) are
+matched as labels too, so applying `feat` to a pull request works exactly like `feature`.
 
 Adding a new label means adding it to `.github/configuration.json` too, otherwise PRs carrying it
 fall through to Uncategorized.
