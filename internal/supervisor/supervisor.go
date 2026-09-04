@@ -12,6 +12,14 @@ import (
 	"github.com/hakastein/gospy/internal/collector"
 )
 
+// phpspy is chatty on stderr under load, but the handful of lines explaining a failed attach must
+// always get through.
+const stderrBurst = 20
+
+// os/exec closes a StderrPipe in Wait, so the reader has to finish first — bounded, because phpspy
+// in pgrep mode forks children that inherit the pipe and outlive their parent.
+const stderrDrainGrace = 2 * time.Second
+
 type profilerRunner interface {
 	Start(ctx context.Context) (*bufio.Scanner, *bufio.Scanner, error)
 	Wait() error
@@ -29,80 +37,80 @@ type sessionResult struct {
 	readFailed  bool
 }
 
-// Restart policies, spelled as the --restart flag takes them.
-const (
-	RestartNo        = "no"
-	RestartAlways    = "always"
-	RestartOnError   = "onerror"
-	RestartOnSuccess = "onsuccess"
-)
-
-// ValidateRestart reports whether the text names a policy the supervisor knows how to apply.
-func ValidateRestart(restart string) error {
-	switch restart {
-	case RestartNo, RestartAlways, RestartOnError, RestartOnSuccess:
-		return nil
-	default:
-		return fmt.Errorf("invalid restart option: %s", restart)
-	}
-}
-
-// shouldRestart reports whether a session that ended with err starts again; anything the
-// supervisor does not know, the unset value included, keeps the profiler stopped.
-func shouldRestart(restart string, err error) bool {
-	switch restart {
-	case RestartAlways:
-		return true
-	case RestartOnError:
-		return err != nil
-	case RestartOnSuccess:
-		return err == nil
-	default:
-		return false
-	}
-}
-
-// ManageProfiler run profiler and parser, collect parses, transform parses into folded stacks format, send to foldedStacksChannel
+// ManageProfiler reports nil for a context that ended: a shutdown is not a failed run.
 func ManageProfiler(
 	ctx context.Context,
 	profilerInstance profilerRunner,
 	parserInstance traceParser,
 	foldedStacksChannel chan *collector.Sample,
-	restart string,
+	policy RestartPolicy,
 ) error {
+	policy = policy.withDefaults()
+
+	failures := 0
+	delay := policy.BaseDelay
+
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
 
 		log.Info().Msg("starting profiler")
-		session := runSession(ctx, profilerInstance, parserInstance, foldedStacksChannel)
+		startedAt := policy.Now()
+		session := runSession(ctx, profilerInstance, parserInstance, foldedStacksChannel, policy)
+		uptime := policy.Now().Sub(startedAt)
 
 		if session.startFailed {
 			log.Error().Err(session.err).Msg("error starting profiler")
 			return session.err
 		}
 
-		switch {
-		case session.err == nil:
-			log.Info().Msg("profiler exited gracefully")
-		case session.readFailed:
-			log.Error().Err(session.err).Msg("profiler stopped: cannot read its stdout")
-		case ctx.Err() != nil:
-			log.Info().Msg("profiler terminated")
-		default:
-			log.Error().Err(session.err).Msg("profiler exited with error")
-		}
+		logSessionEnd(ctx, session)
 
 		if ctx.Err() != nil {
 			return nil
 		}
 
-		if shouldRestart(restart, session.err) {
+		if !policy.restartAllowed(session.err) {
+			return session.err
+		}
+
+		if session.err == nil {
+			failures, delay = 0, policy.BaseDelay
 			continue
 		}
 
-		return session.err
+		if uptime >= healthySession {
+			failures, delay = 0, policy.BaseDelay
+		}
+
+		failures++
+		if policy.exhausted(failures) {
+			return fmt.Errorf("profiler failed %d times in a row, giving up: %w", policy.MaxConsecutiveFailures, session.err)
+		}
+
+		log.Warn().
+			Int("failures", failures).
+			Dur("delay", delay).
+			Msg("waiting before restarting the profiler")
+
+		if !policy.pause(ctx, delay) {
+			return nil
+		}
+		delay = policy.nextDelay(delay)
+	}
+}
+
+func logSessionEnd(ctx context.Context, session sessionResult) {
+	switch {
+	case session.err == nil:
+		log.Info().Msg("profiler exited gracefully")
+	case session.readFailed:
+		log.Error().Err(session.err).Msg("profiler stopped: cannot read its stdout")
+	case ctx.Err() != nil:
+		log.Info().Msg("profiler terminated")
+	default:
+		log.Error().Err(session.err).Msg("profiler exited with error")
 	}
 }
 
@@ -111,6 +119,7 @@ func runSession(
 	profilerInstance profilerRunner,
 	parserInstance traceParser,
 	foldedStacksChannel chan *collector.Sample,
+	policy RestartPolicy,
 ) sessionResult {
 	sessionCtx, endSession := context.WithCancel(ctx)
 	defer endSession()
@@ -131,8 +140,8 @@ func runSession(
 	}
 
 	log.Debug().Msg("parser finished, waiting for profiler exit")
+	awaitProfilerStderr(stderrDone, policy)
 	waitErr := profilerInstance.Wait()
-	<-stderrDone
 
 	if readErr != nil {
 		return sessionResult{err: readErr, readFailed: true}
@@ -143,18 +152,20 @@ func runSession(
 
 func consumeProfilerStderr(stderrScanner *bufio.Scanner) <-chan struct{} {
 	done := make(chan struct{})
+	if stderrScanner == nil {
+		close(done)
+		return done
+	}
+
 	go func() {
 		defer close(done)
-		if stderrScanner == nil {
-			return
-		}
 
 		stderrLogger := log.Sample(&zerolog.BurstSampler{
-			Burst:  1,
+			Burst:  stderrBurst,
 			Period: time.Second,
 		})
 		for stderrScanner.Scan() {
-			stderrLogger.Trace().Str("line", stderrScanner.Text()).Msg("profiler stderr")
+			stderrLogger.Warn().Str("line", stderrScanner.Text()).Msg("profiler stderr")
 		}
 		if err := stderrScanner.Err(); err != nil {
 			log.Debug().Err(err).Msg("error reading profiler stderr")
@@ -162,4 +173,20 @@ func consumeProfilerStderr(stderrScanner *bufio.Scanner) <-chan struct{} {
 	}()
 
 	return done
+}
+
+func awaitProfilerStderr(done <-chan struct{}, policy RestartPolicy) {
+	select {
+	case <-done:
+		return
+	default:
+	}
+
+	select {
+	case <-done:
+	case <-policy.After(stderrDrainGrace):
+		log.Debug().
+			Dur("grace", stderrDrainGrace).
+			Msg("profiler stderr still open, reaping the process anyway")
+	}
 }
