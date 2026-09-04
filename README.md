@@ -208,7 +208,8 @@ data.
 A restart that follows a failed session is delayed, starting at one second and doubling up to one
 minute, so a profiler that cannot attach does not spin. The delay resets after a session that exits
 cleanly or stays up for at least 30 seconds. Ten failures in a row stop gospy with a non-zero exit
-and the last profiler error.
+and the last profiler error; the profiler's own stderr is logged at `warn` so the reason is visible
+at the default verbosity.
 
 #### Entry Points
 
