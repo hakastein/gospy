@@ -194,7 +194,7 @@ func runPipeline(
 		})
 	}()
 
-	runErr := supervisor.ManageProfiler(profilerCtx, profilerImpl, parserImpl, stacks, cfg.Restart)
+	runErr := supervisor.ManageProfiler(profilerCtx, profilerImpl, parserImpl, stacks, supervisor.RestartPolicy{Mode: cfg.Restart})
 
 	close(stacks)
 	<-collectorDone
