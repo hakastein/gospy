@@ -33,14 +33,21 @@ container examples.
 | --- | --- |
 | `make build` | Builds the binary |
 | `make test` | Clears the test cache and runs everything under `cmd/` and `internal/` |
+| `make lint` | golangci-lint plus a gofmt check |
+| `make fmt` | `go fmt` — the quickest way to fix what the gofmt check complains about |
 | `make vet` | `go vet` over the same packages |
-| `make fmt` | `go fmt` — run it before you commit |
 | `make coverage` | Writes `coverage.out`; `make coverage-html` renders it |
 | `make bench` | Benchmarks with `-race` |
 
-Pull request CI runs `make test`. Static analysis is JetBrains Qodana with the
-`qodana.recommended` profile ([`qodana.yaml`](qodana.yaml)) — there is no local `make lint`
-target, so `make fmt` and `make vet` are the lint you can run yourself.
+`make build`, `make test` and `make lint` are the three that matter before you open a pull
+request. CI runs the same checks.
+
+`make lint` needs golangci-lint v2 installed locally; it reads the checked-in `.golangci.yml`, so
+your run and CI's agree:
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+```
 
 If one of these commands fails in a way that looks unrelated to your change, say so in the issue
 or pull request rather than working around it.
@@ -95,8 +102,8 @@ The full vocabulary, the precedence order and the machinery behind it are in
 
 ### Pull requests: say what you verified
 
-Run `make test` and `make build` before opening a pull request, and state in the body what you
-actually ran and what you did not cover. "Tested manually against a live php-fpm, no automated
+Run `make build`, `make test` and `make lint` before opening a pull request, and state in the
+body what you actually ran and what you did not cover. "Tested manually against a live php-fpm, no automated
 test for the restart path" is a useful sentence; silence is not. The pull request template asks
 for exactly this.
 

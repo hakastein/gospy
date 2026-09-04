@@ -28,7 +28,7 @@ What I ran:
 
 - [ ] `make build`
 - [ ] `make test`
-- [ ] `make vet`
+- [ ] `make lint`
 - [ ] Other (describe below)
 
 <!-- Paste or summarise the result. Manual testing counts — say what you ran it against. -->
