@@ -15,7 +15,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X github.com/hakastein/gospy/internal/version.version={{ .Version }}
+      - -s -w -X github.com/hakastein/gospy/internal/version.version=v{{ .Version }}
     mod_timestamp: '{{ .CommitTimestamp }}'
     goos:
       - linux
