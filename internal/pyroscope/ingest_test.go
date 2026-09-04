@@ -26,7 +26,10 @@ import (
 )
 
 // unthrottledRateMB keeps the limiter out of the way of tests that are not about pacing.
-const unthrottledRateMB = 100
+const (
+	unthrottledRateMB = 100
+	bytesPerMegabyte  = 1 << 20
+)
 
 type capturedRequest struct {
 	method      string
@@ -776,6 +779,55 @@ func TestIngestReportsDroppedSamples(t *testing.T) {
 			require.Len(t, reports, 1)
 			assert.Equal(t, tc.wantDropped, reports[0]["dropped_samples"])
 			assert.Equal(t, tc.wantRequests, reports[0]["total_requests"])
+		})
+	}
+}
+
+func TestIngestPacesBatchesLargerThanTheBurst(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		rateMB float64
+	}{
+		{
+			name:   "under a rate limit",
+			rateMB: unthrottledRateMB,
+		},
+		{
+			name:   "unlimited",
+			rateMB: 0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := startIngest(context.Background(), ingestOptions{
+				cfg: pyroscope.Config{
+					AppName:       "myapp",
+					StatsInterval: time.Hour,
+					RateMB:        tc.rateMB,
+					RateBurstMB:   4.0 / bytesPerMegabyte,
+				},
+			})
+
+			harness.send(
+				batch("env=test", map[string]int{"main;foo": 1}),
+				batch("env=test", map[string]int{"main;bar": 2}),
+				batch("env=test", map[string]int{"main;baz": 3}),
+			)
+
+			requests := harness.transport.captured()
+			require.Len(t, requests, 3, "a batch larger than the burst was dropped for its size")
+			for _, request := range requests {
+				assert.Greater(t, len(request.body), 4, "the test batch is not larger than the burst")
+			}
+
+			reports := harness.reports(t)
+			require.Len(t, reports, 1)
+			assert.Equal(t, float64(3), reports[0]["success_requests"])
 		})
 	}
 }

@@ -164,8 +164,8 @@ wait
 - `--app`: App name for Pyroscope.
 - `--tag`: Static and dynamic tags in `key=value` or `key={{ "value" }}` format. **Can be used multiple times**.
 - `--tag-entrypoint`: Add entry point to tags.
-- `--rate-mb`: Ingestion rate limit in MB. Default is `4`.
-- `--rate-mb-burst`: Ingestion rate limit burst in MB. Default is `6`.
+- `--rate-mb`: Ingestion rate limit in MB; `0` means unlimited. Default is `4`.
+- `--rate-mb-burst`: Ingestion rate limit burst in MB; must be above zero unless the rate limit is unlimited. A batch larger than the burst is paced burst by burst, never dropped. Default is `6`.
 - `--restart`: Restart profiler on exit. Options:
     - `always`: Always restart the profiler.
     - `onerror`: Restart only if the profiler exits with an error.
