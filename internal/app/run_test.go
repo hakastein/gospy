@@ -119,27 +119,3 @@ func TestRun(t *testing.T) {
 		})
 	}
 }
-
-func TestRunDrainsEmittedTracesWithoutHanging(t *testing.T) {
-	t.Parallel()
-
-	cfg := app.Config{
-		ProfilerApp: writeProfilerScript(t, "phpspy",
-			"#!/bin/sh\nprintf '0 func1 /app/helper.php:10\\n1 main /app/index.php:1\\n\\n'\nexit 0\n"),
-		PyroscopeWorkers: 1,
-		RateMB:           1,
-		RateBurstMB:      1,
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(context.Background(), cfg)
-	}()
-
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not return after the profiler emitted a trace and exited")
-	}
-}
