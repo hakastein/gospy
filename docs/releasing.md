@@ -16,7 +16,7 @@ That triggers [`.github/workflows/release.yml`](../.github/workflows/release.yml
 the binary, assembles the changelog from every pull request merged since the previous tag,
 publishes a GitHub release and attaches `vX.Y.Z.tar.gz`.
 
-No tag, no release — merging to `main` on its own only refreshes the coverage badge.
+No tag, no release — merging to `main` on its own publishes nothing.
 
 ## How a pull request is categorised
 
