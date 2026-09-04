@@ -299,6 +299,40 @@ func TestCollectCutsABatchAtTheStackCap(t *testing.T) {
 	assert.Equal(t, map[string]int{"main;login": 1}, batches[0].Data())
 }
 
+func TestCollectStopsCuttingWhileTheConsumerIsBehind(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := startPipe(t, ctx, 0, collector.Config{MaxStacksPerGroup: 1, MaxPendingBatches: 2})
+
+	p.samples <- sample(baseTime, "main;login", "auth")
+	p.samples <- sample(baseTime.Add(time.Second), "main;login", "api")
+	p.samples <- sample(baseTime.Add(2*time.Second), "main;login", "web")
+	p.samples <- sample(baseTime.Add(3*time.Second), "main;logout", "web")
+
+	p.tick(t)
+	select {
+	case dropped := <-p.drops:
+		assert.Equal(t, 1, dropped, "the sample the full queue could not make room for must be counted")
+	case <-time.After(5 * time.Second):
+		t.Fatal("collector reported no dropped samples")
+	}
+
+	assert.Equal(t, "auth", p.next(t).Tags())
+	assert.Equal(t, "api", p.next(t).Tags())
+
+	p.tick(t)
+	batch := p.next(t)
+	assert.Equal(t, "web", batch.Tags(), "a drained queue must let the next tick flush again")
+	assert.Equal(t, map[string]int{"main;login": 1}, batch.Data())
+
+	close(p.samples)
+	require.Empty(t, p.drain(t))
+}
+
 func TestCollectClosesOutputWhenInputIsClosed(t *testing.T) {
 	t.Parallel()
 

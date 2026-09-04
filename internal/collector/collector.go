@@ -13,6 +13,7 @@ import (
 const (
 	DefaultMaxTagGroups      = 1000
 	DefaultMaxStacksPerGroup = 10000
+	DefaultMaxPendingBatches = 64
 )
 
 type Sample struct {
@@ -56,11 +57,13 @@ func (tc *TagCollection) Tags() string {
 
 // Config tunes when batches are cut and how much the collector may hold while a batch waits
 // for its consumer. Every tick on Ticks cuts all open batches; a nil Ticks leaves the closing
-// of the input as the only time-based cut. A cap at or below zero falls back to its default.
+// of the input as the only time-based cut. A cap at or below zero falls back to its default;
+// samples that would exceed one are dropped and counted through OnDrop, once per flush.
 type Config struct {
 	Ticks             <-chan time.Time
 	MaxTagGroups      int
 	MaxStacksPerGroup int
+	MaxPendingBatches int
 	OnDrop            func(count int)
 }
 
@@ -73,11 +76,12 @@ type traceGroup struct {
 
 // traceCollector cuts the oldest accumulated batch first.
 type traceCollector struct {
-	config  Config
-	groups  map[string]*traceGroup
-	queue   *list.List
-	ready   *list.List
-	dropped int
+	config           Config
+	groups           map[string]*traceGroup
+	queue            *list.List
+	ready            *list.List
+	droppedTagGroups int
+	droppedStacks    int
 }
 
 // Collect ships a batch per tag set on every tick, cuts a batch early once its tag set reaches
@@ -112,7 +116,7 @@ func Collect(ctx context.Context, samples <-chan *Sample, batches chan<- *TagCol
 		case sample, ok := <-samples:
 			if !ok {
 				samples = nil
-				tc.flush()
+				tc.drain()
 				continue
 			}
 			tc.add(sample)
@@ -127,6 +131,9 @@ func newTraceCollector(config Config) *traceCollector {
 	if config.MaxStacksPerGroup <= 0 {
 		config.MaxStacksPerGroup = DefaultMaxStacksPerGroup
 	}
+	if config.MaxPendingBatches <= 0 {
+		config.MaxPendingBatches = DefaultMaxPendingBatches
+	}
 
 	return &traceCollector{
 		config: config,
@@ -136,13 +143,30 @@ func newTraceCollector(config Config) *traceCollector {
 	}
 }
 
-// flush cuts every open batch, oldest first.
+// flush cuts every open batch, oldest first, unless the consumer is already holding the most
+// batches the collector may keep: cutting more of them would only move the memory one list over.
 func (tc *traceCollector) flush() {
-	for front := tc.queue.Front(); front != nil; front = tc.queue.Front() {
-		tc.cut(front.Value.(string))
+	if tc.canCut() {
+		tc.cutAll()
 	}
 
 	tc.reportDropped()
+}
+
+// drain cuts every open batch whatever the consumer is doing: the input has nothing left to add.
+func (tc *traceCollector) drain() {
+	tc.cutAll()
+	tc.reportDropped()
+}
+
+func (tc *traceCollector) cutAll() {
+	for front := tc.queue.Front(); front != nil; front = tc.queue.Front() {
+		tc.cut(front.Value.(string))
+	}
+}
+
+func (tc *traceCollector) canCut() bool {
+	return tc.ready.Len() < tc.config.MaxPendingBatches
 }
 
 func (tc *traceCollector) cut(tags string) {
@@ -155,26 +179,30 @@ func (tc *traceCollector) cut(tags string) {
 }
 
 func (tc *traceCollector) reportDropped() {
-	if tc.dropped == 0 {
+	dropped := tc.droppedTagGroups + tc.droppedStacks
+	if dropped == 0 {
 		return
 	}
 
 	log.Warn().
-		Int("dropped_samples", tc.dropped).
-		Int("max_tag_groups", tc.config.MaxTagGroups).
-		Msg("collector dropped samples over the tag group cap")
+		Int("dropped_samples", dropped).
+		Int("over_tag_group_cap", tc.droppedTagGroups).
+		Int("over_stack_cap", tc.droppedStacks).
+		Msg("collector dropped samples over its caps")
 
 	if tc.config.OnDrop != nil {
-		tc.config.OnDrop(tc.dropped)
+		tc.config.OnDrop(dropped)
 	}
-	tc.dropped = 0
+
+	tc.droppedTagGroups = 0
+	tc.droppedStacks = 0
 }
 
 func (tc *traceCollector) add(sample *Sample) {
 	group, exists := tc.groups[sample.Tags]
 	if !exists {
 		if len(tc.groups) >= tc.config.MaxTagGroups {
-			tc.dropped++
+			tc.droppedTagGroups++
 			return
 		}
 
@@ -185,6 +213,11 @@ func (tc *traceCollector) add(sample *Sample) {
 		}
 		tc.groups[sample.Tags] = group
 		group.queued = tc.queue.PushBack(sample.Tags)
+	}
+
+	if _, known := group.stacks[sample.Trace]; !known && len(group.stacks) >= tc.config.MaxStacksPerGroup {
+		tc.droppedStacks++
+		return
 	}
 
 	if sample.Time.After(group.until) {
@@ -202,7 +235,7 @@ func (tc *traceCollector) add(sample *Sample) {
 		Int("queued_tag_groups", tc.queue.Len()).
 		Msg("sample added to collector")
 
-	if len(group.stacks) >= tc.config.MaxStacksPerGroup {
+	if len(group.stacks) >= tc.config.MaxStacksPerGroup && tc.canCut() {
 		tc.cut(sample.Tags)
 	}
 }
