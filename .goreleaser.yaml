@@ -1,0 +1,117 @@
+version: 2
+
+project_name: gospy
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: gospy
+    main: ./cmd/gospy
+    binary: gospy
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/hakastein/gospy/internal/version.version={{ .Version }}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: gospy
+    ids:
+      - gospy
+    formats:
+      - tar.gz
+    name_template: 'gospy_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# One SPDX document per archive, produced by syft. The workflow installs syft
+# before calling goreleaser; a local run without syft needs --skip=sbom.
+sboms:
+  - id: archives
+    artifacts: archive
+
+# gospy has to sit next to the PHP process it profiles, because phpspy attaches
+# to that process with ptrace. So this image is not a runtime on its own: it is
+# a binary source for a php-fpm image.
+#
+#   COPY --from=ghcr.io/hakastein/gospy:v0.12.0 /gospy /usr/local/bin/gospy
+dockers:
+  - id: linux-amd64
+    goos: linux
+    goarch: amd64
+    ids:
+      - gospy
+    dockerfile: Dockerfile.release
+    use: buildx
+    image_templates:
+      - 'ghcr.io/hakastein/gospy:{{ .Version }}-amd64'
+      - 'ghcr.io/hakastein/gospy:latest-amd64'
+    build_flag_templates:
+      - '--platform=linux/amd64'
+      - '--label=org.opencontainers.image.title={{ .ProjectName }}'
+      - '--label=org.opencontainers.image.description=Ships phpspy profiles to Pyroscope'
+      - '--label=org.opencontainers.image.version={{ .Version }}'
+      - '--label=org.opencontainers.image.revision={{ .FullCommit }}'
+      - '--label=org.opencontainers.image.created={{ .Date }}'
+      - '--label=org.opencontainers.image.source=https://github.com/hakastein/gospy'
+      - '--label=org.opencontainers.image.licenses=MIT'
+
+  - id: linux-arm64
+    goos: linux
+    goarch: arm64
+    ids:
+      - gospy
+    dockerfile: Dockerfile.release
+    use: buildx
+    image_templates:
+      - 'ghcr.io/hakastein/gospy:{{ .Version }}-arm64'
+      - 'ghcr.io/hakastein/gospy:latest-arm64'
+    build_flag_templates:
+      - '--platform=linux/arm64'
+      - '--label=org.opencontainers.image.title={{ .ProjectName }}'
+      - '--label=org.opencontainers.image.description=Ships phpspy profiles to Pyroscope'
+      - '--label=org.opencontainers.image.version={{ .Version }}'
+      - '--label=org.opencontainers.image.revision={{ .FullCommit }}'
+      - '--label=org.opencontainers.image.created={{ .Date }}'
+      - '--label=org.opencontainers.image.source=https://github.com/hakastein/gospy'
+      - '--label=org.opencontainers.image.licenses=MIT'
+
+docker_manifests:
+  - name_template: 'ghcr.io/hakastein/gospy:{{ .Version }}'
+    image_templates:
+      - 'ghcr.io/hakastein/gospy:{{ .Version }}-amd64'
+      - 'ghcr.io/hakastein/gospy:{{ .Version }}-arm64'
+
+  # latest keeps pointing at the last stable release, so a v1.0.0-rc1 tag does
+  # not hand release candidates to everyone pulling latest.
+  - name_template: 'ghcr.io/hakastein/gospy:latest'
+    skip_push: '{{ if .Prerelease }}true{{ else }}false{{ end }}'
+    image_templates:
+      - 'ghcr.io/hakastein/gospy:latest-amd64'
+      - 'ghcr.io/hakastein/gospy:latest-arm64'
+
+# The release body comes from mikepenz/release-changelog-builder-action via
+# `release --release-notes`, so .github/configuration.json stays the single
+# source of truth for the sections. goreleaser must not overwrite it.
+changelog:
+  disable: true
+
+release:
+  draft: false
+  prerelease: auto
+  make_latest: '{{ if .Prerelease }}false{{ else }}true{{ end }}'
