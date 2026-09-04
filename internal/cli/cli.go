@@ -53,8 +53,9 @@ func New(run Runner) *ucli.App {
 				Required: true,
 			},
 			&ucli.StringFlag{
-				Name:  "pyroscope-auth",
-				Usage: "Authentication token for Pyroscope",
+				Name:    "pyroscope-auth",
+				Usage:   "Authentication token for Pyroscope; prefer the GOSPY_PYROSCOPE_AUTH environment variable, because the command line is readable by every process in the PID namespace",
+				EnvVars: []string{"GOSPY_PYROSCOPE_AUTH"},
 			},
 			&ucli.DurationFlag{
 				Name:  "pyroscope-timeout",

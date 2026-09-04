@@ -32,6 +32,7 @@ func TestNew(t *testing.T) {
 	testCases := []struct {
 		name    string
 		args    []string
+		env     map[string]string
 		want    func(*app.Config)
 		wantErr string
 	}{
@@ -95,6 +96,26 @@ func TestNew(t *testing.T) {
 			},
 		},
 		{
+			name: "pyroscope token is read from the environment",
+			args: []string{"gospy", "--pyroscope", pyroscopeURL, "phpspy"},
+			env:  map[string]string{"GOSPY_PYROSCOPE_AUTH": "token-from-env"},
+			want: func(cfg *app.Config) {
+				cfg.PyroscopeAuth = "token-from-env"
+				cfg.ProfilerApp = "phpspy"
+				cfg.ProfilerArguments = []string{}
+			},
+		},
+		{
+			name: "pyroscope token on the command line wins over the environment",
+			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--pyroscope-auth", "token-from-flag", "phpspy"},
+			env:  map[string]string{"GOSPY_PYROSCOPE_AUTH": "token-from-env"},
+			want: func(cfg *app.Config) {
+				cfg.PyroscopeAuth = "token-from-flag"
+				cfg.ProfilerApp = "phpspy"
+				cfg.ProfilerArguments = []string{}
+			},
+		},
+		{
 			name:    "invalid restart value is rejected",
 			args:    []string{"gospy", "--pyroscope", pyroscopeURL, "--restart", "sometimes", "phpspy"},
 			wantErr: "invalid restart option: sometimes",
@@ -108,6 +129,10 @@ func TestNew(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			for name, value := range tc.env {
+				t.Setenv(name, value)
+			}
+
 			var (
 				started bool
 				got     app.Config
