@@ -21,6 +21,7 @@ import (
 
 	"github.com/hakastein/gospy/internal/collector"
 	"github.com/hakastein/gospy/internal/pyroscope"
+	"github.com/hakastein/gospy/internal/tag"
 	"github.com/hakastein/gospy/internal/version"
 )
 
@@ -254,6 +255,14 @@ func TestIngestComposesQuery(t *testing.T) {
 			staticTags:  "env=prod",
 			dynamicTags: "user=admin",
 			expected:    "myapp{env=prod,user=admin}",
+		},
+		{
+			// A meta value carrying the label-grammar separators must not be able to inject
+			// extra labels or close the label set early.
+			name:        "hostile dynamic value keeps the label set well formed",
+			staticTags:  "env=prod",
+			dynamicTags: "uri=" + tag.DynamicTag{TagKey: "uri"}.GetValue(`/x}}, evil=1 {`),
+			expected:    "myapp{env=prod,uri=/x__͵_evil_1__}",
 		},
 	}
 

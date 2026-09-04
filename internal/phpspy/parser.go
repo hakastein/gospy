@@ -162,11 +162,13 @@ func (parser *Parser) buildTags(entryPoint string) string {
 		return parsedTags
 	}
 
+	entryPointTag := "entrypoint=" + tag.SanitizeValue(entryPoint)
+
 	if parsedTags == "" {
-		return "entrypoint=" + entryPoint
+		return entryPointTag
 	}
 
-	return parsedTags + ",entrypoint=" + entryPoint
+	return parsedTags + "," + entryPointTag
 }
 
 func (parser *Parser) resetState() {
