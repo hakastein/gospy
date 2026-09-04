@@ -205,6 +205,11 @@ data.
 - `onsuccess`: The profiler will only restart if it exits successfully.
 - `no`: The profiler will not restart automatically.
 
+A restart that follows a failed session is delayed, starting at one second and doubling up to one
+minute, so a profiler that cannot attach does not spin. The delay resets after a session that exits
+cleanly or stays up for at least 30 seconds. Ten failures in a row stop gospy with a non-zero exit
+and the last profiler error.
+
 #### Entry Points
 
 Specify one or more entry points to limit profiling to specific parts of your application.

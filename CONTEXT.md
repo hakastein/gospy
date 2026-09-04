@@ -32,5 +32,5 @@ The pipeline stage that ships batches to Pyroscope: transport, pacing, concurren
 _Avoid_: sender, uploader, worker pool
 
 **Restart policy**:
-The rule for whether a finished profiler session is started again: always, on error, on success, or never.
+The rule for whether a finished profiler session is started again — always, on error, on success, or never — together with how long the supervisor pauses before it does and how many failures in a row it tolerates first.
 _Avoid_: restart mode, restart strategy
