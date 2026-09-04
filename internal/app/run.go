@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -113,6 +114,21 @@ func validateConfig(cfg Config) error {
 
 	if cfg.PyroscopeWorkers < 1 {
 		return fmt.Errorf("pyroscope workers must be at least 1, got %d", cfg.PyroscopeWorkers)
+	}
+
+	pyroscopeURL, err := url.Parse(cfg.PyroscopeURL)
+	if err != nil {
+		return fmt.Errorf("invalid pyroscope url %q: %w", cfg.PyroscopeURL, err)
+	}
+
+	if pyroscopeURL.Scheme != "http" && pyroscopeURL.Scheme != "https" {
+		return fmt.Errorf("pyroscope url must be http or https, got %q", cfg.PyroscopeURL)
+	}
+
+	if pyroscopeURL.Scheme == "http" && cfg.PyroscopeAuth != "" {
+		log.Warn().
+			Str("pyroscope_url", cfg.PyroscopeURL).
+			Msg("pyroscope url is plain http, the authentication token travels in cleartext")
 	}
 
 	return nil

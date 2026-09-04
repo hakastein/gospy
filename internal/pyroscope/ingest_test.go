@@ -175,19 +175,30 @@ func TestIngestSendsBatchOverTheWire(t *testing.T) {
 		name      string
 		url       string
 		authToken string
+		wantPath  string
+		wantQuery map[string]string
 	}{
 		{
-			name: "url without trailing slash",
-			url:  "http://pyroscope.test",
+			name:     "url without trailing slash",
+			url:      "http://pyroscope.test",
+			wantPath: "/ingest",
 		},
 		{
-			name: "url with trailing slash",
-			url:  "http://pyroscope.test/",
+			name:     "url with trailing slash",
+			url:      "http://pyroscope.test/",
+			wantPath: "/ingest",
+		},
+		{
+			name:      "url with a base path and a query",
+			url:       "https://pyroscope.test/base?tenant=team-a",
+			wantPath:  "/base/ingest",
+			wantQuery: map[string]string{"tenant": "team-a"},
 		},
 		{
 			name:      "with auth token",
 			url:       "http://pyroscope.test",
 			authToken: "secret-token",
+			wantPath:  "/ingest",
 		},
 	}
 
@@ -212,7 +223,11 @@ func TestIngestSendsBatchOverTheWire(t *testing.T) {
 			request := requests[0]
 
 			assert.Equal(t, http.MethodPost, request.method)
-			assert.Equal(t, "/ingest", request.path)
+			assert.Equal(t, tc.wantPath, request.path)
+			assert.Equal(t, "folded", request.query.Get("format"), "the profile query must survive the join")
+			for key, value := range tc.wantQuery {
+				assert.Equal(t, value, request.query.Get(key), "the configured query must survive the join")
+			}
 			assert.Equal(t, "text/plain", request.header.Get("Content-Type"))
 			assert.Equal(t, fmt.Sprintf("gospy/%s/%s", version.Get(), runtime.Version()), request.header.Get("User-Agent"))
 			assert.ElementsMatch(t, []string{"main;foo 1", "main;bar 2"}, strings.Split(request.body, "\n"))
@@ -315,13 +330,6 @@ func TestIngestReportsFailedSends(t *testing.T) {
 			errContains: "response isn't json",
 		},
 		{
-			name: "body with ok status",
-			respond: func(*http.Request) (*http.Response, error) {
-				return respondWith(http.StatusOK, "Something went wrong"), nil
-			},
-			errContains: "server has returned body with 200 ok",
-		},
-		{
 			name: "network error",
 			respond: func(*http.Request) (*http.Response, error) {
 				return nil, errors.New("dial error")
@@ -354,6 +362,152 @@ func TestIngestReportsFailedSends(t *testing.T) {
 			assert.Equal(t, float64(0), reports[0]["success_requests"])
 		})
 	}
+}
+
+func TestIngestAcceptsEverySuccessStatus(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{
+			name:   "ok without body",
+			status: http.StatusOK,
+			body:   "",
+		},
+		{
+			name:   "ok with body",
+			status: http.StatusOK,
+			body:   `{"status":"ok"}`,
+		},
+		{
+			name:   "accepted with body",
+			status: http.StatusAccepted,
+			body:   "queued for ingestion",
+		},
+		{
+			name:   "no content",
+			status: http.StatusNoContent,
+			body:   "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := startIngest(context.Background(), ingestOptions{
+				cfg: pyroscope.Config{
+					AppName:       "myapp",
+					StatsInterval: time.Hour,
+				},
+				respond: func(*http.Request) (*http.Response, error) {
+					return respondWith(tc.status, tc.body), nil
+				},
+			})
+
+			harness.send(batch("env=test", map[string]int{"main;foo": 1}))
+
+			assert.Empty(t, harness.failures(t))
+
+			reports := harness.reports(t)
+			require.Len(t, reports, 1)
+			assert.Equal(t, float64(1), reports[0]["success_requests"])
+			assert.Equal(t, float64(0), reports[0]["failed_requests"])
+		})
+	}
+}
+
+func TestIngestDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+
+	harness := startIngest(context.Background(), ingestOptions{
+		cfg: pyroscope.Config{
+			AppName:       "myapp",
+			AuthToken:     "secret-token",
+			StatsInterval: time.Hour,
+		},
+		respond: func(*http.Request) (*http.Response, error) {
+			response := respondWith(http.StatusFound, "")
+			response.Header.Set("Location", "http://elsewhere.test/ingest")
+
+			return response, nil
+		},
+	})
+
+	harness.send(batch("env=test", map[string]int{"main;foo": 1}))
+
+	requests := harness.transport.captured()
+	require.Len(t, requests, 1, "the redirect was followed, carrying the authorization header along")
+	assert.Equal(t, "Bearer secret-token", requests[0].header.Get("Authorization"))
+
+	failures := harness.failures(t)
+	require.Len(t, failures, 1)
+	assert.Contains(t, failures[0]["error"], "http code: 302")
+	assert.Contains(t, failures[0]["error"], "http://elsewhere.test/ingest")
+
+	reports := harness.reports(t)
+	require.Len(t, reports, 1)
+	assert.Equal(t, float64(1), reports[0]["failed_requests"])
+}
+
+func TestIngestTruncatesOversizedErrorBodies(t *testing.T) {
+	t.Parallel()
+
+	const (
+		hostileBodyBytes = 1 << 20
+		reasonableError  = 1 << 10
+	)
+
+	harness := startIngest(context.Background(), ingestOptions{
+		cfg: pyroscope.Config{
+			AppName:       "myapp",
+			StatsInterval: time.Hour,
+		},
+		respond: func(*http.Request) (*http.Response, error) {
+			return respondWith(http.StatusBadGateway, strings.Repeat("A", hostileBodyBytes)), nil
+		},
+	})
+
+	harness.send(batch("env=test", map[string]int{"main;foo": 1}))
+
+	failures := harness.failures(t)
+	require.Len(t, failures, 1)
+	failure, ok := failures[0]["error"].(string)
+	require.True(t, ok, "the logged error is not a string")
+	assert.Contains(t, failure, "http code: 502")
+	assert.Less(t, len(failure), reasonableError, "the whole response body reached the log")
+
+	reports := harness.reports(t)
+	require.Len(t, reports, 1)
+	errorKeys, ok := reports[0]["errors"].(map[string]any)
+	require.True(t, ok, "the statistics report has no error map")
+	require.Len(t, errorKeys, 1)
+	for key := range errorKeys {
+		assert.Less(t, len(key), reasonableError, "the whole response body became a statistics key")
+	}
+}
+
+func TestIngestReportsAnUnparsableURL(t *testing.T) {
+	t.Parallel()
+
+	harness := startIngest(context.Background(), ingestOptions{
+		cfg: pyroscope.Config{
+			URL:           "http://pyroscope.test:port",
+			AppName:       "myapp",
+			StatsInterval: time.Hour,
+		},
+	})
+
+	harness.send(batch("env=test", map[string]int{"main;foo": 1}))
+
+	assert.Empty(t, harness.transport.captured())
+
+	failures := harness.failures(t)
+	require.Len(t, failures, 1)
+	assert.Contains(t, failures[0]["error"], "invalid pyroscope url")
 }
 
 func TestIngestFlushesStatisticsOnInputEnd(t *testing.T) {
