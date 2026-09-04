@@ -81,12 +81,12 @@ func New(run Runner) *ucli.App {
 			},
 			&ucli.Float64Flag{
 				Name:  "rate-mb",
-				Usage: "Ingestion rate limit in MB",
+				Usage: "Ingestion rate limit in MB; 0 means unlimited",
 				Value: DefaultRateMB,
 			},
 			&ucli.Float64Flag{
 				Name:  "rate-burst-mb",
-				Usage: "Ingestion rate limit burst in MB",
+				Usage: "Ingestion rate limit burst in MB; must be above zero unless the rate limit is unlimited",
 				Value: DefaultRateMB + DefaultRateMB/2,
 			},
 			&ucli.StringFlag{

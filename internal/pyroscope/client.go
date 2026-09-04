@@ -37,6 +37,30 @@ type errorResponse struct {
 	Message string `json:"message"`
 }
 
+// statusError carries the status of a rejected send, so delivery can tell a server that is
+// briefly unavailable from one that will refuse this batch however often it is offered.
+type statusError struct {
+	status     int
+	retryAfter string
+	message    string
+}
+
+func (err *statusError) Error() string {
+	return err.message
+}
+
+type permanentError struct {
+	err error
+}
+
+func (err *permanentError) Error() string {
+	return err.err.Error()
+}
+
+func (err *permanentError) Unwrap() error {
+	return err.err
+}
+
 func newClient(rawURL, authToken string, timeout time.Duration, transport http.RoundTripper, logger zerolog.Logger) *client {
 	ingestURL, err := parseIngestURL(rawURL)
 
@@ -69,7 +93,7 @@ func parseIngestURL(rawURL string) (*url.URL, error) {
 
 func (client *client) send(ctx context.Context, profile payload) error {
 	if client.urlErr != nil {
-		return client.urlErr
+		return &permanentError{err: client.urlErr}
 	}
 
 	target := *client.url
@@ -77,7 +101,7 @@ func (client *client) send(ctx context.Context, profile payload) error {
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(profile.body))
 	if err != nil {
-		return fmt.Errorf("error creating request: %w", err)
+		return &permanentError{err: fmt.Errorf("error creating request: %w", err)}
 	}
 
 	httpReq.Header.Set("Content-Type", "text/plain")
@@ -107,15 +131,23 @@ func responseError(resp *http.Response, body []byte) error {
 	case resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices:
 		return nil
 	case resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest:
-		return fmt.Errorf("http code: %d, redirect to %s not followed", resp.StatusCode, truncate(resp.Header.Get("Location")))
+		return newStatusError(resp, "http code: %d, redirect to %s not followed", resp.StatusCode, truncate(resp.Header.Get("Location")))
 	}
 
 	var result errorResponse
 	if jsonParseErr := json.Unmarshal(body, &result); jsonParseErr != nil {
-		return fmt.Errorf("http code: %d, response isn't json: %s", resp.StatusCode, truncate(string(body)))
+		return newStatusError(resp, "http code: %d, response isn't json: %s", resp.StatusCode, truncate(string(body)))
 	}
 
-	return fmt.Errorf("http code: %d, error: %s, message: %s", resp.StatusCode, truncate(result.Code), truncate(result.Message))
+	return newStatusError(resp, "http code: %d, error: %s, message: %s", resp.StatusCode, truncate(result.Code), truncate(result.Message))
+}
+
+func newStatusError(resp *http.Response, format string, args ...any) *statusError {
+	return &statusError{
+		status:     resp.StatusCode,
+		retryAfter: resp.Header.Get("Retry-After"),
+		message:    fmt.Sprintf(format, args...),
+	}
 }
 
 func mergeQueries(configured, profile string) string {

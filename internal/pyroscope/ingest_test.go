@@ -25,7 +25,17 @@ import (
 )
 
 // unthrottledRateMB keeps the limiter out of the way of tests that are not about pacing.
-const unthrottledRateMB = 100
+const (
+	unthrottledRateMB = 100
+	bytesPerMegabyte  = 1 << 20
+)
+
+var (
+	// singleAttempt keeps retrying out of the way of tests that are not about it, and
+	// instantRetries retries with a zero ceiling on every wait, so no test sleeps.
+	singleAttempt  = pyroscope.Retry{Attempts: 1}
+	instantRetries = pyroscope.Retry{Attempts: 5}
+)
 
 type capturedRequest struct {
 	method      string
@@ -110,9 +120,12 @@ func startIngest(ctx context.Context, opts ingestOptions) *ingestHarness {
 	if cfg.Workers == 0 {
 		cfg.Workers = 1
 	}
-	if cfg.RateMB == 0 {
+	if cfg.RateMB == 0 && cfg.RateBurstMB == 0 {
 		cfg.RateMB = unthrottledRateMB
 		cfg.RateBurstMB = unthrottledRateMB
+	}
+	if cfg.Retry == (pyroscope.Retry{}) {
+		cfg.Retry = singleAttempt
 	}
 
 	return &ingestHarness{
@@ -717,4 +730,294 @@ func TestIngestDeliversUnderRateLimit(t *testing.T) {
 	)
 
 	require.Len(t, harness.transport.captured(), 2)
+}
+
+func respondInTurn(responses ...func(*http.Request) (*http.Response, error)) func(*http.Request) (*http.Response, error) {
+	var (
+		mu   sync.Mutex
+		next int
+	)
+
+	return func(request *http.Request) (*http.Response, error) {
+		mu.Lock()
+		reply := responses[min(next, len(responses)-1)]
+		next++
+		mu.Unlock()
+
+		return reply(request)
+	}
+}
+
+func status(code int) func(*http.Request) (*http.Response, error) {
+	return func(*http.Request) (*http.Response, error) {
+		return respondWith(code, ""), nil
+	}
+}
+
+func throttled(retryAfter string) func(*http.Request) (*http.Response, error) {
+	return func(*http.Request) (*http.Response, error) {
+		response := respondWith(http.StatusTooManyRequests, "")
+		response.Header.Set("Retry-After", retryAfter)
+
+		return response, nil
+	}
+}
+
+func TestIngestRetriesTransientFailures(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		respond func(*http.Request) (*http.Response, error)
+	}{
+		{
+			name:    "server error",
+			respond: respondInTurn(status(http.StatusServiceUnavailable), status(http.StatusOK)),
+		},
+		{
+			name: "network error",
+			respond: respondInTurn(
+				func(*http.Request) (*http.Response, error) { return nil, errors.New("dial error") },
+				status(http.StatusOK),
+			),
+		},
+		{
+			name:    "throttled with a retry-after in seconds",
+			respond: respondInTurn(throttled("1"), status(http.StatusOK)),
+		},
+		{
+			name:    "throttled with a retry-after as an http date",
+			respond: respondInTurn(throttled(time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)), status(http.StatusOK)),
+		},
+		{
+			name:    "throttled for an hour, capped by the policy",
+			respond: respondInTurn(throttled("3600"), status(http.StatusOK)),
+		},
+		{
+			name:    "throttled with an unreadable retry-after",
+			respond: respondInTurn(throttled("soon"), status(http.StatusOK)),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := startIngest(context.Background(), ingestOptions{
+				cfg: pyroscope.Config{
+					AppName:       "myapp",
+					StatsInterval: time.Hour,
+					Retry:         instantRetries,
+				},
+				respond: tc.respond,
+			})
+
+			harness.send(batch("env=test", map[string]int{"main;foo": 1}))
+
+			requests := harness.transport.captured()
+			require.Len(t, requests, 2, "the batch was not offered again")
+			assert.Equal(t, requests[0].body, requests[1].body, "the retry sent a different batch")
+			assert.Empty(t, harness.failures(t))
+
+			reports := harness.reports(t)
+			require.Len(t, reports, 1)
+			assert.Equal(t, float64(1), reports[0]["total_requests"])
+			assert.Equal(t, float64(1), reports[0]["success_requests"])
+			assert.Equal(t, float64(1), reports[0]["retried_attempts"])
+			assert.Equal(t, float64(0), reports[0]["failed_requests"])
+		})
+	}
+}
+
+func TestIngestNeverRetriesTerminalFailures(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		url          string
+		respond      func(*http.Request) (*http.Response, error)
+		wantRequests int
+		errContains  string
+	}{
+		{
+			name:         "bad request",
+			respond:      status(http.StatusBadRequest),
+			wantRequests: 1,
+			errContains:  "http code: 400",
+		},
+		{
+			name:         "forbidden",
+			respond:      status(http.StatusForbidden),
+			wantRequests: 1,
+			errContains:  "http code: 403",
+		},
+		{
+			name:         "not found",
+			respond:      status(http.StatusNotFound),
+			wantRequests: 1,
+			errContains:  "http code: 404",
+		},
+		{
+			name:         "redirect that was not followed",
+			respond:      status(http.StatusFound),
+			wantRequests: 1,
+			errContains:  "http code: 302",
+		},
+		{
+			name:         "url that does not parse",
+			url:          "http://pyroscope.test:port",
+			wantRequests: 0,
+			errContains:  "invalid pyroscope url",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := startIngest(context.Background(), ingestOptions{
+				cfg: pyroscope.Config{
+					URL:           tc.url,
+					AppName:       "myapp",
+					StatsInterval: time.Hour,
+					Retry:         instantRetries,
+				},
+				respond: tc.respond,
+			})
+
+			harness.send(batch("env=test", map[string]int{"main;foo": 1}))
+
+			assert.Len(t, harness.transport.captured(), tc.wantRequests)
+
+			failures := harness.failures(t)
+			require.Len(t, failures, 1)
+			assert.Contains(t, failures[0]["error"], tc.errContains)
+
+			reports := harness.reports(t)
+			require.Len(t, reports, 1)
+			assert.Equal(t, float64(1), reports[0]["failed_requests"])
+			assert.Equal(t, float64(0), reports[0]["retried_attempts"])
+			assert.Equal(t, float64(0), reports[0]["success_requests"])
+		})
+	}
+}
+
+func TestIngestGivesUpAfterTheConfiguredAttempts(t *testing.T) {
+	t.Parallel()
+
+	const attempts = 3
+
+	harness := startIngest(context.Background(), ingestOptions{
+		cfg: pyroscope.Config{
+			AppName:       "myapp",
+			StatsInterval: time.Hour,
+			Retry:         pyroscope.Retry{Attempts: attempts},
+		},
+		respond: func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("dial error")
+		},
+	})
+
+	harness.send(batch("env=test", map[string]int{"main;foo": 1}))
+
+	assert.Len(t, harness.transport.captured(), attempts)
+
+	failures := harness.failures(t)
+	require.Len(t, failures, 1, "giving up on a batch must be reported once, not once per attempt")
+	assert.Contains(t, failures[0]["error"], "dial error")
+
+	reports := harness.reports(t)
+	require.Len(t, reports, 1)
+	assert.Equal(t, float64(1), reports[0]["failed_requests"])
+	assert.Equal(t, float64(attempts-1), reports[0]["retried_attempts"])
+}
+
+func TestIngestPacesBatchesLargerThanTheBurst(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		rateMB float64
+	}{
+		{
+			name:   "under a rate limit",
+			rateMB: unthrottledRateMB,
+		},
+		{
+			name:   "unlimited",
+			rateMB: 0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := startIngest(context.Background(), ingestOptions{
+				cfg: pyroscope.Config{
+					AppName:       "myapp",
+					StatsInterval: time.Hour,
+					RateMB:        tc.rateMB,
+					RateBurstMB:   4.0 / bytesPerMegabyte,
+				},
+			})
+
+			harness.send(
+				batch("env=test", map[string]int{"main;foo": 1}),
+				batch("env=test", map[string]int{"main;bar": 2}),
+				batch("env=test", map[string]int{"main;baz": 3}),
+			)
+
+			requests := harness.transport.captured()
+			require.Len(t, requests, 3, "a batch larger than the burst was dropped for its size")
+			for _, request := range requests {
+				assert.Greater(t, len(request.body), 4, "the test batch is not larger than the burst")
+			}
+
+			reports := harness.reports(t)
+			require.Len(t, reports, 1)
+			assert.Equal(t, float64(3), reports[0]["success_requests"])
+		})
+	}
+}
+
+func TestIngestStopsRetryingOnContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	attempted := make(chan struct{}, 1)
+	harness := startIngest(ctx, ingestOptions{
+		cfg: pyroscope.Config{
+			AppName:       "myapp",
+			StatsInterval: time.Hour,
+			Retry:         pyroscope.Retry{Attempts: 5, BaseDelay: time.Hour, MaxDelay: time.Hour},
+		},
+		respond: func(*http.Request) (*http.Response, error) {
+			select {
+			case attempted <- struct{}{}:
+			default:
+			}
+
+			return respondWith(http.StatusServiceUnavailable, ""), nil
+		},
+	})
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		harness.send(batch("env=test", map[string]int{"main;foo": 1}))
+	}()
+
+	<-attempted
+	cancel()
+
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait did not return while a retry was waiting out its backoff")
+	}
+
+	assert.Len(t, harness.transport.captured(), 1)
 }

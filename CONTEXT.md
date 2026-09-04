@@ -28,7 +28,7 @@ All folded stacks collected for one tag set over an interval, with its time rang
 _Avoid_: chunk, tag group
 
 **Ingest**:
-The pipeline stage that ships batches to Pyroscope: transport, pacing, concurrency, and send statistics are its internal concern.
+The pipeline stage that ships batches to Pyroscope: transport, pacing, retrying, concurrency, and send statistics are its internal concern.
 _Avoid_: sender, uploader, worker pool
 
 **Restart policy**:

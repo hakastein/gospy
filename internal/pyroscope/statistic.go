@@ -11,14 +11,16 @@ import (
 const sendResultBuffer = 1000
 
 type sendResult struct {
-	bytes int
-	err   error
+	bytes   int
+	retries int
+	err     error
 }
 
 type statsReport struct {
 	totalRequests   int
 	totalBytes      int
 	successRequests int
+	retriedAttempts int
 	failedRequests  int
 	errors          map[string]int
 }
@@ -45,13 +47,13 @@ func startStatistics(ctx context.Context, interval time.Duration, logger zerolog
 	return stats
 }
 
-func (stats *statistics) record(ctx context.Context, bytes int, err error) {
+func (stats *statistics) record(ctx context.Context, result sendResult) {
 	if stats == nil {
 		return
 	}
 
 	select {
-	case stats.results <- &sendResult{bytes: bytes, err: err}:
+	case stats.results <- &result:
 	case <-ctx.Done():
 	}
 }
@@ -100,6 +102,7 @@ func (stats *statistics) flush(report statsReport) {
 		Int("total_requests", report.totalRequests).
 		Int("total_bytes", report.totalBytes).
 		Int("success_requests", report.successRequests).
+		Int("retried_attempts", report.retriedAttempts).
 		Int("failed_requests", report.failedRequests).
 		Interface("errors", report.errors).
 		Msg("pyroscope sending statistics")
@@ -112,6 +115,7 @@ func newStatsReport() statsReport {
 func (report *statsReport) add(result *sendResult) {
 	report.totalRequests++
 	report.totalBytes += result.bytes
+	report.retriedAttempts += result.retries
 
 	if result.err == nil {
 		report.successRequests++

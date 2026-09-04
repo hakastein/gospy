@@ -144,6 +144,58 @@ func TestRun(t *testing.T) {
 			},
 			wantErr: errors.New("pyroscope url must be http or https"),
 		},
+		{
+			name: "rejects a negative rate limit",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     pyroscopeURL,
+					PyroscopeWorkers: 1,
+					RateMB:           -1,
+					RateBurstMB:      1,
+				}
+			},
+			wantErr: errors.New("pyroscope rate limit must not be negative"),
+		},
+		{
+			name: "rejects a negative rate limit burst",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     pyroscopeURL,
+					PyroscopeWorkers: 1,
+					RateMB:           1,
+					RateBurstMB:      -1,
+				}
+			},
+			wantErr: errors.New("pyroscope rate limit burst must not be negative"),
+		},
+		{
+			name: "rejects a rate limit without a burst",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     pyroscopeURL,
+					PyroscopeWorkers: 1,
+					RateMB:           1,
+					RateBurstMB:      0,
+				}
+			},
+			wantErr: errors.New("pyroscope rate limit burst must be above zero"),
+		},
+		{
+			name: "accepts a zero rate limit as unlimited",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     pyroscopeURL,
+					PyroscopeWorkers: 1,
+					RateMB:           0,
+					RateBurstMB:      0,
+				}
+			},
+			wantErr: nil,
+		},
 	}
 
 	for _, tc := range testCases {
