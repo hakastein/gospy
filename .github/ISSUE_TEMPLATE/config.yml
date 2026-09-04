@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/hakastein/gospy/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue. See SECURITY.md.
+  - name: Contributing guide
+    url: https://github.com/hakastein/gospy/blob/main/CONTRIBUTING.md
+    about: How to build gospy, run the checks, and open a pull request.

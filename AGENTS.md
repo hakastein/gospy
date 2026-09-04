@@ -1,6 +1,8 @@
 # AGENTS.md
 
 This file provides guidance to Agents when working with code in this repository.
+Human contributors want [`CONTRIBUTING.md`](CONTRIBUTING.md), which states the same
+conventions in prose.
 
 ## Build Commands
 - `make build`: Build with default settings
