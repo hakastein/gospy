@@ -1,6 +1,8 @@
 # AGENTS.md
 
 This file provides guidance to Agents when working with code in this repository.
+Human contributors want [`CONTRIBUTING.md`](CONTRIBUTING.md), which states the same
+conventions in prose.
 
 ## Build Commands
 - `make build`: Build with default settings
@@ -14,7 +16,7 @@ This file provides guidance to Agents when working with code in this repository.
 - Run benchmark: `make bench`
 
 ## Testing Standards
-- **File Structure**: Place test files in the same package as the code they test with `_test.go` suffix
+- **File Structure**: Place test files in the same directory as the code they test, with the `_test.go` suffix (the package is `name_test`, see below)
 - **Table-Driven Tests**: Organize test cases in tables with struct definitions for consistent testing
 - **Assertions**: Use the `github.com/stretchr/testify/require` package for assertions with clear error messages
 - **Subtests**: Use `t.Run()` for organizing tests into logical groups
