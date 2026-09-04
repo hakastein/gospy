@@ -564,3 +564,57 @@ func TestIngestDeliversUnderRateLimit(t *testing.T) {
 
 	require.Len(t, harness.transport.captured(), 2)
 }
+
+func TestIngestReportsDroppedSamples(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		drops        []int
+		batches      []*collector.TagCollection
+		wantDropped  float64
+		wantRequests float64
+	}{
+		{
+			name:         "counts of a window are aggregated",
+			drops:        []int{3, 4},
+			batches:      []*collector.TagCollection{batch("env=test", map[string]int{"main;foo": 1})},
+			wantDropped:  7,
+			wantRequests: 1,
+		},
+		{
+			name:        "drops alone are worth a report",
+			drops:       []int{5},
+			wantDropped: 5,
+		},
+		{
+			name:         "counts at or below zero are ignored",
+			drops:        []int{0, -2},
+			batches:      []*collector.TagCollection{batch("env=test", map[string]int{"main;foo": 1})},
+			wantRequests: 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := startIngest(context.Background(), ingestOptions{
+				cfg: pyroscope.Config{
+					AppName:       "myapp",
+					StatsInterval: time.Hour,
+				},
+			})
+
+			for _, count := range tc.drops {
+				harness.ingest.CountDropped(count)
+			}
+			harness.send(tc.batches...)
+
+			reports := harness.reports(t)
+			require.Len(t, reports, 1)
+			assert.Equal(t, tc.wantDropped, reports[0]["dropped_samples"])
+			assert.Equal(t, tc.wantRequests, reports[0]["total_requests"])
+		})
+	}
+}

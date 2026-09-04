@@ -23,7 +23,10 @@ import (
 	"github.com/hakastein/gospy/internal/version"
 )
 
-const sampleBuffer = 1000
+const (
+	sampleBuffer         = 1000
+	DefaultBatchInterval = 5 * time.Second
+)
 
 // Config: a nil Transport keeps the real one.
 type Config struct {
@@ -39,6 +42,7 @@ type Config struct {
 	RateBurstMB        float64
 	AppTags            []string
 	Entrypoints        []string
+	BatchInterval      time.Duration
 	StatsInterval      time.Duration
 	ProfilerApp        string
 	ProfilerArguments  []string
@@ -149,10 +153,16 @@ func runPipeline(
 	stacks := make(chan *collector.Sample, sampleBuffer)
 	ingest := pyroscope.StartIngest(drainCtx, cfg.ingestConfig(profilerImpl.GetHZ()))
 
+	batchTicker := time.NewTicker(cfg.batchInterval())
+	defer batchTicker.Stop()
+
 	collectorDone := make(chan struct{})
 	go func() {
 		defer close(collectorDone)
-		collector.Collect(drainCtx, stacks, ingest.In())
+		collector.Collect(drainCtx, stacks, ingest.In(), collector.Config{
+			Ticks:  batchTicker.C,
+			OnDrop: ingest.CountDropped,
+		})
 	}()
 
 	runErr := supervisor.ManageProfiler(profilerCtx, profilerImpl, parserImpl, stacks, cfg.Restart)
@@ -164,6 +174,14 @@ func runPipeline(
 
 	log.Info().Msg("shutting down")
 	return runErr
+}
+
+func (cfg runtimeConfig) batchInterval() time.Duration {
+	if cfg.BatchInterval <= 0 {
+		return DefaultBatchInterval
+	}
+
+	return cfg.BatchInterval
 }
 
 func (cfg runtimeConfig) ingestConfig(sampleRate int) pyroscope.Config {

@@ -8,11 +8,14 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const sendResultBuffer = 1000
+const statsEventBuffer = 1000
 
-type sendResult struct {
-	bytes int
-	err   error
+// statsEvent is either a finished send, or samples the producer dropped before they ever
+// became a batch: a positive dropped count tells the two apart.
+type statsEvent struct {
+	bytes   int
+	dropped int
+	err     error
 }
 
 type statsReport struct {
@@ -20,12 +23,13 @@ type statsReport struct {
 	totalBytes      int
 	successRequests int
 	failedRequests  int
+	droppedSamples  int
 	errors          map[string]int
 }
 
-// A nil *statistics is the disabled mode: record and stop do nothing.
+// A nil *statistics is the disabled mode: record, recordDropped and stop do nothing.
 type statistics struct {
-	results  chan *sendResult
+	events   chan *statsEvent
 	done     chan struct{}
 	interval time.Duration
 	logger   zerolog.Logger
@@ -34,7 +38,7 @@ type statistics struct {
 
 func startStatistics(ctx context.Context, interval time.Duration, logger zerolog.Logger) *statistics {
 	stats := &statistics{
-		results:  make(chan *sendResult, sendResultBuffer),
+		events:   make(chan *statsEvent, statsEventBuffer),
 		done:     make(chan struct{}),
 		interval: interval,
 		logger:   logger,
@@ -51,8 +55,20 @@ func (stats *statistics) record(ctx context.Context, bytes int, err error) {
 	}
 
 	select {
-	case stats.results <- &sendResult{bytes: bytes, err: err}:
+	case stats.events <- &statsEvent{bytes: bytes, err: err}:
 	case <-ctx.Done():
+	}
+}
+
+// recordDropped never blocks its caller: counting is worth less than the pipeline it observes.
+func (stats *statistics) recordDropped(count int) {
+	if stats == nil || count <= 0 {
+		return
+	}
+
+	select {
+	case stats.events <- &statsEvent{dropped: count}:
+	default:
 	}
 }
 
@@ -62,7 +78,7 @@ func (stats *statistics) stop() {
 		return
 	}
 
-	stats.stopOnce.Do(func() { close(stats.results) })
+	stats.stopOnce.Do(func() { close(stats.events) })
 	<-stats.done
 }
 
@@ -76,12 +92,12 @@ func (stats *statistics) run(ctx context.Context) {
 
 	for {
 		select {
-		case result, ok := <-stats.results:
+		case event, ok := <-stats.events:
 			if !ok {
 				stats.flush(report)
 				return
 			}
-			report.add(result)
+			report.add(event)
 		case <-ticker.C:
 			stats.flush(report)
 			report = newStatsReport()
@@ -92,7 +108,7 @@ func (stats *statistics) run(ctx context.Context) {
 }
 
 func (stats *statistics) flush(report statsReport) {
-	if report.totalRequests == 0 {
+	if report.totalRequests == 0 && report.droppedSamples == 0 {
 		return
 	}
 
@@ -101,6 +117,7 @@ func (stats *statistics) flush(report statsReport) {
 		Int("total_bytes", report.totalBytes).
 		Int("success_requests", report.successRequests).
 		Int("failed_requests", report.failedRequests).
+		Int("dropped_samples", report.droppedSamples).
 		Interface("errors", report.errors).
 		Msg("pyroscope sending statistics")
 }
@@ -109,15 +126,20 @@ func newStatsReport() statsReport {
 	return statsReport{errors: make(map[string]int)}
 }
 
-func (report *statsReport) add(result *sendResult) {
-	report.totalRequests++
-	report.totalBytes += result.bytes
+func (report *statsReport) add(event *statsEvent) {
+	if event.dropped > 0 {
+		report.droppedSamples += event.dropped
+		return
+	}
 
-	if result.err == nil {
+	report.totalRequests++
+	report.totalBytes += event.bytes
+
+	if event.err == nil {
 		report.successRequests++
 		return
 	}
 
 	report.failedRequests++
-	report.errors[result.err.Error()]++
+	report.errors[event.err.Error()]++
 }
