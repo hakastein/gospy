@@ -44,25 +44,26 @@ func NewParser(
 	}
 }
 
-// Parse does not close samples; the caller owns closing it.
+// Parse reads trace blocks until the scanner ends and returns the scanner's read error, if any;
+// a clean EOF and a cancelled context both return nil. It does not close samples; the caller
+// owns closing it.
 func (parser *Parser) Parse(
 	ctx context.Context,
 	scanner *bufio.Scanner,
 	samples chan<- *collector.Sample,
-) {
+) error {
 	for {
 		if ctx.Err() != nil {
 			log.Debug().Msg("parser stopped due to context cancellation")
-			return
+			return nil
 		}
 
 		if !scanner.Scan() {
-			parser.flush(ctx, samples, scanner.Err())
-			return
+			return parser.flush(ctx, samples, scanner.Err())
 		}
 
 		if err := parser.consumeLine(ctx, samples, scanner.Text()); err != nil {
-			return
+			return nil
 		}
 	}
 }
@@ -92,23 +93,21 @@ func (parser *Parser) flush(
 	ctx context.Context,
 	samples chan<- *collector.Sample,
 	scanError error,
-) {
+) error {
 	pendingTraceLines, pendingMetaLines := len(parser.currentTrace), len(parser.currentMeta)
 
 	if pendingTraceLines > 0 {
 		if err := parser.processTrace(ctx, samples); err != nil {
-			return
+			log.Debug().Err(err).Msg("pending trace dropped")
 		}
-	}
-
-	if scanError != nil {
-		log.Error().Err(scanError).Msg("Error reading from stdout")
 	}
 
 	log.Debug().
 		Int("pending_trace_lines", pendingTraceLines).
 		Int("pending_meta_lines", pendingMetaLines).
 		Msg("scanner has been closed")
+
+	return scanError
 }
 
 func (parser *Parser) processTrace(

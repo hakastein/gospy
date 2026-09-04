@@ -1,8 +1,13 @@
 package app_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -141,5 +146,53 @@ func TestRunDrainsEmittedTracesWithoutHanging(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return after the profiler emitted a trace and exited")
+	}
+}
+
+func TestRunEndsTheSessionOnAnOverLongProfilerLine(t *testing.T) {
+	t.Parallel()
+
+	bodies := make(chan string, 1)
+	pyroscope := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		require.NoError(t, err)
+		select {
+		case bodies <- string(body):
+		default:
+		}
+	}))
+	defer pyroscope.Close()
+
+	// Two megabytes is past the profiler's stdout cap; the script then stays alive holding the
+	// write end of the pipe, which is what used to wedge the supervisor in Wait.
+	longLine := filepath.Join(t.TempDir(), "long-line")
+	require.NoError(t, os.WriteFile(longLine, append(bytes.Repeat([]byte{'x'}, 2<<20), '\n'), 0o644))
+
+	cfg := app.Config{
+		ProfilerApp: writeProfilerScript(t, "phpspy",
+			"#!/bin/sh\nprintf '0 func1 /app/helper.php:10\\n1 main /app/index.php:1\\n\\n'\ncat "+longLine+"\nsleep 60\n"),
+		PyroscopeURL:     pyroscope.URL,
+		PyroscopeWorkers: 1,
+		RateMB:           1,
+		RateBurstMB:      1,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(context.Background(), cfg)
+	}()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, bufio.ErrTooLong)
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return after the profiler emitted an over-long stdout line")
+	}
+
+	select {
+	case body := <-bodies:
+		require.Contains(t, body, "main;func1")
+	default:
+		t.Fatal("the sample parsed before the over-long line never reached pyroscope")
 	}
 }

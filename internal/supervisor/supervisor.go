@@ -18,7 +18,15 @@ type profilerRunner interface {
 }
 
 type traceParser interface {
-	Parse(ctx context.Context, scanner *bufio.Scanner, samplesChannel chan<- *collector.Sample)
+	Parse(ctx context.Context, scanner *bufio.Scanner, samplesChannel chan<- *collector.Sample) error
+}
+
+// sessionResult reports how one profiler session ended. err drives the restart policy;
+// startFailed skips it entirely, and readFailed marks a session gospy killed itself.
+type sessionResult struct {
+	err         error
+	startFailed bool
+	readFailed  bool
 }
 
 // Restart policies, spelled as the --restart flag takes them.
@@ -68,40 +76,69 @@ func ManageProfiler(
 		}
 
 		log.Info().Msg("starting profiler")
-		stdoutScanner, stderrScanner, err := profilerInstance.Start(ctx)
+		session := runSession(ctx, profilerInstance, parserInstance, foldedStacksChannel)
 
-		if err != nil {
-			log.Error().Err(err).Msg("error starting profiler")
-			return err
+		if session.startFailed {
+			log.Error().Err(session.err).Msg("error starting profiler")
+			return session.err
 		}
 
-		stderrDone := consumeProfilerStderr(stderrScanner)
-		log.Debug().Msg("profiler started, waiting for samples from stdout")
-		parserInstance.Parse(ctx, stdoutScanner, foldedStacksChannel)
-		log.Debug().Msg("parser finished, waiting for profiler exit")
-
-		err = profilerInstance.Wait()
-		<-stderrDone
-		if err != nil {
-			if ctx.Err() != nil {
-				log.Info().Msg("profiler terminated")
-			} else {
-				log.Error().Err(err).Msg("profiler exited with error")
-			}
-		} else {
+		switch {
+		case session.err == nil:
 			log.Info().Msg("profiler exited gracefully")
+		case session.readFailed:
+			log.Error().Err(session.err).Msg("profiler stopped: cannot read its stdout")
+		case ctx.Err() != nil:
+			log.Info().Msg("profiler terminated")
+		default:
+			log.Error().Err(session.err).Msg("profiler exited with error")
 		}
 
 		if ctx.Err() != nil {
 			return nil
 		}
 
-		if shouldRestart(restart, err) {
+		if shouldRestart(restart, session.err) {
 			continue
 		}
 
-		return err
+		return session.err
 	}
+}
+
+func runSession(
+	ctx context.Context,
+	profilerInstance profilerRunner,
+	parserInstance traceParser,
+	foldedStacksChannel chan *collector.Sample,
+) sessionResult {
+	sessionCtx, endSession := context.WithCancel(ctx)
+	defer endSession()
+
+	stdoutScanner, stderrScanner, startErr := profilerInstance.Start(sessionCtx)
+	if startErr != nil {
+		return sessionResult{err: startErr, startFailed: true}
+	}
+
+	stderrDone := consumeProfilerStderr(stderrScanner)
+	log.Debug().Msg("profiler started, waiting for samples from stdout")
+
+	readErr := parserInstance.Parse(sessionCtx, stdoutScanner, foldedStacksChannel)
+	if readErr != nil {
+		// The profiler stays alive blocked on writing into a pipe nobody reads any more, so
+		// waiting on it before killing it would never return.
+		endSession()
+	}
+
+	log.Debug().Msg("parser finished, waiting for profiler exit")
+	waitErr := profilerInstance.Wait()
+	<-stderrDone
+
+	if readErr != nil {
+		return sessionResult{err: readErr, readFailed: true}
+	}
+
+	return sessionResult{err: waitErr}
 }
 
 func consumeProfilerStderr(stderrScanner *bufio.Scanner) <-chan struct{} {

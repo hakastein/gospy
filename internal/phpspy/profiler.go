@@ -13,6 +13,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// phpspy prints frames above bufio's 64 KiB default through eval'd paths, deep vendor trees
+// and large peeked globals; a line over the cap ends the session instead of being parsed.
+const (
+	maxStdoutLineSize       = 1 << 20
+	initialStdoutBufferSize = 64 << 10
+)
+
 // Modes that make phpspy print something other than a stream of trace blocks on stdout.
 var unsupportedModes = []option{
 	{long: "version", short: "v"},
@@ -64,7 +71,11 @@ func (profiler *Profiler) Start(ctx context.Context) (*bufio.Scanner, *bufio.Sca
 	}
 
 	profiler.cmd = cmd
-	return bufio.NewScanner(stdout), bufio.NewScanner(stderr), nil
+
+	stdoutScanner := bufio.NewScanner(stdout)
+	stdoutScanner.Buffer(make([]byte, 0, initialStdoutBufferSize), maxStdoutLineSize)
+
+	return stdoutScanner, bufio.NewScanner(stderr), nil
 }
 
 func (profiler *Profiler) Wait() error {

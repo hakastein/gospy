@@ -56,7 +56,7 @@ type profilerRunner interface {
 }
 
 type traceParser interface {
-	Parse(ctx context.Context, scanner *bufio.Scanner, samplesChannel chan<- *collector.Sample)
+	Parse(ctx context.Context, scanner *bufio.Scanner, samplesChannel chan<- *collector.Sample) error
 }
 
 func Run(ctx context.Context, cfg Config) error {
