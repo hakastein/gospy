@@ -19,6 +19,7 @@ const (
 
 // Config: a nil Transport keeps the real one, Logger takes the module's logs and gates
 // statistics, Workers below one becomes one, and a Timeout at or below zero becomes ten seconds.
+// A URL that does not parse is reported as a failed send, never silently dropped.
 type Config struct {
 	URL, AuthToken, AppName, StaticTags string
 	SampleRate, Workers                 int
