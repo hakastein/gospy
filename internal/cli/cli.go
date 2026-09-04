@@ -72,7 +72,7 @@ func New(run Runner) *ucli.App {
 			},
 			&ucli.StringSliceFlag{
 				Name:  "tag",
-				Usage: "Static and dynamic tags (key=value or key=%value%)",
+				Usage: `Static and dynamic tags: key=value, or key={{"meta.key"}} / key={{"meta.key" "regex" "replacement"}}`,
 			},
 			&ucli.BoolFlag{
 				Name:  "tag-entrypoint",
