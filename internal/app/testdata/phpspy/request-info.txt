@@ -1,0 +1,31 @@
+0 mysqli::query <internal>:-1
+1 App\Repository\OrderRepository::find /srv/app/src/Repository/OrderRepository.php:64
+2 App\Controller\OrderController::show /srv/app/src/Controller/OrderController.php:39
+3 main /srv/app/public/index.php:17
+# uri = /orders/42
+# path = /srv/app/public/index.php
+# qstring = utm_source=email
+# cookie = PHPSESSID=6b1f9a0c4d5e; locale=en_GB
+# ts = 1746104512.481933
+# mem 2097152 4194304
+
+0 mysqli::query <internal>:-1
+1 App\Repository\OrderRepository::find /srv/app/src/Repository/OrderRepository.php:64
+2 App\Controller\OrderController::show /srv/app/src/Controller/OrderController.php:39
+3 main /srv/app/public/index.php:17
+# uri = /orders/42
+# path = /srv/app/public/index.php
+# qstring = utm_source=email
+# cookie = PHPSESSID=6b1f9a0c4d5e; locale=en_GB
+# ts = 1746104512.492118
+# mem 2097152 4194304
+
+0 App\Queue\Worker::consume /srv/app/src/Queue/Worker.php:41
+1 main /srv/app/bin/console:9
+# uri =
+# path = /srv/app/bin/console
+# qstring =
+# cookie =
+# ts = 1746104512.503004
+# mem 1048576 2097152
+

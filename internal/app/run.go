@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 
 const sampleBuffer = 1000
 
+// Config: a nil Transport keeps the real one.
 type Config struct {
 	PyroscopeURL       string
 	PyroscopeAuth      string
@@ -40,6 +42,7 @@ type Config struct {
 	StatsInterval      time.Duration
 	ProfilerApp        string
 	ProfilerArguments  []string
+	Transport          http.RoundTripper
 }
 
 type runtimeConfig struct {
@@ -176,6 +179,7 @@ func (cfg runtimeConfig) ingestConfig(sampleRate int) pyroscope.Config {
 		RateBurstMB:   cfg.RateBurstMB,
 		StatsInterval: cfg.StatsInterval,
 		Logger:        log.Logger,
+		Transport:     cfg.Transport,
 	}
 }
 
