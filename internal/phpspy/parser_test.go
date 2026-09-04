@@ -3,7 +3,8 @@ package phpspy_test
 import (
 	"bufio"
 	"context"
-	"fmt"
+	"errors"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -269,8 +270,9 @@ func TestParser_Parse(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
 
+			var parseErr error
 			go func() {
-				parser.Parse(ctx, scanner, samplesChannel)
+				parseErr = parser.Parse(ctx, scanner, samplesChannel)
 				close(samplesChannel)
 			}()
 
@@ -278,6 +280,7 @@ func TestParser_Parse(t *testing.T) {
 			for sample := range samplesChannel {
 				samples = append(samples, sample)
 			}
+			require.NoError(t, parseErr)
 
 			// Verify exact number of samples
 			require.Len(t, samples, len(tc.expectedSamples))
@@ -309,8 +312,9 @@ func TestParser_ParseWithContextCancellation(t *testing.T) {
 	// Cancel immediately to test cancellation handling
 	cancel()
 
+	var parseErr error
 	go func() {
-		parser.Parse(ctx, scanner, samplesChannel)
+		parseErr = parser.Parse(ctx, scanner, samplesChannel)
 		close(samplesChannel)
 	}()
 
@@ -321,33 +325,72 @@ func TestParser_ParseWithContextCancellation(t *testing.T) {
 
 	// Should have no samples due to immediate cancellation
 	require.Len(t, samples, 0)
+	require.NoError(t, parseErr)
 }
 
-// TestParser_ParseWithScannerError tests scanner error handling
-func TestParser_ParseWithScannerError(t *testing.T) {
-	parser := phpspy.NewParser([]string{"/app/test.php"}, nil, false, false)
+func TestParserParseReportsReadError(t *testing.T) {
+	t.Parallel()
 
-	// Create a reader that will cause scanner error
-	reader := &errorReader{}
-	scanner := bufio.NewScanner(reader)
-	samplesChannel := make(chan *collector.Sample, 10)
+	const (
+		traces = "0 func1 /app/helper.php:10\n1 main /app/test.php:1\n\n" +
+			"0 func2 /app/helper.php:20\n1 main /app/test.php:1\n\n"
+		lineLimit = 1024
+	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	go func() {
-		parser.Parse(ctx, scanner, samplesChannel)
-		close(samplesChannel)
-	}()
-
-	// Should handle error gracefully and not crash
-	var samples []*collector.Sample
-	for sample := range samplesChannel {
-		samples = append(samples, sample)
+	testCases := []struct {
+		name           string
+		reader         io.Reader
+		limitLineSize  bool
+		wantErr        error
+		expectedTraces []string
+	}{
+		{
+			name:           "line over the scanner cap after valid traces",
+			reader:         strings.NewReader(traces + strings.Repeat("x", lineLimit*4) + "\n"),
+			limitLineSize:  true,
+			wantErr:        bufio.ErrTooLong,
+			expectedTraces: []string{"main;func1", "main;func2"},
+		},
+		{
+			name:           "read failure after valid traces",
+			reader:         io.MultiReader(strings.NewReader(traces), errorReader{}),
+			wantErr:        errSimulatedRead,
+			expectedTraces: []string{"main;func1", "main;func2"},
+		},
+		{
+			name:    "read failure on the first read",
+			reader:  errorReader{},
+			wantErr: errSimulatedRead,
+		},
 	}
 
-	// Should have no samples due to scanner error
-	require.Len(t, samples, 0)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			parser := phpspy.NewParser([]string{"/app/test.php"}, nil, false, false)
+
+			scanner := bufio.NewScanner(tc.reader)
+			if tc.limitLineSize {
+				scanner.Buffer(make([]byte, 0, lineLimit), lineLimit)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+
+			samplesChannel := make(chan *collector.Sample, 10)
+			err := parser.Parse(ctx, scanner, samplesChannel)
+			close(samplesChannel)
+
+			var traces []string
+			for sample := range samplesChannel {
+				traces = append(traces, sample.Trace)
+			}
+
+			require.ErrorIs(t, err, tc.wantErr)
+			require.Equal(t, tc.expectedTraces, traces)
+		})
+	}
 }
 
 func TestParserParseReturnsOnCancellationWhileChannelIsBlocked(t *testing.T) {
@@ -382,7 +425,7 @@ func TestParserParseFlushesFinalTraceOnEOF(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	parser.Parse(ctx, scanner, samplesChannel)
+	require.NoError(t, parser.Parse(ctx, scanner, samplesChannel))
 	close(samplesChannel)
 
 	var samples []*collector.Sample
@@ -394,9 +437,10 @@ func TestParserParseFlushesFinalTraceOnEOF(t *testing.T) {
 	require.Equal(t, "main;func1", samples[0].Trace)
 }
 
-// errorReader simulates a reader that always returns an error
+var errSimulatedRead = errors.New("simulated read error")
+
 type errorReader struct{}
 
-func (e *errorReader) Read(p []byte) (n int, err error) {
-	return 0, fmt.Errorf("simulated read error")
+func (errorReader) Read([]byte) (int, error) {
+	return 0, errSimulatedRead
 }
