@@ -74,6 +74,11 @@ func (ingest *Ingest) In() chan<- *collector.TagCollection {
 	return ingest.input
 }
 
+// CountDropped adds samples its producer discarded before batching to the statistics report.
+func (ingest *Ingest) CountDropped(count int) {
+	ingest.stats.recordDropped(count)
+}
+
 // Wait returns only once the producer has closed In: it blocks until every accepted batch is
 // resolved and the final statistics report is flushed.
 func (ingest *Ingest) Wait() {
