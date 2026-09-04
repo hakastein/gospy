@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -80,26 +81,68 @@ func (c *fakeClock) Delays() []time.Duration {
 	return append([]time.Duration(nil), c.delays...)
 }
 
+// gatedReader serves before, blocks until gate is closed, serves after, then reports EOF once.
+// It stands in for a profiler whose stderr stays open past the last line it wrote.
+type gatedReader struct {
+	before   io.Reader
+	gate     <-chan struct{}
+	after    io.Reader
+	onEOF    func()
+	passed   bool
+	reported bool
+}
+
+func (r *gatedReader) Read(buffer []byte) (int, error) {
+	if !r.passed {
+		read, err := r.before.Read(buffer)
+		if read > 0 {
+			return read, nil
+		}
+		if !errors.Is(err, io.EOF) {
+			return 0, err
+		}
+		<-r.gate
+		r.passed = true
+	}
+
+	read, err := r.after.Read(buffer)
+	if read > 0 {
+		return read, nil
+	}
+	if errors.Is(err, io.EOF) && !r.reported {
+		r.reported = true
+		if r.onEOF != nil {
+			r.onEOF()
+		}
+	}
+
+	return 0, err
+}
+
 // profilerSession scripts one run of the fake profiler. keepsRunning holds Wait until the
 // session context is cancelled, the way a profiler blocked writing into an unread pipe does;
 // uptime is how far the fake clock moves while the session runs.
 type profilerSession struct {
 	stdout       string
+	stderr       io.Reader
 	waitErr      error
 	keepsRunning bool
 	uptime       time.Duration
 }
 
 type fakeProfiler struct {
-	t          *testing.T
-	clock      *fakeClock
-	mu         sync.Mutex
-	sessions   []profilerSession
-	startCount int
-	waitCount  int
-	sessionCtx context.Context
-	terminated bool
-	onStart    func(int)
+	t             *testing.T
+	clock         *fakeClock
+	mu            sync.Mutex
+	sessions      []profilerSession
+	startCount    int
+	waitCount     int
+	sessionCtx    context.Context
+	terminated    bool
+	stderrAtEOF   bool
+	waitedAtEOF   []bool
+	onStart       func(int)
+	stderrEOFSeen bool
 }
 
 func (p *fakeProfiler) Start(ctx context.Context) (*bufio.Scanner, *bufio.Scanner, error) {
@@ -109,6 +152,7 @@ func (p *fakeProfiler) Start(ctx context.Context) (*bufio.Scanner, *bufio.Scanne
 	p.startCount++
 	startCount := p.startCount
 	p.sessionCtx = ctx
+	p.stderrAtEOF = false
 	onStart := p.onStart
 	p.mu.Unlock()
 
@@ -119,7 +163,11 @@ func (p *fakeProfiler) Start(ctx context.Context) (*bufio.Scanner, *bufio.Scanne
 	stdout := bufio.NewScanner(strings.NewReader(session.stdout))
 	stdout.Buffer(make([]byte, 0, fakeStdoutLineLimit), fakeStdoutLineLimit)
 
-	return stdout, bufio.NewScanner(strings.NewReader("")), nil
+	if session.stderr == nil {
+		return stdout, nil, nil
+	}
+
+	return stdout, bufio.NewScanner(session.stderr), nil
 }
 
 func (p *fakeProfiler) Wait() error {
@@ -128,6 +176,7 @@ func (p *fakeProfiler) Wait() error {
 	session := p.sessions[p.waitCount]
 	p.waitCount++
 	sessionCtx := p.sessionCtx
+	p.waitedAtEOF = append(p.waitedAtEOF, p.stderrAtEOF)
 	p.mu.Unlock()
 
 	if session.uptime > 0 {
@@ -147,6 +196,14 @@ func (p *fakeProfiler) Wait() error {
 	return session.waitErr
 }
 
+// markStderrEOF is what a scripted stderr stream calls when the supervisor has drained it.
+func (p *fakeProfiler) markStderrEOF() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stderrAtEOF = true
+	p.stderrEOFSeen = true
+}
+
 func (p *fakeProfiler) Starts() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -159,9 +216,34 @@ func (p *fakeProfiler) Terminated() bool {
 	return p.terminated
 }
 
+// WaitedAfterStderrEOF reports, per session, whether the supervisor had drained stderr by the
+// time it called Wait.
+func (p *fakeProfiler) WaitedAfterStderrEOF() []bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]bool(nil), p.waitedAtEOF...)
+}
+
+func (p *fakeProfiler) StderrDrained() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stderrEOFSeen
+}
+
 type fakeParser struct{}
 
 func (fakeParser) Parse(context.Context, *bufio.Scanner, chan<- *collector.Sample) error {
+	return nil
+}
+
+// gateOpeningParser releases a scripted stderr stream when the parser is done with stdout, which
+// is the moment the supervisor starts reaping the session.
+type gateOpeningParser struct {
+	gate chan struct{}
+}
+
+func (p gateOpeningParser) Parse(context.Context, *bufio.Scanner, chan<- *collector.Sample) error {
+	close(p.gate)
 	return nil
 }
 
@@ -447,6 +529,67 @@ func TestManageProfilerStopsWhenTheContextEndsDuringBackoff(t *testing.T) {
 	require.NoError(t, err, "a shutdown during the restart delay is not a failure")
 	require.Equal(t, 1, profiler.Starts())
 	require.Equal(t, []time.Duration{time.Second}, clock.Delays())
+}
+
+func TestManageProfilerDrainsStderrBeforeWaitingForTheProcess(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	// The stream keeps writing after the parser is done, so a supervisor that reaps the process
+	// first would be observed calling Wait with the reader still mid-stream.
+	const trailingLines = 1024
+	gate := make(chan struct{})
+	clock := newBlockedClock()
+	profiler := &fakeProfiler{t: t, clock: clock}
+	profiler.sessions = []profilerSession{{
+		stderr: &gatedReader{
+			before: strings.NewReader(strings.Repeat("cannot attach to pid 1234\n", 8)),
+			gate:   gate,
+			after:  strings.NewReader(strings.Repeat("phpspy: read error, retrying\n", trailingLines)),
+			onEOF:  profiler.markStderrEOF,
+		},
+	}}
+
+	policy := supervisor.RestartPolicy{Mode: supervisor.RestartNo, Now: clock.Now, After: clock.After}
+	err := supervisor.ManageProfiler(ctx, profiler, gateOpeningParser{gate: gate}, make(chan *collector.Sample, 1), policy)
+
+	require.NoError(t, ctx.Err(), "ManageProfiler did not return within the test context")
+	require.NoError(t, err)
+	require.True(t, profiler.StderrDrained(), "the supervisor left profiler stderr unread")
+	require.Equal(t, []bool{true}, profiler.WaitedAfterStderrEOF(), "the process was reaped before stderr was drained")
+}
+
+func TestManageProfilerReapsAfterTheStderrGrace(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	// A grandchild that inherited the pipe holds stderr open forever; the gate is only released
+	// so the reader goroutine can end with the test.
+	gate := make(chan struct{})
+	defer close(gate)
+
+	clock := newFakeClock()
+	profiler := &fakeProfiler{t: t, clock: clock}
+	profiler.sessions = []profilerSession{{
+		stderr: &gatedReader{
+			before: strings.NewReader("cannot attach to pid 1234\n"),
+			gate:   gate,
+			after:  strings.NewReader(""),
+			onEOF:  profiler.markStderrEOF,
+		},
+	}}
+
+	policy := supervisor.RestartPolicy{Mode: supervisor.RestartNo, Now: clock.Now, After: clock.After}
+	err := supervisor.ManageProfiler(ctx, profiler, fakeParser{}, make(chan *collector.Sample, 1), policy)
+
+	require.NoError(t, ctx.Err(), "ManageProfiler did not return while profiler stderr stayed open")
+	require.NoError(t, err)
+	require.Len(t, clock.Delays(), 1, "the reap was expected to wait out the stderr grace exactly once")
+	require.Positive(t, clock.Delays()[0])
 }
 
 func TestManageProfilerEndsSessionOnUnreadableStdout(t *testing.T) {
