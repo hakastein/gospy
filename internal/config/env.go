@@ -10,8 +10,7 @@ type LookupFunc func(name string) (string, bool)
 
 // expand replaces ${VAR} and ${VAR:-default} in text. A reference to a variable that is not
 // set, or set but empty, takes its default; without one it is an error naming the variable.
-// $$ is a literal dollar sign; a dollar sign followed by anything else is kept as written,
-// so the $1 of a tag rewrite survives.
+// $$ is a literal dollar sign; a dollar sign followed by anything else is kept as written.
 func expand(text string, lookup LookupFunc) (string, error) {
 	if !strings.Contains(text, "$") {
 		return text, nil

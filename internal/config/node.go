@@ -157,7 +157,8 @@ func (n node) boolean() (bool, error) {
 	}
 }
 
-// duration reads Go syntax; a bare number has no unit and is rejected, as is a negative value.
+// duration reads Go syntax; a bare number other than 0 has no unit and is rejected, as is a
+// negative value.
 func (n node) duration() (time.Duration, error) {
 	text, err := n.scalar()
 	if err != nil {
@@ -194,7 +195,9 @@ func (n node) strings() ([]string, error) {
 	return values, nil
 }
 
-// expandValues runs the environment expansion over every scalar value below n, keys excluded.
+// expandValues runs the environment expansion over every scalar value below n, keys
+// excluded. A dynamic tag under a tags key is left as written: its rewrite names capture
+// groups as $1 and ${name}, which are the regexp engine's to read, not the environment's.
 func expandValues(n *yaml.Node, lookup LookupFunc) error {
 	switch n.Kind {
 	case yaml.ScalarNode:
@@ -205,7 +208,15 @@ func expandValues(n *yaml.Node, lookup LookupFunc) error {
 		n.Value = expanded
 	case yaml.MappingNode:
 		for i := 1; i < len(n.Content); i += 2 {
-			if err := expandValues(n.Content[i], lookup); err != nil {
+			value := n.Content[i]
+			if n.Content[i-1].Value == "tags" && value.Kind == yaml.MappingNode {
+				if err := expandTags(value, lookup); err != nil {
+					return err
+				}
+				continue
+			}
+
+			if err := expandValues(value, lookup); err != nil {
 				return err
 			}
 		}
@@ -214,6 +225,21 @@ func expandValues(n *yaml.Node, lookup LookupFunc) error {
 			if err := expandValues(child, lookup); err != nil {
 				return err
 			}
+		}
+	}
+
+	return nil
+}
+
+func expandTags(tags *yaml.Node, lookup LookupFunc) error {
+	for i := 1; i < len(tags.Content); i += 2 {
+		value := tags.Content[i]
+		if value.Kind == yaml.ScalarNode && strings.HasPrefix(strings.TrimSpace(value.Value), "{{") {
+			continue
+		}
+
+		if err := expandValues(value, lookup); err != nil {
+			return err
 		}
 	}
 

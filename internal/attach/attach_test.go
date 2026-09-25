@@ -34,9 +34,21 @@ func script(t *testing.T, body string) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "phpspy")
-	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755))
+	writeExecutable(t, path, "#!/bin/sh\n"+body)
 
 	return path
+}
+
+// writeExecutable holds off every fork in the test binary while the file is open for writing:
+// a child forked by a parallel test in that window inherits the descriptor until it execs,
+// and an exec of the script meanwhile fails with ETXTBSY.
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+
+	syscall.ForkLock.Lock()
+	defer syscall.ForkLock.Unlock()
+
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
 }
 
 func config(executable string) attach.Config {
@@ -55,12 +67,29 @@ func config(executable string) attach.Config {
 func awaitResult(t *testing.T, a *attach.Attach) attach.Result {
 	t.Helper()
 
+	results := make(chan attach.Result, 1)
+	go func() { results <- a.Wait() }()
+
 	select {
-	case <-a.Done():
-		return a.Wait()
+	case result := <-results:
+		return result
 	case <-time.After(testTimeout):
 		t.Fatal("the attach did not end in time")
 		return attach.Result{}
+	}
+}
+
+// stillRunning asserts that the attach has not ended within the grace.
+func stillRunning(t *testing.T, a *attach.Attach, grace time.Duration) {
+	t.Helper()
+
+	results := make(chan attach.Result, 1)
+	go func() { results <- a.Wait() }()
+
+	select {
+	case result := <-results:
+		t.Fatalf("the attach ended: %+v", result)
+	case <-time.After(grace):
 	}
 }
 
@@ -243,12 +272,17 @@ func TestWaitClassifiesTheExit(t *testing.T) {
 	}
 }
 
+// deniedScript prints one memory-read failure per sample it cannot take, the way phpspy does
+// on a process it may not trace, and never exits by itself.
+func deniedScript(pidFile string) string {
+	return "echo $$ > " + pidFile + "\nwhile true; do echo 'copy_proc_mem: Failed to read memory: Operation not permitted' >&2; sleep 0.01; done\n"
+}
+
 func TestWaitKillsAnAttachThatIsSilentlyDenied(t *testing.T) {
 	t.Parallel()
 
-	// phpspy prints one failure per sample it cannot take, at the rate it was asked for.
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	cfg := config(script(t, "echo $$ > "+pidFile+"\nwhile true; do echo 'copy_proc_mem: Failed to read memory: Operation not permitted' >&2; sleep 0.02; done\n"))
+	cfg := config(script(t, deniedScript(pidFile)))
 	cfg.SilenceTimeout = 200 * time.Millisecond
 
 	a, err := attach.Start(context.Background(), cfg, make(chan *collector.Sample, 8))
@@ -259,6 +293,43 @@ func TestWaitKillsAnAttachThatIsSilentlyDenied(t *testing.T) {
 	require.Equal(t, attach.Failed, result.Outcome)
 	require.ErrorContains(t, result.Err, "copy_proc_mem")
 	requireGone(t, pid)
+}
+
+func TestDetachOfADeniedAttachIsAFailure(t *testing.T) {
+	t.Parallel()
+
+	// Rotation and pre-emption end an attach long before the silence timeout; the denial it
+	// gathered until then must still count against the process.
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	cfg := config(script(t, deniedScript(pidFile)))
+	cfg.SilenceTimeout = time.Minute
+
+	a, err := attach.Start(context.Background(), cfg, make(chan *collector.Sample, 8))
+	require.NoError(t, err)
+	pid := pidOf(t, pidFile)
+	time.Sleep(500 * time.Millisecond)
+
+	a.Detach()
+	result := awaitResult(t, a)
+	require.Equal(t, attach.Failed, result.Outcome)
+	require.ErrorContains(t, result.Err, "copy_proc_mem")
+	requireGone(t, pid)
+}
+
+func TestDetachAfterAFewTransientFailuresIsClean(t *testing.T) {
+	t.Parallel()
+
+	// A healthy worker can hit a handful of stale-frame reads; fewer than a second's worth of
+	// samples is not a denied process.
+	cfg := config(script(t, "for i in 1 2 3; do echo 'copy_proc_mem: Failed to copy frame; err=Bad address' >&2; done\nexec sleep 60\n"))
+	cfg.SilenceTimeout = time.Minute
+
+	a, err := attach.Start(context.Background(), cfg, make(chan *collector.Sample, 8))
+	require.NoError(t, err)
+	time.Sleep(300 * time.Millisecond)
+
+	a.Detach()
+	require.Equal(t, attach.Result{Outcome: attach.Detached}, awaitResult(t, a))
 }
 
 func TestWaitLeavesAQuietAttachAlone(t *testing.T) {
@@ -296,11 +367,7 @@ func TestWaitLeavesAQuietAttachAlone(t *testing.T) {
 			a, err := attach.Start(context.Background(), cfg, make(chan *collector.Sample, 8))
 			require.NoError(t, err)
 
-			select {
-			case <-a.Done():
-				t.Fatalf("a quiet attach was ended: %+v", a.Wait())
-			case <-time.After(3 * cfg.SilenceTimeout):
-			}
+			stillRunning(t, a, 3*cfg.SilenceTimeout)
 
 			a.Detach()
 			require.Equal(t, attach.Result{Outcome: attach.Detached}, awaitResult(t, a))
@@ -345,7 +412,8 @@ func TestStartReportsAPhpspyThatCannotRun(t *testing.T) {
 			name: "binary without the execute bit",
 			executable: func(t *testing.T) string {
 				path := filepath.Join(t.TempDir(), "phpspy")
-				require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o644))
+				writeExecutable(t, path, "#!/bin/sh\n")
+				require.NoError(t, os.Chmod(path, 0o644))
 				return path
 			},
 		},
@@ -353,7 +421,7 @@ func TestStartReportsAPhpspyThatCannotRun(t *testing.T) {
 			name: "interpreter that does not exist",
 			executable: func(t *testing.T) string {
 				path := filepath.Join(t.TempDir(), "phpspy")
-				require.NoError(t, os.WriteFile(path, []byte("#!/nonexistent/sh\n"), 0o755))
+				writeExecutable(t, path, "#!/nonexistent/sh\n")
 				return path
 			},
 		},

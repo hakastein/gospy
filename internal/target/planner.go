@@ -16,7 +16,6 @@ const (
 	PreemptionFloor = 5 * time.Second
 
 	holdBase    = 30 * time.Second
-	holdCap     = 5 * time.Minute
 	maxFailures = 3
 )
 
@@ -35,7 +34,7 @@ type Config struct {
 	Rand   func(n int) int
 }
 
-// DetachReason says why a Plan hands a slot to someone else.
+// DetachReason says why a Plan ends an attach.
 type DetachReason uint8
 
 const (
@@ -43,7 +42,23 @@ const (
 	Rotation DetachReason = iota
 	// Preemption ends an attach so that a process never traced before gets its first slot.
 	Preemption
+	// Departure ends an attach whose process the scan no longer lists for this target: it
+	// exited, or its command line now belongs to another target.
+	Departure
 )
+
+func (reason DetachReason) String() string {
+	switch reason {
+	case Rotation:
+		return "rotation"
+	case Preemption:
+		return "preemption"
+	case Departure:
+		return "departure"
+	default:
+		return "unknown"
+	}
+}
 
 // Detach names an attach to end and why.
 type Detach struct {
@@ -52,7 +67,8 @@ type Detach struct {
 }
 
 // Plan is the answer to one scan. Attach lists processes to start phpspy for, in the order
-// the free slots were handed out; Detach holds at most one entry per scan.
+// the free slots were handed out; Detach holds every departure plus at most one rotation or
+// pre-emption per scan.
 type Plan struct {
 	Attach []Process
 	Detach []Detach
@@ -97,17 +113,25 @@ func New(cfg Config) *Planner {
 // now. Every process it returns in Attach counts as attached from now on until Ended reports
 // it; every Detach counts as in flight until then too.
 func (planner *Planner) Plan(matched []Process, now time.Time) Plan {
-	planner.forgetGone(matched)
+	present := make(map[Process]struct{}, len(matched))
+	for _, process := range matched {
+		present[process] = struct{}{}
+	}
+
+	planner.forgetGone(present)
 
 	plan := Plan{Matched: len(matched)}
-	candidates := planner.candidates(matched, now, &plan.Held)
+	plan.Detach = planner.departures(present)
 
-	for len(candidates) > 0 && len(planner.attaches) < planner.cfg.Slots {
-		process := candidates[0]
-		candidates = candidates[1:]
+	candidates, neverTraced := planner.candidates(matched, now, &plan.Held)
 
-		planner.attaches[process] = &attach{since: now}
-		plan.Attach = append(plan.Attach, process)
+	if free := planner.cfg.Slots - len(planner.attaches); free > 0 && len(candidates) > 0 {
+		planner.order(candidates)
+		for _, process := range candidates[:min(free, len(candidates))] {
+			planner.attaches[process] = &attach{since: now}
+			plan.Attach = append(plan.Attach, process)
+		}
+		candidates = candidates[min(free, len(candidates)):]
 	}
 
 	if len(candidates) == 0 || planner.detaching() {
@@ -116,7 +140,7 @@ func (planner *Planner) Plan(matched []Process, now time.Time) Plan {
 
 	if oldest, ok := planner.oldest(); ok {
 		switch {
-		case planner.neverTraced(candidates) && now.Sub(planner.attaches[oldest].since) >= PreemptionFloor:
+		case neverTraced && now.Sub(planner.attaches[oldest].since) >= PreemptionFloor:
 			planner.attaches[oldest].detaching = true
 			plan.Detach = append(plan.Detach, Detach{Process: oldest, Reason: Preemption})
 		case planner.cfg.Rotate > 0 && now.Sub(planner.attaches[oldest].since) > planner.cfg.Rotate:
@@ -129,9 +153,8 @@ func (planner *Planner) Plan(matched []Process, now time.Time) Plan {
 }
 
 // Ended frees the slot of process. A failed attach opens or extends its hold: 30 seconds,
-// doubling per consecutive failure, capped at the rotation period or five minutes, whichever
-// is larger; the third failure in a row retires the process until it exits. Any other end
-// resets the count. Either way now becomes the process's last-traced time.
+// doubling per consecutive failure; the third failure in a row retires the process until it
+// exits. Any other end resets the count. Either way now becomes the process's last-traced time.
 func (planner *Planner) Ended(process Process, now time.Time, failed bool) {
 	if _, live := planner.attaches[process]; !live {
 		return
@@ -156,8 +179,7 @@ func (planner *Planner) Ended(process Process, now time.Time, failed bool) {
 		return
 	}
 
-	hold := holdBase << (record.failures - 1)
-	record.holdUntil = now.Add(min(hold, max(planner.cfg.Rotate, holdCap)))
+	record.holdUntil = now.Add(holdBase << (record.failures - 1))
 }
 
 // Attached is the number of slots in use, detaches in flight included.
@@ -165,29 +187,52 @@ func (planner *Planner) Attached() int {
 	return len(planner.attaches)
 }
 
-// candidates are the matched processes that hold no slot and sit in no hold, ordered never
-// traced first, then oldest last-traced first, with ties broken at random.
-func (planner *Planner) candidates(matched []Process, now time.Time, held *int) []Process {
+// departures are the live attaches whose process the scan no longer lists: it exited, and
+// phpspy is ending on its own, or it now belongs to another target and must not be traced twice.
+func (planner *Planner) departures(present map[Process]struct{}) []Detach {
+	var detaches []Detach
+	for process, attach := range planner.attaches {
+		if _, listed := present[process]; listed || attach.detaching {
+			continue
+		}
+
+		attach.detaching = true
+		detaches = append(detaches, Detach{Process: process, Reason: Departure})
+	}
+
+	return detaches
+}
+
+// candidates are the matched processes that hold no slot and sit in no hold, in scan order,
+// and whether any of them was never traced.
+func (planner *Planner) candidates(matched []Process, now time.Time, held *int) ([]Process, bool) {
 	candidates := make([]Process, 0, len(matched))
+	neverTraced := false
 	for _, process := range matched {
 		if _, live := planner.attaches[process]; live {
 			continue
 		}
 
-		if record := planner.history[process]; record != nil && (record.retired || now.Before(record.holdUntil)) {
+		record := planner.history[process]
+		if record != nil && (record.retired || now.Before(record.holdUntil)) {
 			*held++
 			continue
 		}
 
+		neverTraced = neverTraced || record == nil
 		candidates = append(candidates, process)
 	}
 
+	return candidates, neverTraced
+}
+
+// order sorts candidates never traced first, then oldest last-traced first, with ties broken
+// at random.
+func (planner *Planner) order(candidates []Process) {
 	planner.shuffle(candidates)
 	slices.SortStableFunc(candidates, func(a, b Process) int {
 		return planner.priority(a).Compare(planner.priority(b))
 	})
-
-	return candidates
 }
 
 // priority is the last-traced time; a process without one sorts first.
@@ -197,10 +242,6 @@ func (planner *Planner) priority(process Process) time.Time {
 	}
 
 	return time.Time{}
-}
-
-func (planner *Planner) neverTraced(candidates []Process) bool {
-	return len(candidates) > 0 && planner.history[candidates[0]] == nil
 }
 
 func (planner *Planner) shuffle(processes []Process) {
@@ -238,12 +279,7 @@ func (planner *Planner) oldest() (Process, bool) {
 
 // forgetGone drops the history of processes that exited: a retired process is retried only
 // as a new process, and a reused PID starts with no history.
-func (planner *Planner) forgetGone(matched []Process) {
-	present := make(map[Process]struct{}, len(matched))
-	for _, process := range matched {
-		present[process] = struct{}{}
-	}
-
+func (planner *Planner) forgetGone(present map[Process]struct{}) {
 	for process := range planner.history {
 		_, live := planner.attaches[process]
 		if _, seen := present[process]; !seen && !live {

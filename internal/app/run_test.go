@@ -2,7 +2,6 @@ package app_test
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -132,9 +131,11 @@ func TestRunFreesTheSlotOfAFailedAttachAndHoldsTheProcess(t *testing.T) {
 	require.Equal(t, peekGlobalStacks("checkout"), countStacks(t, transport.captured()))
 }
 
-func TestRunReattachesAProcessWhosePhpspyExitedCleanly(t *testing.T) {
+func TestRunHoldsAProcessWhosePhpspyExitedWhileItLives(t *testing.T) {
 	t.Parallel()
 
+	// phpspy returns 0 only when the traced process died; a process still in the next scan
+	// did not, so the exit is a failed attach and not a reason to run objdump every scan.
 	executable, markers := scriptedPhpspy(t, map[int]string{
 		201: "echo start >> \"$MARKER_DIR/starts.$pid\"\nexit 0",
 	})
@@ -145,23 +146,151 @@ func TestRunReattachesAProcessWhosePhpspyExitedCleanly(t *testing.T) {
 	defer cancel()
 	done := startRun(ctx, app.Config{Config: checkoutConfig(t, executable, ""), Transport: &captureTransport{}, Processes: table})
 
+	starts := filepath.Join(markers, "starts.201")
 	require.Eventually(t, func() bool {
-		return markerLines(t, filepath.Join(markers, "starts.201")) >= 3
-	}, shutdownSafetyNet, 20*time.Millisecond, "a clean exit must free the slot without a hold")
+		return markerLines(t, starts) == 1
+	}, shutdownSafetyNet, 20*time.Millisecond, "the process was never attached")
+	time.Sleep(settleTime)
+
+	cancel()
+	require.NoError(t, awaitRun(t, done))
+
+	require.Equal(t, 1, markerLines(t, starts), "an exit 0 on a live process is held like a failure")
+}
+
+func TestRunFreesTheSlotOfAProcessThatEnded(t *testing.T) {
+	t.Parallel()
+
+	executable, markers := scriptedPhpspy(t, map[int]string{
+		201: "echo start >> \"$MARKER_DIR/starts.$pid\"\nexit 0",
+		202: replayAndHold(t, "peek-global.txt"),
+	})
+	table := &processTable{}
+	table.set(worker(201))
+	transport := &captureTransport{}
+
+	cfg := checkoutConfig(t, executable, "")
+	cfg.Targets[0].MaxProcesses = 1
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := startRun(ctx, app.Config{Config: cfg, Transport: transport, Processes: table})
+
+	require.Eventually(t, func() bool {
+		return markerLines(t, filepath.Join(markers, "starts.201")) == 1
+	}, shutdownSafetyNet, 20*time.Millisecond, "the process was never attached")
+
+	// The process is gone from the next scan, as phpspy's exit said: its slot goes to the newcomer.
+	table.set(worker(202))
+	require.Eventually(t, func() bool {
+		return len(transport.captured()) > 0
+	}, shutdownSafetyNet, 20*time.Millisecond, "the slot of the ended process was never handed on")
+
+	cancel()
+	require.NoError(t, awaitRun(t, done))
+	require.Equal(t, peekGlobalStacks("checkout"), countStacks(t, transport.captured()))
+}
+
+func TestRunDetachesAProcessThatLeftTheTarget(t *testing.T) {
+	t.Parallel()
+
+	executable, markers := scriptedPhpspy(t, map[int]string{
+		201: replayAndHold(t, "peek-global.txt"),
+	})
+	table := &processTable{}
+	table.set(worker(201))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := startRun(ctx, app.Config{Config: checkoutConfig(t, executable, ""), Transport: &captureTransport{}, Processes: table})
+
+	pid := pidOf(t, filepath.Join(markers, "pid.201"))
+
+	// A process the scan no longer lists for the target, here because it exited, is detached
+	// rather than traced until its phpspy notices.
+	table.set()
+	requireGone(t, pid)
 
 	cancel()
 	require.NoError(t, awaitRun(t, done))
 }
 
-func TestRunRotatesASlotBetweenWaitingProcesses(t *testing.T) {
+func TestRunLetsADisabledTargetClaimItsProcesses(t *testing.T) {
 	t.Parallel()
 
 	executable, markers := scriptedPhpspy(t, map[int]string{
+		300: "touch \"$MARKER_DIR/started.$pid\"\nexec sleep 60",
+		301: "touch \"$MARKER_DIR/started.$pid\"\nexec sleep 60",
+	})
+	table := &processTable{}
+	table.set(listener(300), script(301))
+
+	// The queue target is switched off and comes first: its listeners are not profiled by
+	// the broader cli target below it, while a plain script still falls through to cli.
+	cfg := loadConfig(t, `
+pyroscope: { url: `+pyroscopeURL+` }
+app: checkout
+phpspy: `+executable+`
+stats-interval: 0
+targets:
+  - name: queue
+    match: { comm: php, cmdline: 'queue:listen' }
+    max-processes: 0
+  - name: cli
+    match: { comm: php }
+    max-processes: 2
+    scan-interval: 100ms
+`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := startRun(ctx, app.Config{Config: cfg, Transport: &captureTransport{}, Processes: table})
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(markers, "started.301"))
+		return err == nil
+	}, shutdownSafetyNet, 20*time.Millisecond, "the script never reached the cli target")
+	time.Sleep(settleTime)
+
+	cancel()
+	require.NoError(t, awaitRun(t, done))
+
+	require.NoFileExists(t, filepath.Join(markers, "started.300"), "a disabled target's process must not fall through to a later target")
+}
+
+func TestRunKeepsScanningAfterAFailedScan(t *testing.T) {
+	t.Parallel()
+
+	executable, _ := scriptedPhpspy(t, map[int]string{201: replayAndHold(t, "peek-global.txt")})
+	table := &failingTable{}
+	table.failures.Store(3)
+	table.set(worker(201))
+	transport := &captureTransport{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := startRun(ctx, app.Config{Config: checkoutConfig(t, executable, ""), Transport: transport, Processes: table})
+
+	require.Eventually(t, func() bool {
+		return len(transport.captured()) > 0
+	}, shutdownSafetyNet, 20*time.Millisecond, "a scan that failed must be retried on the next interval")
+
+	cancel()
+	require.NoError(t, awaitRun(t, done))
+	require.Equal(t, peekGlobalStacks("checkout"), countStacks(t, transport.captured()))
+}
+
+func TestRunRotatesASlotBetweenWaitingProcesses(t *testing.T) {
+	t.Parallel()
+
+	// 202 replays a fixture without meta lines, so its samples land in a series of their own.
+	executable, _ := scriptedPhpspy(t, map[int]string{
 		201: replayAndHold(t, "peek-global.txt"),
-		202: replayAndHold(t, "peek-global.txt"),
+		202: replayAndHold(t, "request-info.txt"),
 	})
 	table := &processTable{}
 	table.set(worker(201), worker(202))
+	transport := &captureTransport{}
 
 	cfg := checkoutConfig(t, executable, "")
 	cfg.Targets[0].MaxProcesses = 1
@@ -169,14 +298,21 @@ func TestRunRotatesASlotBetweenWaitingProcesses(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := startRun(ctx, app.Config{Config: cfg, Transport: &captureTransport{}, Processes: table})
+	done := startRun(ctx, app.Config{Config: cfg, Transport: transport, Processes: table})
 
-	for _, pid := range []int{201, 202} {
-		pidOf(t, filepath.Join(markers, "pid."+strconv.Itoa(pid)))
-	}
+	require.Eventually(t, func() bool {
+		return len(profileNames(transport.captured())) == 3
+	}, shutdownSafetyNet, 20*time.Millisecond, "the single slot never rotated to the waiting process")
 
 	cancel()
 	require.NoError(t, awaitRun(t, done))
+
+	profiles := countStacks(t, transport.captured())
+	require.Contains(t, profiles, "checkout{env=production,source=fpm,uri=/orders/42}")
+	require.Equal(t, map[string]int{
+		`main /srv/app/public/index.php;App\Controller\OrderController::show;App\Repository\OrderRepository::find;mysqli::query`: 2,
+		`main /srv/app/bin/console;App\Queue\Worker::consume`:                                                                    1,
+	}, profiles["checkout{env=production,source=fpm}"], "everything the rotated-in process printed must be delivered")
 }
 
 func TestRunKillsAnAttachThatIsSilentlyDenied(t *testing.T) {
@@ -197,10 +333,7 @@ func TestRunKillsAnAttachThatIsSilentlyDenied(t *testing.T) {
 		SilentAttachTimeout: 200 * time.Millisecond,
 	})
 
-	pid := pidOf(t, filepath.Join(markers, "pid.201"))
-	require.Eventually(t, func() bool {
-		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
-	}, shutdownSafetyNet, 20*time.Millisecond, "the denied attach was left running")
+	requireGone(t, pidOf(t, filepath.Join(markers, "pid.201")))
 
 	cancel()
 	require.NoError(t, awaitRun(t, done))
@@ -259,7 +392,7 @@ func TestRunFailsWhenPhpspyCannotBeStarted(t *testing.T) {
 			name: "binary that cannot be executed is caught on the first attach",
 			executable: func(t *testing.T) string {
 				path := filepath.Join(t.TempDir(), "phpspy")
-				require.NoError(t, os.WriteFile(path, []byte("#!/nonexistent/interpreter\n"), 0o755))
+				writeExecutable(t, path, "#!/nonexistent/interpreter\n")
 				return path
 			},
 			wantErr: "cannot start",
@@ -331,9 +464,7 @@ func TestRunDeliversEverySampleOnCancellation(t *testing.T) {
 
 	require.Equal(t, merge(peekGlobalStacks("checkout"), requestInfoStacks("checkout")), countStacks(t, transport.captured()), "every sample accepted before the shutdown must be delivered")
 	for _, pid := range pids {
-		require.Eventually(t, func() bool {
-			return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
-		}, shutdownSafetyNet, 10*time.Millisecond, "phpspy %d outlived the shutdown", pid)
+		requireGone(t, pid)
 	}
 }
 
@@ -419,9 +550,7 @@ func TestRunStopsOnASignalAndAbortsTheDrainOnASecond(t *testing.T) {
 				require.ErrorIs(t, err, tc.wantErr)
 			}
 
-			require.Eventually(t, func() bool {
-				return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
-			}, shutdownSafetyNet, 10*time.Millisecond, "phpspy outlived the shutdown")
+			requireGone(t, pid)
 		})
 	}
 }

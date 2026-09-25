@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -34,9 +33,9 @@ type ProcessSource interface {
 	Scan() ([]procscan.Process, error)
 }
 
-// Config is the loaded configuration plus the seams tests use: a nil Transport keeps the real
-// one, a nil Processes reads the live procfs, and a SilentAttachTimeout at or below zero takes
-// the attach package's default.
+// Config is the configuration as config.Load validated it, plus the seams tests use: a nil
+// Transport keeps the real one, a nil Processes reads the live procfs, and a
+// SilentAttachTimeout at or below zero takes the attach package's default.
 type Config struct {
 	config.Config
 	Transport           http.RoundTripper
@@ -73,7 +72,7 @@ func Run(ctx context.Context, cfg Config) error {
 	samples := make(chan *collector.Sample, sampleBuffer)
 	ingest := pyroscope.StartIngest(drainCtx, cfg.ingestConfig())
 
-	batchTicker := time.NewTicker(cfg.batchInterval())
+	batchTicker := time.NewTicker(cfg.BatchInterval)
 	defer batchTicker.Stop()
 
 	collectorDone := make(chan struct{})
@@ -99,7 +98,7 @@ func Run(ctx context.Context, cfg Config) error {
 	<-runCtx.Done()
 	log.Info().Msg("shutting down")
 
-	drainErr := awaitDrain(drained, aborted, abandonDrain, cfg.drainTimeout())
+	drainErr := awaitDrain(drained, aborted, abandonDrain, cfg.DrainTimeout)
 
 	return errors.Join(profiling.fatal(), drainErr)
 }
@@ -138,22 +137,6 @@ func maskedToken(token string) string {
 	return "***"
 }
 
-func (cfg Config) batchInterval() time.Duration {
-	if cfg.BatchInterval <= 0 {
-		return config.DefaultBatchInterval
-	}
-
-	return cfg.BatchInterval
-}
-
-func (cfg Config) drainTimeout() time.Duration {
-	if cfg.DrainTimeout <= 0 {
-		return config.DefaultDrainTimeout
-	}
-
-	return cfg.DrainTimeout
-}
-
 // Every sample carries its target's static tags already, so the ingest adds none of its own.
 func (cfg Config) ingestConfig() pyroscope.Config {
 	return pyroscope.Config{
@@ -185,7 +168,6 @@ func forwardSignals(runCtx context.Context, stop context.CancelFunc) (<-chan str
 	aborted := make(chan struct{})
 	done := make(chan struct{})
 
-	var once sync.Once
 	go func() {
 		for {
 			select {
@@ -196,7 +178,7 @@ func forwardSignals(runCtx context.Context, stop context.CancelFunc) (<-chan str
 					continue
 				}
 
-				once.Do(func() { close(aborted) })
+				close(aborted)
 				return
 			case <-done:
 				return

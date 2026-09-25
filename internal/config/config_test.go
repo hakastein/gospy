@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hakastein/gospy/internal/config"
+	"github.com/hakastein/gospy/internal/phpspy"
 	"github.com/hakastein/gospy/internal/procscan"
 	"github.com/hakastein/gospy/internal/tag"
 )
@@ -74,11 +75,7 @@ func TestLoadAppliesEveryDefault(t *testing.T) {
 	require.Equal(t, time.Minute, target.Rotate)
 	require.Equal(t, time.Second, target.ScanInterval)
 	require.Empty(t, target.Tags)
-	require.Empty(t, target.StaticTags)
-	require.Empty(t, target.DynamicTags)
-	require.Empty(t, target.Entrypoints)
-	require.False(t, target.TagEntrypoint)
-	require.True(t, target.KeepEntrypointName)
+	require.Equal(t, phpspy.ParserConfig{KeepEntrypointName: true, DynamicTags: map[string][]tag.DynamicTag{}}, target.Parser)
 	require.Empty(t, target.PhpspyArgs)
 }
 
@@ -161,22 +158,23 @@ targets:
 	require.Equal(t, 30*time.Second, fpm.Rotate)
 	require.Equal(t, 500*time.Millisecond, fpm.ScanInterval)
 	require.Equal(t, []string{"env=production", "host=web-02", "source=fpm", `uri={{ "glopeek server.REQUEST_URI" "^([^?]+)\\?.*$" "$1" }}`}, fpm.Tags, "target tags lie over the global ones")
-	require.Equal(t, "env=production,host=web-02,source=fpm", fpm.StaticTags)
-	require.Len(t, fpm.DynamicTags["glopeek server.REQUEST_URI"], 1)
-	uri := fpm.DynamicTags["glopeek server.REQUEST_URI"][0]
+	require.Equal(t, "env=production,host=web-02,source=fpm", fpm.Parser.StaticTags)
+	require.Len(t, fpm.Parser.DynamicTags["glopeek server.REQUEST_URI"], 1)
+	uri := fpm.Parser.DynamicTags["glopeek server.REQUEST_URI"][0]
 	require.Equal(t, "uri", uri.TagKey)
 	require.Equal(t, `^([^?]+)\?.*$`, uri.TagRegexp.String())
 	require.Equal(t, "$1", uri.TagReplace)
-	require.Equal(t, []string{"index.php", "/srv/bin/**/*.php"}, fpm.Entrypoints)
-	require.True(t, fpm.TagEntrypoint)
-	require.False(t, fpm.KeepEntrypointName)
+	require.Equal(t, []string{"index.php", "/srv/bin/**/*.php"}, fpm.Parser.Entrypoints)
+	require.True(t, fpm.Parser.TagEntrypoint)
+	require.False(t, fpm.Parser.KeepEntrypointName)
+	require.Zero(t, fpm.Parser.SampleRate, "the attach sets the rate")
 	require.Equal(t, []string{"--max-depth=-1", "--php-version=74", "-c"}, fpm.PhpspyArgs)
 
 	cron := cfg.Targets[1]
 	require.Equal(t, "cron", cron.Name)
 	require.False(t, cron.Enabled())
 	require.Zero(t, cron.Rotate)
-	require.Equal(t, "env=production,host=web-01,source=cron", cron.StaticTags)
+	require.Equal(t, "env=production,host=web-01,source=cron", cron.Parser.StaticTags)
 
 	require.Equal(t, procscan.FieldUID|procscan.FieldExe, cfg.ScanFields())
 }
@@ -196,9 +194,9 @@ func TestLoadExpandsTheEnvironment(t *testing.T) {
 			content: `
 pyroscope: { url: "${PYROSCOPE_URL}" }
 app: checkout
-targets: [{ name: fpm, match: { comm: php-fpm }, max-processes: "${THREADS}" }]
+targets: [{ name: fpm, match: { comm: php-fpm }, max-processes: "${SLOTS}" }]
 `,
-			env: map[string]string{"PYROSCOPE_URL": "http://pyroscope.test", "THREADS": "7"},
+			env: map[string]string{"PYROSCOPE_URL": "http://pyroscope.test", "SLOTS": "7"},
 			want: func(t *testing.T, cfg config.Config) {
 				require.Equal(t, "http://pyroscope.test", cfg.Pyroscope.URL)
 				require.Equal(t, 7, cfg.Targets[0].MaxProcesses, "an expanded value is typed by the schema, not by its quoting")
@@ -212,7 +210,7 @@ app: checkout
 targets:
   - name: fpm
     match: { comm: php-fpm }
-    max-processes: ${THREADS:-5}
+    max-processes: ${SLOTS:-5}
     rate: ${RATE:-10}
 `,
 			want: func(t *testing.T, cfg config.Config) {
@@ -225,9 +223,9 @@ targets:
 			content: `
 pyroscope: { url: http://pyroscope.test }
 app: checkout
-targets: [{ name: fpm, match: { comm: php-fpm }, max-processes: "${THREADS:-5}" }]
+targets: [{ name: fpm, match: { comm: php-fpm }, max-processes: "${SLOTS:-5}" }]
 `,
-			env: map[string]string{"THREADS": ""},
+			env: map[string]string{"SLOTS": ""},
 			want: func(t *testing.T, cfg config.Config) {
 				require.Equal(t, 5, cfg.Targets[0].MaxProcesses)
 			},
@@ -267,7 +265,31 @@ targets: [{ name: fpm, match: { comm: php-fpm }, max-processes: 1 }]
 			want: func(t *testing.T, cfg config.Config) {
 				require.Equal(t, "a$b", cfg.Tags["price"])
 				require.Equal(t, "$", cfg.Tags["literal"])
-				require.Equal(t, "/orders/$1", cfg.Targets[0].DynamicTags["uri"][0].TagReplace, "the $1 of a rewrite is not a reference")
+				require.Equal(t, "/orders/$1", cfg.Targets[0].Parser.DynamicTags["uri"][0].TagReplace, "the $1 of a rewrite is not a reference")
+			},
+		},
+		{
+			name: "a dynamic tag is left to the regexp engine",
+			content: `
+pyroscope: { url: http://pyroscope.test }
+app: checkout
+tags:
+  host: ${HOST}
+  route: '{{ "uri" "^/(?P<seg>[a-z]+)/.*$" "/${seg}/$$" }}'
+targets:
+  - name: fpm
+    match: { comm: php-fpm }
+    max-processes: 1
+    tags:
+      uri: '{{ "uri" "^([^?]+)\\?(?P<query>.*)$" "$1?${query}" }}'
+`,
+			env: map[string]string{"HOST": "web-01"},
+			want: func(t *testing.T, cfg config.Config) {
+				require.Equal(t, "web-01", cfg.Tags["host"], "a static tag is expanded")
+				dynamic := cfg.Targets[0].Parser.DynamicTags["uri"]
+				require.Len(t, dynamic, 2)
+				replacements := []string{dynamic[0].TagReplace, dynamic[1].TagReplace}
+				require.ElementsMatch(t, []string{"/${seg}/$$", "$1?${query}"}, replacements, "capture group references inside a dynamic tag are not environment references")
 			},
 		},
 		{
@@ -314,9 +336,9 @@ targets: [{ name: fpm, match: { comm: php-fpm }, max-processes: 1 }]
 			content: `
 pyroscope: { url: http://pyroscope.test }
 app: checkout
-targets: [{ name: fpm, match: { comm: php-fpm }, max-processes: "${THREADS}" }]
+targets: [{ name: fpm, match: { comm: php-fpm }, max-processes: "${SLOTS}" }]
 `,
-			env:     map[string]string{"THREADS": "many"},
+			env:     map[string]string{"SLOTS": "many"},
 			wantErr: `targets[0].max-processes: expected an integer, got "many"`,
 		},
 	}
@@ -451,8 +473,53 @@ func TestLoadRejectsABrokenConfiguration(t *testing.T) {
 		},
 		{
 			name:    "a list where a value is expected",
-			content: minimal + "app: [a, b]\n",
-			wantErr: "app: key given twice",
+			content: "pyroscope: { url: http://pyroscope.test }\napp: [a, b]\ntargets: [{ name: fpm, match: { comm: php-fpm }, max-processes: 1 }]\n",
+			wantErr: "app: expected a single value",
+		},
+		{
+			name:    "a null matcher",
+			content: "pyroscope: { url: http://pyroscope.test }\napp: checkout\ntargets: [{ name: fpm, match: { comm: ~, cmdline: pool }, max-processes: 1 }]\n",
+			wantErr: "targets[0].match.comm: a matcher cannot be empty",
+		},
+		{
+			name:    "an empty regex matcher",
+			content: "pyroscope: { url: http://pyroscope.test }\napp: checkout\ntargets: [{ name: fpm, match: { cmdline: '' }, max-processes: 1 }]\n",
+			wantErr: "targets[0].match.cmdline: a matcher cannot be empty",
+		},
+		{
+			name:    "a comm longer than the kernel keeps",
+			content: "pyroscope: { url: http://pyroscope.test }\napp: checkout\ntargets: [{ name: fpm, match: { comm: /usr/sbin/php-fpm }, max-processes: 1 }]\n",
+			wantErr: `targets[0].match.comm: comm "/usr/sbin/php-fpm" is longer than the 15 characters the kernel keeps of a process name`,
+		},
+		{
+			name:    "a zero batch interval",
+			content: minimal + "batch-interval: 0\n",
+			wantErr: "batch-interval must be above zero",
+		},
+		{
+			name:    "a zero drain timeout",
+			content: minimal + "drain-timeout: 0s\n",
+			wantErr: "drain-timeout must be above zero",
+		},
+		{
+			name:    "more slots than a host can hold",
+			content: "pyroscope: { url: http://pyroscope.test }\napp: checkout\ntargets: [{ name: fpm, match: { comm: php-fpm }, max-processes: 2000000000 }]\n",
+			wantErr: `target "fpm": max-processes cannot exceed 10000, got 2000000000`,
+		},
+		{
+			name:    "more pyroscope workers than sensible",
+			content: "pyroscope: { url: http://pyroscope.test, workers: 1000000 }\napp: checkout\ntargets: [{ name: fpm, match: { comm: php-fpm }, max-processes: 1 }]\n",
+			wantErr: "pyroscope.workers cannot exceed 1000, got 1000000",
+		},
+		{
+			name:    "a bare word in phpspy-args",
+			content: target("    phpspy-args: [-c, php]\n"),
+			wantErr: `target "fpm": phpspy-args: phpspy argument "php" is not a flag`,
+		},
+		{
+			name:    "an abbreviated managed phpspy flag",
+			content: target("    phpspy-args: [--rate=250]\n"),
+			wantErr: `target "fpm": phpspy-args: phpspy flag -H/--rate-hz is managed by gospy and cannot be passed`,
 		},
 		{
 			name:    "a mapping where a value is expected",
@@ -650,6 +717,48 @@ func TestLoadWarnsAboutTargetsThatShareStaticTags(t *testing.T) {
 	}
 }
 
+func TestLoadWarnsAboutATokenOverPlainHTTP(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		url          string
+		token        string
+		wantWarnings []string
+	}{
+		{
+			name:  "https with a token",
+			url:   "https://pyroscope.test",
+			token: "secret",
+		},
+		{
+			name: "http without a token",
+			url:  "http://pyroscope.test",
+		},
+		{
+			name:         "http with a token",
+			url:          "http://pyroscope.test:4040",
+			token:        "secret",
+			wantWarnings: []string{"pyroscope.url http://pyroscope.test:4040 is plain http: the authentication token travels in cleartext"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			content := "pyroscope: { url: " + tc.url + " }\napp: checkout\ntargets: [{ name: fpm, match: { comm: php-fpm }, max-processes: 1 }]\n"
+			env := map[string]string{}
+			if tc.token != "" {
+				env["GOSPY_PYROSCOPE_AUTH"] = tc.token
+			}
+
+			_, warnings := load(t, content, env)
+			require.Equal(t, tc.wantWarnings, warnings)
+		})
+	}
+}
+
 func TestLoadKeepsTargetsInFileOrder(t *testing.T) {
 	t.Parallel()
 
@@ -770,9 +879,9 @@ func TestScanFieldsFollowTheEnabledMatchers(t *testing.T) {
 			want:    procscan.FieldExe,
 		},
 		{
-			name:    "a disabled target does not count",
+			name:    "a disabled target still claims its processes and needs its fields",
 			targets: "[{ name: fpm, match: { exe: /usr/local/sbin/php-fpm, uid: 33 }, max-processes: 0 }]",
-			want:    0,
+			want:    procscan.FieldUID | procscan.FieldExe,
 		},
 	}
 
@@ -802,8 +911,8 @@ targets:
       debug: false
 `, nil)
 
-	require.Equal(t, "debug=false,release=2024-01-01,version=1.0", cfg.Targets[0].StaticTags, "a tag value is text however YAML would have typed it")
-	require.Equal(t, map[string][]tag.DynamicTag{}, cfg.Targets[0].DynamicTags)
+	require.Equal(t, "debug=false,release=2024-01-01,version=1.0", cfg.Targets[0].Parser.StaticTags, "a tag value is text however YAML would have typed it")
+	require.Equal(t, map[string][]tag.DynamicTag{}, cfg.Targets[0].Parser.DynamicTags)
 }
 
 func TestLoadRejectsAnUnknownKeyNestedAnywhere(t *testing.T) {

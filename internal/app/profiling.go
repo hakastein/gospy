@@ -57,7 +57,7 @@ func newProfiling(cfg Config, executable string, samples chan<- *collector.Sampl
 	for index, cfgTarget := range cfg.Targets {
 		logger := log.With().Str("target", cfgTarget.Name).Logger()
 		if !cfgTarget.Enabled() {
-			logger.Warn().Msg("target disabled: max-processes is 0")
+			logger.Warn().Msg("target disabled: max-processes is 0, its processes are claimed but not profiled")
 			continue
 		}
 
@@ -87,7 +87,6 @@ func (p *profiling) run(ctx context.Context) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() { p.scanLoop(ctx) })
-	wg.Go(func() { p.reportStatistics(ctx) })
 	for _, runner := range p.runners {
 		wg.Go(func() { runner.run(ctx) })
 	}
@@ -154,8 +153,10 @@ func (p *profiling) scanInterval() time.Duration {
 	return interval
 }
 
-// classify hands every process to the first target in file order whose matchers all hold.
-// gospy's own process and everything under it (phpspy, sh, objdump) are never candidates.
+// classify hands every process to the first target in file order whose matchers all hold,
+// a disabled target included: its processes are claimed and not profiled, they do not fall
+// through to a later target. gospy's own process and everything under it (phpspy, sh,
+// objdump) are never candidates.
 func classify(processes []procscan.Process, targets []config.Target, ownPID int) *classified {
 	parents := make(map[int]int, len(processes))
 	for _, process := range processes {
@@ -195,24 +196,4 @@ func descendsFrom(parents map[int]int, pid, ancestor int) bool {
 	}
 
 	return false
-}
-
-func (p *profiling) reportStatistics(ctx context.Context) {
-	if p.cfg.StatsInterval <= 0 {
-		return
-	}
-
-	ticker := time.NewTicker(p.cfg.StatsInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			for _, runner := range p.runners {
-				runner.logStatistics()
-			}
-		}
-	}
 }

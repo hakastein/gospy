@@ -225,14 +225,13 @@ func TestIngestSendsBatchOverTheWire(t *testing.T) {
 
 			harness := startIngest(context.Background(), ingestOptions{
 				cfg: pyroscope.Config{
-					URL:        tc.url,
-					AuthToken:  tc.authToken,
-					AppName:    "test.app",
-					StaticTags: "env=prod",
+					URL:       tc.url,
+					AuthToken: tc.authToken,
+					AppName:   "test.app",
 				},
 			})
 
-			harness.send(batch("region=us-west", map[string]int{"main;foo": 1, "main;bar": 2}))
+			harness.send(batch("env=prod,region=us-west", map[string]int{"main;foo": 1, "main;bar": 2}))
 
 			requests := harness.transport.captured()
 			require.Len(t, requests, 1)
@@ -261,36 +260,28 @@ func TestIngestComposesQuery(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name        string
-		staticTags  string
-		dynamicTags string
-		expected    string
+		name     string
+		tags     string
+		expected string
 	}{
 		{
 			name:     "no tags",
 			expected: "myapp{}",
 		},
 		{
-			name:       "static tags only",
-			staticTags: "env=prod",
-			expected:   "myapp{env=prod}",
+			name:     "one tag",
+			tags:     "env=prod",
+			expected: "myapp{env=prod}",
 		},
 		{
-			name:        "dynamic tags only",
-			dynamicTags: "user=admin",
-			expected:    "myapp{user=admin}",
+			name:     "a tag set",
+			tags:     "env=prod,user=admin",
+			expected: "myapp{env=prod,user=admin}",
 		},
 		{
-			name:        "static and dynamic tags",
-			staticTags:  "env=prod",
-			dynamicTags: "user=admin",
-			expected:    "myapp{env=prod,user=admin}",
-		},
-		{
-			name:        "hostile dynamic value keeps the label set well formed",
-			staticTags:  "env=prod",
-			dynamicTags: "uri=" + tag.DynamicTag{TagKey: "uri"}.GetValue(`/x}}, evil=1 {`),
-			expected:    "myapp{env=prod,uri=/x__͵_evil_1__}",
+			name:     "hostile dynamic value keeps the label set well formed",
+			tags:     "env=prod,uri=" + tag.DynamicTag{TagKey: "uri"}.GetValue(`/x}}, evil=1 {`),
+			expected: "myapp{env=prod,uri=/x__͵_evil_1__}",
 		},
 	}
 
@@ -299,24 +290,21 @@ func TestIngestComposesQuery(t *testing.T) {
 			t.Parallel()
 
 			harness := startIngest(context.Background(), ingestOptions{
-				cfg: pyroscope.Config{
-					AppName:    "myapp",
-					StaticTags: tc.staticTags,
-				},
+				cfg: pyroscope.Config{AppName: "myapp"},
 			})
 
-			sent := batchAt(42, tc.dynamicTags, map[string]int{"main;foo": 1})
+			sent := batchAt(42, tc.tags, map[string]int{"main;foo": 1})
 			harness.send(sent)
 
 			requests := harness.transport.captured()
 			require.Len(t, requests, 1)
 			query := requests[0].query
 
-			assert.Equal(t, tc.expected, query.Get("name"))
-			assert.Equal(t, fmt.Sprint(sent.From().Unix()), query.Get("from"))
-			assert.Equal(t, fmt.Sprint(sent.Until().Unix()), query.Get("until"))
-			assert.Equal(t, "42", query.Get("sampleRate"))
-			assert.Equal(t, "folded", query.Get("format"))
+			require.Equal(t, tc.expected, query.Get("name"))
+			require.Equal(t, fmt.Sprint(sent.From().Unix()), query.Get("from"))
+			require.Equal(t, fmt.Sprint(sent.Until().Unix()), query.Get("until"))
+			require.Equal(t, "42", query.Get("sampleRate"))
+			require.Equal(t, "folded", query.Get("format"))
 		})
 	}
 }
@@ -340,7 +328,7 @@ func TestIngestSendsEachBatchAtItsOwnSampleRate(t *testing.T) {
 	for _, request := range requests {
 		rates[request.query.Get("name")] = request.query.Get("sampleRate")
 	}
-	assert.Equal(t, map[string]string{"myapp{source=fpm}": "25", "myapp{source=cli}": "10"}, rates)
+	require.Equal(t, map[string]string{"myapp{source=fpm}": "25", "myapp{source=cli}": "10"}, rates)
 }
 
 func TestIngestReportsFailedSends(t *testing.T) {

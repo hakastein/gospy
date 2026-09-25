@@ -349,7 +349,7 @@ func TestPlanHoldsAFailedProcess(t *testing.T) {
 	heldAt(at(30*time.Second-time.Millisecond), "the first failure holds the process for 30 seconds")
 
 	failAt(at(30 * time.Second))
-	heldAt(at(30*time.Second+59*time.Second), "the second failure doubles the hold")
+	heldAt(at(30*time.Second+59*time.Second), "the second failure doubles the hold, whatever the rotation period")
 
 	failAt(at(90 * time.Second))
 	heldAt(at(90*time.Second+5*time.Minute), "the third failure in a row retires the process")
@@ -373,6 +373,65 @@ func TestPlanResetsTheHoldAfterASuccessfulAttach(t *testing.T) {
 
 	require.Empty(t, planner.Plan(only, at(41*time.Second+29*time.Second)).Attach)
 	require.Equal(t, only, planner.Plan(only, at(41*time.Second+30*time.Second)).Attach, "a clean attach in between opens a new streak with the base hold")
+}
+
+func TestPlanDetachesAProcessThatLeftTheTarget(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		matched []target.Process
+		want    []target.Detach
+	}{
+		{
+			name:    "the process is still listed",
+			matched: []target.Process{process(1), process(2)},
+			want:    nil,
+		},
+		{
+			name:    "the process is gone",
+			matched: []target.Process{process(2)},
+			want:    []target.Detach{{Process: process(1), Reason: target.Departure}},
+		},
+		{
+			name:    "the scan is empty",
+			matched: nil,
+			want:    []target.Detach{{Process: process(1), Reason: target.Departure}},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			planner := newPlanner(1, time.Minute)
+			require.Equal(t, []target.Process{process(1)}, planner.Plan([]target.Process{process(1), process(2)}, at(0)).Attach)
+
+			plan := planner.Plan(tc.matched, at(time.Second))
+			require.Equal(t, tc.want, plan.Detach)
+			require.Empty(t, plan.Attach, "the slot is taken until the detach ends")
+			require.Equal(t, 1, planner.Attached())
+
+			require.Empty(t, planner.Plan(tc.matched, at(2*time.Second)).Detach, "a departure is reported once")
+		})
+	}
+}
+
+func TestPlanDeparturesDoNotCountAgainstRotation(t *testing.T) {
+	t.Parallel()
+
+	planner := newPlanner(2, time.Minute)
+	traced(t, planner, at(0), map[target.Process]time.Time{process(3): at(0)})
+
+	matched := []target.Process{process(1), process(2), process(3)}
+	require.Equal(t, []target.Process{process(1), process(2)}, planner.Plan(matched, at(time.Second)).Attach)
+
+	plan := planner.Plan([]target.Process{process(2), process(3)}, at(2*time.Minute))
+	require.Equal(t, []target.Detach{{Process: process(1), Reason: target.Departure}}, plan.Detach, "a departure blocks the rotation of the same scan")
+
+	planner.Ended(process(1), at(2*time.Minute+time.Second), false)
+	next := planner.Plan([]target.Process{process(2), process(3)}, at(2*time.Minute+2*time.Second))
+	require.Equal(t, []target.Process{process(3)}, next.Attach)
 }
 
 func TestPlanForgetsAProcessThatExited(t *testing.T) {

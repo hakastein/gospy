@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
 	"sort"
@@ -33,6 +34,15 @@ const (
 	DefaultRotate           = time.Minute
 	DefaultScanInterval     = time.Second
 	MinScanInterval         = 100 * time.Millisecond
+)
+
+// Bounds on what the runtime sizes itself by: a slot costs a live phpspy and a worker a
+// goroutine, so a value past these is a typo, not a plan.
+const (
+	MaxTargetSlots      = 10000
+	MaxPyroscopeWorkers = 1000
+	// MaxCommLength is what the kernel keeps of a process name: a longer comm matcher can never match.
+	MaxCommLength = 15
 )
 
 // AuthVariable is the only place the Pyroscope token is read from: the file can be baked
@@ -72,14 +82,10 @@ type Target struct {
 	ScanInterval time.Duration
 	// Tags are the target's tags with the global ones underneath, as key=value lines.
 	Tags []string
-	// StaticTags is the Pyroscope label set every sample of the target carries; DynamicTags
-	// map phpspy meta keys to the tags read per request.
-	StaticTags         string
-	DynamicTags        map[string][]tag.DynamicTag
-	Entrypoints        []string
-	TagEntrypoint      bool
-	KeepEntrypointName bool
-	PhpspyArgs         []string
+	// Parser is how the target's phpspy output turns into samples: its static tag set, the
+	// dynamic tags read per request and the entry-point rules. The attach sets the rate.
+	Parser     phpspy.ParserConfig
+	PhpspyArgs []string
 }
 
 // Enabled is false for a target whose slot count is zero: it is skipped at startup.
@@ -117,13 +123,11 @@ func (matcher Matcher) Matches(process procscan.Process) bool {
 	return true
 }
 
-// ScanFields is what the scanner has to read for the enabled targets' matchers to work.
+// ScanFields is what the scanner has to read for the matchers to work. A disabled target
+// still claims the processes it matches, so its matchers count too.
 func (cfg Config) ScanFields() procscan.Fields {
 	var fields procscan.Fields
 	for _, target := range cfg.Targets {
-		if !target.Enabled() {
-			continue
-		}
 		if target.Match.UID != nil {
 			fields |= procscan.FieldUID
 		}
@@ -285,11 +289,11 @@ func parseTags(n node) (map[string]string, error) {
 
 func parseTarget(n node, globalTags map[string]string) (Target, error) {
 	target := Target{
-		Rate:               DefaultTargetRate,
-		Rotate:             DefaultRotate,
-		ScanInterval:       DefaultScanInterval,
-		KeepEntrypointName: true,
-		MaxProcesses:       -1,
+		Rate:         DefaultTargetRate,
+		Rotate:       DefaultRotate,
+		ScanInterval: DefaultScanInterval,
+		Parser:       phpspy.ParserConfig{KeepEntrypointName: true},
+		MaxProcesses: -1,
 	}
 
 	pairs, err := n.mapping()
@@ -319,11 +323,11 @@ func parseTarget(n node, globalTags map[string]string) (Target, error) {
 		case "tags":
 			tags, err = parseTags(pair.value)
 		case "entrypoints":
-			target.Entrypoints, err = pair.value.strings()
+			target.Parser.Entrypoints, err = pair.value.strings()
 		case "tag-entrypoint":
-			target.TagEntrypoint, err = pair.value.boolean()
+			target.Parser.TagEntrypoint, err = pair.value.boolean()
 		case "keep-entrypoint-name":
-			target.KeepEntrypointName, err = pair.value.boolean()
+			target.Parser.KeepEntrypointName, err = pair.value.boolean()
 		case "phpspy-args":
 			target.PhpspyArgs, err = pair.value.strings()
 		default:
@@ -349,6 +353,9 @@ func parseTarget(n node, globalTags map[string]string) (Target, error) {
 	if target.Rate < 1 {
 		return Target{}, n.errorf("target %q: rate must be at least 1 Hz, got %d", target.Name, target.Rate)
 	}
+	if target.MaxProcesses > MaxTargetSlots {
+		return Target{}, n.errorf("target %q: max-processes cannot exceed %d, got %d", target.Name, MaxTargetSlots, target.MaxProcesses)
+	}
 	if target.ScanInterval < MinScanInterval {
 		return Target{}, n.errorf("target %q: scan-interval must be at least %s, got %s", target.Name, MinScanInterval, target.ScanInterval)
 	}
@@ -357,7 +364,7 @@ func parseTarget(n node, globalTags map[string]string) (Target, error) {
 	}
 
 	target.Tags = mergeTags(globalTags, tags)
-	target.StaticTags, target.DynamicTags, err = tag.ParseInput(target.Tags)
+	target.Parser.StaticTags, target.Parser.DynamicTags, err = tag.ParseInput(target.Tags)
 	if err != nil {
 		return Target{}, n.errorf("target %q: tags: %s", target.Name, err)
 	}
@@ -378,11 +385,14 @@ func parseMatcher(n node) (Matcher, error) {
 	for _, pair := range pairs {
 		switch pair.key {
 		case "comm":
-			matcher.Comm, err = pair.value.scalar()
+			matcher.Comm, err = matcherText(pair.value)
+			if err == nil && len(matcher.Comm) > MaxCommLength {
+				err = pair.value.errorf("comm %q is longer than the %d characters the kernel keeps of a process name", matcher.Comm, MaxCommLength)
+			}
 		case "cmdline":
 			matcher.Cmdline, err = parseRegexp(pair.value)
 		case "exe":
-			matcher.Exe, err = pair.value.scalar()
+			matcher.Exe, err = matcherText(pair.value)
 		case "uid":
 			var uid int
 			uid, err = pair.value.integer()
@@ -404,8 +414,22 @@ func parseMatcher(n node) (Matcher, error) {
 	return matcher, nil
 }
 
+// matcherText reads a matcher value that has to say something: an empty or null one would
+// silently match nothing, or everything.
+func matcherText(n node) (string, error) {
+	text, err := n.text()
+	if err != nil {
+		return "", err
+	}
+	if text == "" {
+		return "", n.errorf("a matcher cannot be empty")
+	}
+
+	return text, nil
+}
+
 func parseRegexp(n node) (*regexp.Regexp, error) {
-	text, err := n.scalar()
+	text, err := matcherText(n)
 	if err != nil {
 		return nil, err
 	}
@@ -421,12 +445,8 @@ func parseRegexp(n node) (*regexp.Regexp, error) {
 // mergeTags lays the target's tags over the global ones and renders them as key=value lines.
 func mergeTags(global, own map[string]string) []string {
 	merged := make(map[string]string, len(global)+len(own))
-	for key, value := range global {
-		merged[key] = value
-	}
-	for key, value := range own {
-		merged[key] = value
-	}
+	maps.Copy(merged, global)
+	maps.Copy(merged, own)
 
 	lines := make([]string, 0, len(merged))
 	for key, value := range merged {
@@ -455,6 +475,12 @@ func validate(cfg Config) error {
 	}
 	if cfg.Phpspy == "" {
 		return errors.New("phpspy cannot be empty")
+	}
+	if cfg.BatchInterval <= 0 {
+		return errors.New("batch-interval must be above zero")
+	}
+	if cfg.DrainTimeout <= 0 {
+		return errors.New("drain-timeout must be above zero")
 	}
 
 	if err := validatePyroscope(cfg.Pyroscope); err != nil {
@@ -495,6 +521,9 @@ func validatePyroscope(pyroscope Pyroscope) error {
 	if pyroscope.Workers < 1 {
 		return fmt.Errorf("pyroscope.workers must be at least 1, got %d", pyroscope.Workers)
 	}
+	if pyroscope.Workers > MaxPyroscopeWorkers {
+		return fmt.Errorf("pyroscope.workers cannot exceed %d, got %d", MaxPyroscopeWorkers, pyroscope.Workers)
+	}
 	if pyroscope.RateMB < 0 {
 		return fmt.Errorf("pyroscope.rate-mb must not be negative, got %v", pyroscope.RateMB)
 	}
@@ -508,10 +537,17 @@ func validatePyroscope(pyroscope Pyroscope) error {
 	return nil
 }
 
-// warnings names the enabled targets whose static tag sets are identical: Pyroscope would
-// merge their samples into one series, which is rarely what two targets are for.
+// warnings are what the operator should hear at startup without being stopped: a token that
+// travels in cleartext, and enabled targets whose static tag sets are identical, which
+// Pyroscope would merge into one series.
 func warnings(cfg Config) []string {
 	var warnings []string
+
+	if cfg.Pyroscope.Auth != "" {
+		if parsed, err := url.Parse(cfg.Pyroscope.URL); err == nil && parsed.Scheme == "http" {
+			warnings = append(warnings, fmt.Sprintf("pyroscope.url %s is plain http: the authentication token travels in cleartext", cfg.Pyroscope.URL))
+		}
+	}
 
 	seen := make(map[string]string, len(cfg.Targets))
 	for _, target := range cfg.Targets {
@@ -519,14 +555,15 @@ func warnings(cfg Config) []string {
 			continue
 		}
 
-		if other, found := seen[target.StaticTags]; found {
+		tags := target.Parser.StaticTags
+		if other, found := seen[tags]; found {
 			warnings = append(warnings, fmt.Sprintf(
 				"targets %q and %q carry the same static tags {%s}: their samples merge into one series",
-				other, target.Name, target.StaticTags,
+				other, target.Name, tags,
 			))
 			continue
 		}
-		seen[target.StaticTags] = target.Name
+		seen[tags] = target.Name
 	}
 
 	return warnings

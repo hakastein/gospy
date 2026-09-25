@@ -29,12 +29,16 @@ func TestValidateArgs(t *testing.T) {
 			args: []string{"-f", "-v"},
 		},
 		{
-			name: "a flag phpspy does not know is left to phpspy",
-			args: []string{"--future-flag", "-Z"},
+			name: "an abbreviated flag that is not managed",
+			args: []string{"--max=3", "--peek-g", "server.REQUEST_URI", "--cont"},
 		},
 		{
-			name: "arguments of a traced command are not phpspy flags",
-			args: []string{"-c", "--", "php", "-p", "1"},
+			name: "a flag phpspy does not know is left to phpspy",
+			args: []string{"--future-flag", "--other=value", "-Z"},
+		},
+		{
+			name: "a letter phpspy does not know inside a cluster",
+			args: []string{"-Zc"},
 		},
 		{
 			name:    "pid in short form",
@@ -52,6 +56,36 @@ func TestValidateArgs(t *testing.T) {
 			wantErr: "phpspy flag -p/--pid is managed by gospy and cannot be passed",
 		},
 		{
+			name:    "pid abbreviated",
+			args:    []string{"--pi=1"},
+			wantErr: "phpspy flag -p/--pid is managed by gospy and cannot be passed",
+		},
+		{
+			name:    "the rate abbreviated",
+			args:    []string{"--rate=250"},
+			wantErr: "phpspy flag -H/--rate-hz is managed by gospy and cannot be passed",
+		},
+		{
+			name:    "the rate abbreviated with a separate value",
+			args:    []string{"--rate", "250"},
+			wantErr: "phpspy flag -H/--rate-hz is managed by gospy and cannot be passed",
+		},
+		{
+			name:    "top abbreviated",
+			args:    []string{"--to"},
+			wantErr: "phpspy flag -t/--top is managed by gospy and cannot be passed",
+		},
+		{
+			name:    "the sleep interval abbreviated",
+			args:    []string{"--sl=1000000"},
+			wantErr: "phpspy flag -s/--sleep-ns is managed by gospy and cannot be passed",
+		},
+		{
+			name:    "an ambiguous abbreviation",
+			args:    []string{"--p", "1"},
+			wantErr: "phpspy flag --p is ambiguous: it could be --pid, --pgrep, --php-version, --pause-process, --peek-var, --peek-global",
+		},
+		{
 			name:    "a managed flag inside a cluster",
 			args:    []string{"-cT", "8"},
 			wantErr: "phpspy flag -T/--threads is managed by gospy and cannot be passed",
@@ -60,6 +94,16 @@ func TestValidateArgs(t *testing.T) {
 			name:    "a managed switch inside a cluster",
 			args:    []string{"-c1"},
 			wantErr: "phpspy flag -1/--single-line is managed by gospy and cannot be passed",
+		},
+		{
+			name:    "a managed flag behind a letter phpspy does not know",
+			args:    []string{"-Zt"},
+			wantErr: "phpspy flag -t/--top is managed by gospy and cannot be passed",
+		},
+		{
+			name:    "a managed flag with a value behind a letter phpspy does not know",
+			args:    []string{"-ZH", "1"},
+			wantErr: "phpspy flag -H/--rate-hz is managed by gospy and cannot be passed",
 		},
 		{
 			name:    "pgrep mode",
@@ -102,6 +146,11 @@ func TestValidateArgs(t *testing.T) {
 			wantErr: "phpspy flag -t/--top is managed by gospy and cannot be passed",
 		},
 		{
+			name:    "quiet silences the errors gospy reads",
+			args:    []string{"-q"},
+			wantErr: "phpspy flag -q/--quiet is managed by gospy and cannot be passed",
+		},
+		{
 			name:    "version",
 			args:    []string{"--version"},
 			wantErr: "phpspy flag -v/--version is managed by gospy and cannot be passed",
@@ -116,6 +165,31 @@ func TestValidateArgs(t *testing.T) {
 			args:    []string{"--top=false"},
 			wantErr: "phpspy flag -t/--top is managed by gospy and cannot be passed",
 		},
+		{
+			name:    "a bare word ends phpspy's option parsing",
+			args:    []string{"php", "-c"},
+			wantErr: `phpspy argument "php" is not a flag: phpspy stops reading options at the first bare word`,
+		},
+		{
+			name:    "a command to trace",
+			args:    []string{"-c", "--", "php", "script.php"},
+			wantErr: `phpspy argument "--" is not a flag`,
+		},
+		{
+			name:    "a value for a flag phpspy does not know has to be inline",
+			args:    []string{"--future-flag", "value"},
+			wantErr: `phpspy argument "value" is not a flag`,
+		},
+		{
+			name:    "a flag without its value",
+			args:    []string{"-c", "--max-depth"},
+			wantErr: "phpspy flag -n/--max-depth needs a value",
+		},
+		{
+			name:    "a short flag without its value",
+			args:    []string{"-cb"},
+			wantErr: "phpspy flag -b/--buffer-size needs a value",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -129,7 +203,7 @@ func TestValidateArgs(t *testing.T) {
 				return
 			}
 
-			require.EqualError(t, err, tc.wantErr)
+			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }

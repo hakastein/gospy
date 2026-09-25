@@ -17,7 +17,8 @@ type Process struct {
 	Comm string
 	// Cmdline is the command line with its NUL separators replaced by spaces.
 	Cmdline string
-	// Exe is the executable path; empty when the link could not be read.
+	// Exe is the executable path, without the " (deleted)" mark of a binary replaced on disk;
+	// empty when the link could not be read.
 	Exe string
 }
 
@@ -31,10 +32,11 @@ const (
 	FieldExe
 )
 
-// Scanner reads a procfs tree.
+// Scanner reads a procfs tree. It is not safe for concurrent use.
 type Scanner struct {
 	root   string
 	fields Fields
+	buffer []byte
 }
 
 // New returns a Scanner over the procfs tree at root; an empty root means DefaultRoot.

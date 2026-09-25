@@ -200,16 +200,16 @@ The file is YAML. Every key is shown here with its default; only `pyroscope.url`
 ```yaml
 pyroscope:
   url: https://pyroscope.example.com   # required; posts go to <url>/ingest, a query string is kept
-  timeout: 10s                         # per request, and per retry of it
-  workers: 5                           # requests sent concurrently; at least 1
+  timeout: 10s                         # per request, and per retry of it; above 0
+  workers: 5                           # requests sent concurrently; 1 to 1000
   rate-mb: 4                           # upload limit in MB/s (1 MB = 1,048,576 bytes); 0 is unlimited
   rate-burst-mb: 6                     # upload burst in MB; must be above 0 unless rate-mb is 0
 app: my-app                            # required; the application name in Pyroscope
 tags: {}                               # global static tags, key: value; see Tags
 phpspy: phpspy                         # the binary; resolved on PATH when it has no slash
-batch-interval: 5s                     # window over which samples are collected before a batch is sent
+batch-interval: 5s                     # window over which samples are collected before a batch is sent; above 0
 stats-interval: 10s                    # interval of the statistics lines; 0 disables them
-drain-timeout: 10s                     # how long shutdown keeps sending buffered batches
+drain-timeout: 10s                     # how long shutdown keeps sending buffered batches; above 0
 instance-name: gospy                   # value of the `instance` field on every log line
 targets: []                            # required; at least one target, see Targets
 ```
@@ -233,11 +233,12 @@ Every value may reference the environment, so per-host settings keep coming from
 | `${VAR:-default}` | The value of `VAR`, or `default` when `VAR` is unset or empty. |
 | `$$` | A literal `$`. |
 
-A `$` followed by anything else is kept as written, so the `$1` of a tag rewrite needs no
-escaping. References are expanded before the value is typed, so `max-processes: ${GOSPY_THREADS_FPM:-5}`
-is the integer 5. Inside a flow mapping (`{ key: value }`) quote the reference, because YAML reads
-`{` and `}` there as syntax: `{ max-processes: "${GOSPY_THREADS_FPM:-5}" }`. Keys are never
-expanded.
+A `$` followed by anything else is kept as written. References are expanded before the value is
+typed, so `max-processes: ${GOSPY_THREADS_FPM:-5}` is the integer 5. Inside a flow mapping
+(`{ key: value }`) quote the reference, because YAML reads `{` and `}` there as syntax:
+`{ max-processes: "${GOSPY_THREADS_FPM:-5}" }`. Keys are never expanded, and neither is a
+dynamic tag (a `tags` value that opens with `{{`): its `$1` and `${name}` belong to the regexp
+engine, not to the environment.
 
 ## Targets
 
@@ -253,12 +254,12 @@ its parent.
 targets:
   - name: fpm                          # required, unique; letters, digits, '_', '-', '.'
     match:                             # required, at least one matcher; all must hold
-      comm: php-fpm                    # exact match against /proc/<pid>/comm (15 characters at most)
+      comm: php-fpm                    # exact match against /proc/<pid>/comm, 15 characters at most
       cmdline: '^php-fpm: pool '       # RE2 regex searched in the command line
-      exe: /usr/local/sbin/php-fpm     # exact path of the executable
+      exe: /usr/local/sbin/php-fpm     # exact path of the executable, as it was started
       uid: 33                          # real user id
       exclude: 'pool admin'            # RE2 regex; a match on the command line rejects the process
-    max-processes: 5                   # required; the slot count. 0 disables the target
+    max-processes: 5                   # required; the slot count, up to 10000. 0 disables the target
     rate: 99                           # sample rate in Hz, at least 1
     rotate: 60s                        # detach an attach this old when a process is waiting; 0 never rotates
     scan-interval: 1s                  # at least 100ms
@@ -272,11 +273,21 @@ targets:
 The command line a matcher sees is `/proc/<pid>/cmdline` with its NUL separators replaced by
 spaces and the padding a process leaves after rewriting its title removed, so a php-fpm worker
 reads `php-fpm: pool www` and a queue listener `php console.php queue:listen --memory=512`.
-`comm` is the kernel's 15-character process name, which is what `pgrep -x` matched before.
+`comm` is the kernel's 15-character process name, which is what `pgrep -x` matched before; a
+longer `comm` matcher could never match and is rejected. `exe` is the path the process was
+started from, even after the binary on disk was replaced (the kernel's ` (deleted)` mark is
+dropped). An empty or null matcher value is an error.
 
-A target with `max-processes: 0` is disabled: gospy logs that at startup and skips it entirely,
-so `GOSPY_THREADS_FPM=0` still means "no fpm profiling on this host". Disabling every target is
-allowed; gospy then runs, logs a warning, and profiles nothing.
+A target with `max-processes: 0` is disabled: gospy logs that at startup and starts nothing for
+it, so `GOSPY_THREADS_FPM=0` still means "no fpm profiling on this host". Its matchers still
+claim the processes they select, so those do not fall through to a broader target below it:
+switching a target off never moves its processes into another series. Remove the target to let
+them through. Disabling every target is allowed; gospy then runs, logs a warning, and profiles
+nothing.
+
+A process that leaves a target's matched set while attached, because it exited or because its
+command line now belongs to another target, is detached on the next scan, so no process is
+traced by two targets at once.
 
 ### Recipes
 
@@ -479,17 +490,22 @@ more file per process per scan; the other matchers need none.
 
 An attach ends in one of three ways:
 
-- **phpspy exits 0**: the process it traced ended. The slot is freed; nothing is held against
-  the process.
+- **phpspy exits 0**: the process it traced ended. The slot is freed once the next scan
+  confirms the process is gone; nothing is held against it. A process that is still running
+  after its phpspy returned 0 did not end, so that exit counts as a failed attach instead of a
+  reason to run phpspy on it again every scan.
 - **phpspy exits non-zero**, or its output cannot be read: a failed attach. The process enters a
-  hold of 30 seconds, doubling with every consecutive failure and capped at the rotation period
-  or 5 minutes, whichever is larger. After three consecutive failures the process is not retried
-  until it exits. Its PID may then be reused: a new start time is a new process.
+  hold of 30 seconds, then 60 seconds after a second consecutive failure. After three consecutive
+  failures the process is not retried until it exits. Its PID may then be reused: a new start
+  time is a new process.
 - **Silent denial**: an attach that has produced no trace block for 15 seconds while phpspy kept
-  reporting `copy_proc_mem` failures on stderr is killed and counted as a failed attach. That is
-  phpspy on a process it may not trace (`ptrace_scope`, a missing capability): it never exits by
-  itself, it prints a failure per sample. An attach that is merely quiet, an idle worker with no
-  errors, is left alone.
+  reporting `copy_proc_mem` failures on stderr, at least a second's worth of samples of them
+  since its last trace block, is killed and counted as a failed attach. That is phpspy on a
+  process it may not trace (`ptrace_scope`, a missing capability): it never exits by itself, it
+  prints a failure per sample. The same evidence counts when a rotation or a pre-emption ends
+  the attach before the 15 seconds are up, so a denied host shows up as failed attaches and
+  holds whatever the rotation period. An attach that is merely quiet, an idle worker with no
+  errors or with a handful of transient read errors, is left alone.
 
 phpspy's stderr is logged at `warn` with the target name and the PID, at most 20 lines a second
 per attach, so the reason for a failed attach shows at the default verbosity and can be traced
@@ -497,10 +513,12 @@ to the process that caused it.
 
 A failure in one target never stops another target or gospy: a quiet cron target or a
 `ptrace_scope` problem shows up in the [statistics](#statistics), not as an exit. The one
-exception is a phpspy that cannot be started at all (binary missing, not executable, fork
-failure): gospy checks the path at startup, checks again on the first attach error of that kind,
-and exits non-zero either way, so a broken image fails fast under supervisord instead of looking
-healthy.
+exception is a phpspy that cannot be started at all: the binary is missing, cannot be executed
+or has lost its interpreter. gospy checks the path at startup, checks again on the first attach
+that fails to start, and exits non-zero either way, so a broken image fails fast under
+supervisord instead of looking healthy. A start that fails for lack of resources (no free PID
+under a pids limit, no memory, no file descriptors) is an ordinary failed attach: the process is
+held and retried.
 
 ## Delivery to Pyroscope
 
@@ -551,11 +569,17 @@ option table, written against **phpspy 0.7.0**, the latest phpspy release; the c
 below runs that version. The table also knows `-q`/`--quiet` from phpspy's unreleased `master`.
 phpspy 0.7.0 supports PHP 7.0 to 8.4.
 
-**Flags gospy manages are rejected** in short, long and clustered form, because the rate and the
-target set have exactly one source of truth: `-p`/`--pid`, `-P`/`--pgrep`, `-T`/`--threads`,
-`-H`/`--rate-hz`, `-s`/`--sleep-ns`, `-i`/`--time-limit-ms`, `-l`/`--limit`, `-o`/`--output`,
-`-j`/`--event-handler`, `-t`/`--top`, `-1`/`--single-line`, `-v`/`--version` and `-h`/`--help`.
-The error names the target and the flag.
+**Flags gospy manages are rejected** in short, long, abbreviated and clustered form, because
+the rate and the target set have exactly one source of truth: `-p`/`--pid`, `-P`/`--pgrep`,
+`-T`/`--threads`, `-H`/`--rate-hz`, `-s`/`--sleep-ns`, `-i`/`--time-limit-ms`, `-l`/`--limit`,
+`-o`/`--output`, `-j`/`--event-handler`, `-t`/`--top`, `-1`/`--single-line`, `-v`/`--version`,
+`-h`/`--help` and `-q`/`--quiet`, which would silence the errors gospy reads to detect a denied
+attach. phpspy reads its options with `getopt_long`, so `--rate=50` means `--rate-hz` and is
+rejected like it, an ambiguous abbreviation such as `--p` is an error, and a letter phpspy does
+not know inside a cluster (`-Zt`) does not hide what follows it. A bare word is rejected too:
+phpspy stops reading options at the first one and would ignore every flag after it, so the
+value of a flag gospy does not know has to be written inline (`--flag=value`). Every error names
+the target and the flag.
 
 Everything else is passed through untouched. Useful flags are `--php-version` (`-V`) when
 phpspy guesses wrong, `--max-depth` (`-n`) for deep stacks, `--continue-on-error` (`-c`) to write
@@ -721,8 +745,8 @@ GOSPY_PYROSCOPE_AUTH='<ingest token>' docker compose up -d --build
 `cap_add: [SYS_PTRACE]` is what lets phpspy attach. Docker's default seccomp profile allows
 `ptrace` once the capability is granted, so no `seccomp:unconfined` is needed. Without the
 capability every read of a worker fails with `Operation not permitted`, which gospy logs at
-`warn` as `phpspy stderr` with the target and PID, kills after 15 seconds, and counts under
-`failed_attaches`. `stop_grace_period` leaves room for supervisord's `stopwaitsecs` and gospy's
+`warn` as `phpspy stderr` with the target and PID, ends within 15 seconds, and counts under
+`failed_attaches` and then `held`. `stop_grace_period` leaves room for supervisord's `stopwaitsecs` and gospy's
 `drain-timeout` before Docker sends `SIGKILL`.
 
 On Kubernetes the equivalent is `securityContext.capabilities.add: ["SYS_PTRACE"]` on the
@@ -752,7 +776,7 @@ startup line prints it as `***`.
 {"level":"info","instance":"gospy","config":"/etc/gospy/gospy.yaml","time":1790324831,"message":"configuration loaded"}
 {"level":"info","instance":"gospy","pyroscope_url":"https://pyroscope.example.com","pyroscope_auth":"***","app_name":"my-app","phpspy":"/usr/local/bin/phpspy","targets":2,"version":"v0.13.0","time":1790324831,"message":"gospy started"}
 {"level":"info","instance":"gospy","target":"fpm","max_processes":5,"rate":10,"rotate":30000,"scan_interval":1000,"tags":["env=production","host=web-01","source=fpm","uri={{ \"glopeek server.REQUEST_URI\" \"^([^?]+)\\\\?.*$\" \"$1\" }}"],"phpspy_args":["--max-depth=-1","--peek-global=server.REQUEST_URI","-c"],"time":1790324831,"message":"target enabled"}
-{"level":"warn","instance":"gospy","target":"cron","time":1790324831,"message":"target disabled: max-processes is 0"}
+{"level":"warn","instance":"gospy","target":"cron","time":1790324831,"message":"target disabled: max-processes is 0, its processes are claimed but not profiled"}
 ```
 
 ### Statistics
@@ -767,10 +791,10 @@ delivery. The target line is always emitted, so a target that finds nothing is v
 | Field | Meaning |
 | --- | --- |
 | `matched` | Processes the last scan sorted into this target. |
-| `attached` | Attaches held right now, detaches in flight included. |
+| `attached` | Attaches held right now, detaches in flight and exits waiting for the next scan included. |
 | `rotations` | Attaches detached in the interval because they reached `rotate` while a process waited. |
 | `preemptions` | Attaches detached in the interval to hand a slot to a process never traced before. |
-| `failed_attaches` | Attaches that ended in a failure in the interval. |
+| `failed_attaches` | Attaches that ended in a failure in the interval, an exit 0 on a process still running included. |
 | `held` | Matched processes sitting in a failure hold, retired ones included. |
 
 The Pyroscope line covers the interval and is skipped when nothing was sent or dropped in it:

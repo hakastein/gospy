@@ -91,6 +91,15 @@ func TestScanReadsTheProcessTable(t *testing.T) {
 			Cmdline:   "/tmp/php (evil) x",
 			Exe:       "",
 		},
+		302: {
+			PID:       302,
+			ParentPID: 1,
+			StartTime: 2200,
+			UID:       33,
+			Comm:      "php",
+			Cmdline:   "php artisan horizon:work",
+			Exe:       "/usr/local/bin/php",
+		},
 	}, byPID(processes), "every process directory is read once; vanished and non-process entries are skipped")
 }
 
@@ -144,6 +153,19 @@ func TestScanReadsOptionalFieldsOnlyWhenAsked(t *testing.T) {
 			require.Equal(t, uint64(2000), process.StartTime)
 		})
 	}
+}
+
+func TestScanReusesItsBufferAcrossScans(t *testing.T) {
+	t.Parallel()
+
+	scanner := procscan.New(fixtureRoot(t), procscan.FieldUID|procscan.FieldExe)
+
+	first, err := scanner.Scan()
+	require.NoError(t, err)
+	second, err := scanner.Scan()
+	require.NoError(t, err)
+
+	require.Equal(t, byPID(first), byPID(second), "a second scan through the same buffer must read the same table")
 }
 
 func TestScanReportsAMissingRoot(t *testing.T) {

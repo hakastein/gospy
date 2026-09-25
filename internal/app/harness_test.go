@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -90,12 +93,30 @@ func (table *processTable) set(processes ...procscan.Process) {
 	table.processes = processes
 }
 
+// failingTable fails its first scans, the way a procfs that is briefly unreadable would.
+type failingTable struct {
+	processTable
+	failures atomic.Int32
+}
+
+func (table *failingTable) Scan() ([]procscan.Process, error) {
+	if table.failures.Add(-1) >= 0 {
+		return nil, errors.New("process table unavailable")
+	}
+
+	return table.processTable.Scan()
+}
+
 func worker(pid int) procscan.Process {
 	return procscan.Process{PID: pid, ParentPID: 1, StartTime: uint64(1000 + pid), Comm: "php-fpm", Cmdline: "php-fpm: pool www"}
 }
 
 func listener(pid int) procscan.Process {
 	return procscan.Process{PID: pid, ParentPID: 1, StartTime: uint64(1000 + pid), Comm: "php", Cmdline: "php console.php queue:listen"}
+}
+
+func script(pid int) procscan.Process {
+	return procscan.Process{PID: pid, ParentPID: 1, StartTime: uint64(1000 + pid), Comm: "php", Cmdline: "php /srv/app/bin/report.php"}
 }
 
 func fixturePath(t *testing.T, fixture string) string {
@@ -125,9 +146,21 @@ func scriptedPhpspy(t *testing.T, scripts map[int]string) (executable string, ma
 	body.WriteString("*) exit 1;;\nesac\n")
 
 	executable = filepath.Join(dir, "phpspy")
-	require.NoError(t, os.WriteFile(executable, []byte(body.String()), 0o755))
+	writeExecutable(t, executable, body.String())
 
 	return executable, markerDir
+}
+
+// writeExecutable holds off every fork in the test binary while the file is open for writing:
+// a phpspy forked by a parallel test's runtime in that window inherits the descriptor until it
+// execs, and an exec of the script meanwhile fails with ETXTBSY.
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+
+	syscall.ForkLock.Lock()
+	defer syscall.ForkLock.Unlock()
+
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
 }
 
 // replayAndHold prints the fixture once and then stays attached until detached.
@@ -330,6 +363,15 @@ func pidOf(t *testing.T, file string) int {
 	}, shutdownSafetyNet, 10*time.Millisecond, "the script never wrote its pid to %s", file)
 
 	return pid
+}
+
+func requireGone(t *testing.T, pid int) {
+	t.Helper()
+
+	// A zombie still answers signal 0, so ESRCH means the process is gone for good.
+	require.Eventually(t, func() bool {
+		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+	}, shutdownSafetyNet, 10*time.Millisecond, "process %d is still around", pid)
 }
 
 func markerLines(t *testing.T, file string) int {

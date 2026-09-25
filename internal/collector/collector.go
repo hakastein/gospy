@@ -35,6 +35,8 @@ type TagCollection struct {
 	until      time.Time
 }
 
+// NewTagCollection builds a batch of the stacks in data, counted per folded stack, that were
+// sampled at sampleRate between from and until under one tag set.
 func NewTagCollection(from time.Time, until time.Time, tags string, sampleRate int, data map[string]int) *TagCollection {
 	return &TagCollection{
 		from:       from,

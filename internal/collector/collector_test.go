@@ -121,14 +121,14 @@ func TestCollectCutsABatchPerTagSetOnATick(t *testing.T) {
 
 	batch := p.next(t)
 	assert.Equal(t, "auth", batch.Tags())
-	assert.Equal(t, sampleRate, batch.SampleRate())
+	require.Equal(t, sampleRate, batch.SampleRate())
 	assert.Equal(t, map[string]int{"main;login": 2}, batch.Data())
 	assert.Equal(t, baseTime, batch.From())
 	assert.Equal(t, baseTime.Add(time.Second), batch.Until())
 
 	batch = p.next(t)
 	assert.Equal(t, "api", batch.Tags())
-	assert.Equal(t, sampleRate, batch.SampleRate())
+	require.Equal(t, sampleRate, batch.SampleRate())
 	assert.Equal(t, map[string]int{"http;handler": 1}, batch.Data())
 	assert.Equal(t, baseTime.Add(2*time.Second), batch.From())
 	assert.Equal(t, baseTime.Add(2*time.Second), batch.Until())
@@ -152,14 +152,14 @@ func TestCollectKeepsSampleRatesApart(t *testing.T) {
 	p.tick(t)
 
 	batch := p.next(t)
-	assert.Equal(t, "source=fpm", batch.Tags())
-	assert.Equal(t, 25, batch.SampleRate())
-	assert.Equal(t, map[string]int{"main;login": 1, "main;logout": 1}, batch.Data())
+	require.Equal(t, "source=fpm", batch.Tags())
+	require.Equal(t, 25, batch.SampleRate())
+	require.Equal(t, map[string]int{"main;login": 1, "main;logout": 1}, batch.Data())
 
 	batch = p.next(t)
-	assert.Equal(t, "source=fpm", batch.Tags(), "the same tag set at another rate is a batch of its own")
-	assert.Equal(t, 10, batch.SampleRate())
-	assert.Equal(t, map[string]int{"main;login": 1}, batch.Data())
+	require.Equal(t, "source=fpm", batch.Tags(), "the same tag set at another rate is a batch of its own")
+	require.Equal(t, 10, batch.SampleRate())
+	require.Equal(t, map[string]int{"main;login": 1}, batch.Data())
 
 	close(p.samples)
 	require.Empty(t, p.drain(t))
@@ -425,7 +425,7 @@ func TestTagCollectionGetters(t *testing.T) {
 	batch := collector.NewTagCollection(now, now.Add(time.Second), "tags", 42, map[string]int{"trace1": 1, "trace2": 3})
 
 	assert.Equal(t, "tags", batch.Tags())
-	assert.Equal(t, 42, batch.SampleRate())
+	require.Equal(t, 42, batch.SampleRate())
 	assert.Equal(t, now, batch.From())
 	assert.Equal(t, now.Add(time.Second), batch.Until())
 	assert.Equal(t, map[string]int{"trace1": 1, "trace2": 3}, batch.Data())
