@@ -564,7 +564,7 @@ is 10s, Kubernetes' 30s) so that the drain can finish before `SIGKILL`.
 ## phpspy compatibility
 
 gospy runs `<phpspy> -p <pid> -H <rate>` followed by the target's `phpspy-args` verbatim, once
-per attach, and reads phpspy's stdout. It validates `phpspy-args` with a copy of phpspy's own
+per attach, and reads phpspy's stdout and stderr as one stream. It validates `phpspy-args` with a copy of phpspy's own
 option table, written against **phpspy 0.7.0**, the latest phpspy release; the container example
 below runs that version. The table also knows `-q`/`--quiet` from phpspy's unreleased `master`.
 phpspy 0.7.0 supports PHP 7.0 to 8.4.
@@ -582,12 +582,18 @@ value of a flag gospy does not know has to be written inline (`--flag=value`). E
 the target and the flag.
 
 Everything else is passed through untouched. Useful flags are `--php-version` (`-V`) when
-phpspy guesses wrong, `--max-depth` (`-n`) for deep stacks, `--continue-on-error` (`-c`) to write
-a truncated trace on a mid-stack read error instead of dropping it, `--peek-global` (`-g`),
-`--request-info` (`-r`) and `--peek-var` (`-e`) for [tag sources](#where-the-meta-lines-come-from),
-`--filter` (`-f`) and `--filter-negate` (`-F`) to filter stacks, and `--buffer-size` (`-b`) for
-large peeked values. In `-p` mode one thread writes one trace block per `write()`, so `-J m` is
-unnecessary and `-b` may be raised freely.
+phpspy guesses wrong, `--max-depth` (`-n`) for deep stacks, `--continue-on-error` (`-c`) to keep
+a trace whose peeked global is missing, `--peek-global` (`-g`), `--request-info` (`-r`) and
+`--peek-var` (`-e`) for [tag sources](#where-the-meta-lines-come-from), and `--filter` (`-f`) and
+`--filter-negate` (`-F`) to filter stacks. In `-p` mode one thread writes one trace block per
+`write()`, so `-J m` is unnecessary.
+
+gospy passes `--buffer-size=1048576` unless `phpspy-args` sets `--buffer-size` (`-b`): phpspy's
+default of 4096 bytes cuts a real application's `--max-depth=-1` stacks short. A stack phpspy cut
+short, on a full buffer or, under `-c`, on a failed read in the middle of the stack, has lost its
+outer frames and meta lines; gospy drops it and counts it in `partial_traces` of the
+[statistics](#statistics). A read that fails on the very first frame emits no block, so its
+diagnostic marks the next, complete block partial: the count errs high, never a wrong sample.
 
 phpspy's unreleased `master` drops the short forms `-j`, `-J`, `-x`, `-a` and `-w`; on a phpspy
 built from `master`, write the long form. gospy understands both.
@@ -785,7 +791,7 @@ Every `stats-interval` gospy logs one `info` line per enabled target and one for
 delivery. The target line is always emitted, so a target that finds nothing is visible:
 
 ```json
-{"level":"info","instance":"gospy","target":"fpm","matched":64,"attached":5,"rotations":2,"preemptions":0,"failed_attaches":0,"held":0,"time":1790324841,"message":"target statistics"}
+{"level":"info","instance":"gospy","target":"fpm","matched":64,"attached":5,"rotations":2,"preemptions":0,"failed_attaches":0,"held":0,"partial_traces":0,"filtered_traces":12,"time":1790324841,"message":"target statistics"}
 ```
 
 | Field | Meaning |
@@ -796,6 +802,8 @@ delivery. The target line is always emitted, so a target that finds nothing is v
 | `preemptions` | Attaches detached in the interval to hand a slot to a process never traced before. |
 | `failed_attaches` | Attaches that ended in a failure in the interval, an exit 0 on a process still running included. |
 | `held` | Matched processes sitting in a failure hold, retired ones included. |
+| `partial_traces` | Traces dropped in the interval because phpspy cut the stack short, see [phpspy compatibility](#phpspy-compatibility). |
+| `filtered_traces` | Traces dropped in the interval because their entry point is not in `entrypoints`. |
 
 The Pyroscope line covers the interval and is skipped when nothing was sent or dropped in it:
 
@@ -836,7 +844,7 @@ removed flag is now an error.
 | `--restart` | removed; there is no long-lived phpspy to restart |
 | `phpspy -P '-x php-fpm' -T 8` | a target with `match: { comm: php-fpm, cmdline: '^php-fpm: pool ' }` and `max-processes: 8` |
 | `phpspy -H 99` | `rate: 99` per target |
-| `phpspy -b 65536 -J m` | unnecessary in `-p` mode; `-b` may stay in `phpspy-args` |
+| `phpspy -b 65536 -J m` | unnecessary in `-p` mode: gospy sets a 1 MiB buffer, and a `-b` in `phpspy-args` overrides it |
 | `phpspy -c -g server.REQUEST_URI` | `phpspy-args: [-c, --peek-global=server.REQUEST_URI]` per target |
 | `--time-limit-ms` and a restart to rotate workers | `rotate` per target |
 

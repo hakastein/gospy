@@ -216,3 +216,62 @@ func TestValidateArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestWithDefaults(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "no arguments",
+			args: nil,
+			want: []string{"--buffer-size=1048576"},
+		},
+		{
+			name: "arguments without a buffer size",
+			args: []string{"--max-depth=-1", "-c"},
+			want: []string{"--max-depth=-1", "-c", "--buffer-size=1048576"},
+		},
+		{
+			name: "a short buffer size with its value apart",
+			args: []string{"-b", "65536"},
+			want: []string{"-b", "65536"},
+		},
+		{
+			name: "a short buffer size with its value attached",
+			args: []string{"-b65536"},
+			want: []string{"-b65536"},
+		},
+		{
+			name: "a buffer size clustered after a switch",
+			args: []string{"-cb", "65536"},
+			want: []string{"-cb", "65536"},
+		},
+		{
+			name: "a long buffer size",
+			args: []string{"--buffer-size=65536"},
+			want: []string{"--buffer-size=65536"},
+		},
+		{
+			name: "an abbreviated long buffer size",
+			args: []string{"--buffer", "65536"},
+			want: []string{"--buffer", "65536"},
+		},
+		{
+			name: "a -b that is the value of another flag",
+			args: []string{"-f", "-b"},
+			want: []string{"-f", "-b", "--buffer-size=1048576"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, tc.want, phpspy.WithDefaults(tc.args))
+		})
+	}
+}

@@ -2,8 +2,13 @@ package phpspy
 
 import (
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 )
+
+// phpspy's default 4096-byte trace buffer overflows on --max-depth=-1 stacks of a real application.
+const DefaultBufferSize = 1 << 20
 
 type option struct {
 	long  string
@@ -76,6 +81,15 @@ func ValidateArgs(args []string) error {
 	}
 
 	return nil
+}
+
+func WithDefaults(args []string) []string {
+	given, err := parseArgs(args)
+	if err != nil || slices.ContainsFunc(given, func(opt option) bool { return opt.long == "buffer-size" }) {
+		return args
+	}
+
+	return append(slices.Clip(args), "--buffer-size="+strconv.Itoa(DefaultBufferSize))
 }
 
 // longOption resolves a long option the way getopt_long does: an exact name wins, otherwise

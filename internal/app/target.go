@@ -32,6 +32,7 @@ type targetRunner struct {
 	attaches  map[target.Process]*attach.Attach
 	ended     chan attachEnd
 	stats     statisticsReport
+	counters  attach.Counters
 }
 
 func newTargetRunner(p *profiling, index int, cfg config.Target, logger zerolog.Logger) *targetRunner {
@@ -108,6 +109,7 @@ func (runner *targetRunner) start(process target.Process, now time.Time) {
 		Parser:         runner.cfg.Parser,
 		Logger:         runner.logger.With().Int("pid", process.PID).Logger(),
 		SilenceTimeout: runner.profiling.cfg.SilentAttachTimeout,
+		Counters:       &runner.counters,
 	}, runner.profiling.samples)
 	if err != nil {
 		runner.planner.Ended(process, now, true)
@@ -199,6 +201,8 @@ func (runner *targetRunner) logStatistics() {
 		Int("preemptions", runner.stats.preemptions).
 		Int("failed_attaches", runner.stats.failed).
 		Int("held", runner.stats.held).
+		Int64("partial_traces", runner.counters.PartialTraces.Swap(0)).
+		Int64("filtered_traces", runner.counters.FilteredTraces.Swap(0)).
 		Msg("target statistics")
 
 	runner.stats.rotations, runner.stats.preemptions, runner.stats.failed = 0, 0, 0

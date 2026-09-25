@@ -1,5 +1,4 @@
-// Package attach runs one phpspy per process: `phpspy -p <pid>` with its own pipes, its
-// stdout parsed into samples, its stderr logged, and its end classified for the planner.
+// Package attach runs one `phpspy -p <pid>` per process and classifies its end for the planner.
 package attach
 
 import (
@@ -56,6 +55,13 @@ type Config struct {
 	Logger zerolog.Logger
 	// SilenceTimeout at or below zero takes DefaultSilenceTimeout.
 	SilenceTimeout time.Duration
+	// Counters are shared by the attaches of one target; nil counts nowhere.
+	Counters *Counters
+}
+
+type Counters struct {
+	PartialTraces  atomic.Int64
+	FilteredTraces atomic.Int64
 }
 
 // Outcome is how an attach ended.
@@ -93,14 +99,12 @@ type Result struct {
 
 // Attach is one running phpspy.
 type Attach struct {
-	cfg       Config
-	cmd       *exec.Cmd
-	stdout    *os.File
-	stderr    *os.File
-	endAttach context.CancelFunc
-	detached  atomic.Bool
-	// lastOutput is when phpspy last wrote to stdout; denied counts its memory-read failures
-	// and deniedAtOutput holds that count as of lastOutput.
+	cfg            Config
+	cmd            *exec.Cmd
+	output         *os.File
+	stderrLog      zerolog.Logger
+	endAttach      context.CancelFunc
+	detached       atomic.Bool
 	lastOutput     atomic.Int64
 	denied         atomic.Int64
 	deniedAtOutput atomic.Int64
@@ -120,11 +124,14 @@ func Start(ctx context.Context, cfg Config, samples chan<- *collector.Sample) (*
 	if cfg.SilenceTimeout <= 0 {
 		cfg.SilenceTimeout = DefaultSilenceTimeout
 	}
+	if cfg.Counters == nil {
+		cfg.Counters = &Counters{}
+	}
 	cfg.Parser.SampleRate = cfg.Rate
 
 	attachCtx, endAttach := context.WithCancel(ctx)
 
-	args := append([]string{"-p", strconv.Itoa(cfg.PID), "-H", strconv.Itoa(cfg.Rate)}, cfg.Args...)
+	args := append([]string{"-p", strconv.Itoa(cfg.PID), "-H", strconv.Itoa(cfg.Rate)}, phpspy.WithDefaults(cfg.Args)...)
 	cmd := exec.CommandContext(attachCtx, cfg.Executable, args...)
 	cmd.SysProcAttr = processAttributes()
 	cmd.Cancel = func() error {
@@ -134,35 +141,29 @@ func Start(ctx context.Context, cfg Config, samples chan<- *collector.Sample) (*
 
 	cfg.Logger.Debug().Str("executable", cfg.Executable).Strs("args", args).Msg("starting phpspy")
 
-	// Own pipes instead of os/exec's: Cmd.Wait closes those, losing phpspy's last output after it exits.
-	stdout, stdoutWriter, err := os.Pipe()
+	// Own pipe instead of os/exec's: Cmd.Wait closes those, losing phpspy's last output after it
+	// exits. stdout and stderr share it, since the parser ties diagnostics to blocks by order.
+	output, outputWriter, err := os.Pipe()
 	if err != nil {
 		endAttach()
-		return nil, fmt.Errorf("stdout pipe: %w", err)
+		return nil, fmt.Errorf("output pipe: %w", err)
 	}
 
-	stderr, stderrWriter, err := os.Pipe()
-	if err != nil {
-		endAttach()
-		closeAll(stdout, stdoutWriter)
-		return nil, fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	cmd.Stdout, cmd.Stderr = stdoutWriter, stderrWriter
+	cmd.Stdout, cmd.Stderr = outputWriter, outputWriter
 	startErr := cmd.Start()
 	// os/exec leaves a caller's files open, and a write end kept here would hold off EOF for good.
-	closeAll(stdoutWriter, stderrWriter)
+	closeAll(outputWriter)
 	if startErr != nil {
 		endAttach()
-		closeAll(stdout, stderr)
+		closeAll(output)
 		return nil, fmt.Errorf("cannot start %s: %w", cfg.Executable, startErr)
 	}
 
 	attach := &Attach{
 		cfg:       cfg,
 		cmd:       cmd,
-		stdout:    stdout,
-		stderr:    stderr,
+		output:    output,
+		stderrLog: cfg.Logger.Sample(&zerolog.BurstSampler{Burst: stderrBurst, Period: time.Second}),
 		endAttach: endAttach,
 		exited:    make(chan struct{}),
 		done:      make(chan struct{}),
@@ -204,18 +205,16 @@ func (attach *Attach) run(ctx context.Context, samples chan<- *collector.Sample)
 	defer close(attach.done)
 	// The context stays registered with its parent until it is cancelled, however phpspy ended.
 	defer attach.endAttach()
-	defer closeAll(attach.stdout, attach.stderr)
-
-	stderrDone := attach.consumeStderr()
+	defer closeAll(attach.output)
 
 	var parseErr error
 	parsed := make(chan struct{})
 	go func() {
 		defer close(parsed)
 
-		scanner := bufio.NewScanner(&activityReader{attach: attach})
+		scanner := bufio.NewScanner(attach.output)
 		scanner.Buffer(make([]byte, 0, initialBufferSize), maxLineSize)
-		parseErr = phpspy.NewParser(attach.cfg.Parser).Parse(ctx, scanner, samples)
+		parseErr = phpspy.NewParser(attach.cfg.Parser, observer{attach: attach}).Parse(ctx, scanner, samples)
 	}()
 
 	watchdogDone := make(chan struct{})
@@ -234,13 +233,12 @@ func (attach *Attach) run(ctx context.Context, samples chan<- *collector.Sample)
 	<-attach.exited
 	close(watchdogDone)
 
-	// The group is swept, so the pipes report EOF unless a helper that escaped it holds them.
-	if !closedWithin(terminateGrace, parsed, stderrDone) {
+	// The group is swept, so the pipe reports EOF unless a helper that escaped it holds it.
+	if !closedWithin(terminateGrace, parsed) {
 		attach.cfg.Logger.Debug().Dur("grace", terminateGrace).Msg("phpspy output still open after its exit, closing it")
-		closeAll(attach.stdout, attach.stderr)
+		closeAll(attach.output)
 	}
 	<-parsed
-	<-stderrDone
 
 	attach.result = attach.classify(ctx, parseErr)
 	attach.cfg.Logger.Debug().
@@ -263,31 +261,6 @@ func closedWithin(grace time.Duration, channels ...<-chan struct{}) bool {
 	}
 
 	return true
-}
-
-func (attach *Attach) consumeStderr() <-chan struct{} {
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-
-		logger := attach.cfg.Logger.Sample(&zerolog.BurstSampler{Burst: stderrBurst, Period: time.Second})
-		scanner := bufio.NewScanner(attach.stderr)
-		scanner.Buffer(make([]byte, 0, initialBufferSize), maxLineSize)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.Contains(line, memoryReadFailure) {
-				attach.denied.Add(1)
-			}
-
-			logger.Warn().Str("line", line).Msg("phpspy stderr")
-		}
-		if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
-			attach.cfg.Logger.Debug().Err(err).Msg("error reading phpspy stderr")
-		}
-	}()
-
-	return done
 }
 
 // deniedSinceOutput is how many memory-read failures phpspy reported after its last trace
@@ -352,21 +325,31 @@ func (attach *Attach) classify(ctx context.Context, parseErr error) Result {
 	}
 }
 
-// activityReader records when phpspy last wrote anything and how many failures it had
-// reported by then, which is what the silence watchdog measures: in the case it hunts, phpspy
-// writes nothing at all to stdout.
-type activityReader struct {
+// Every trace block, dropped ones included, resets the silence watchdog.
+type observer struct {
 	attach *Attach
 }
 
-func (reader *activityReader) Read(buffer []byte) (int, error) {
-	read, err := reader.attach.stdout.Read(buffer)
-	if read > 0 {
-		reader.attach.deniedAtOutput.Store(reader.attach.denied.Load())
-		reader.attach.lastOutput.Store(time.Now().UnixNano())
+func (observer observer) Diagnostic(line string) {
+	if strings.Contains(line, memoryReadFailure) {
+		observer.attach.denied.Add(1)
 	}
 
-	return read, err
+	observer.attach.stderrLog.Warn().Str("line", line).Msg("phpspy stderr")
+}
+
+func (observer observer) Block(outcome phpspy.BlockOutcome) {
+	attach := observer.attach
+	attach.deniedAtOutput.Store(attach.denied.Load())
+	attach.lastOutput.Store(time.Now().UnixNano())
+
+	switch outcome {
+	case phpspy.Partial:
+		attach.cfg.Counters.PartialTraces.Add(1)
+	case phpspy.Filtered:
+		attach.cfg.Counters.FilteredTraces.Add(1)
+	case phpspy.Sampled, phpspy.Malformed:
+	}
 }
 
 func closeAll(files ...*os.File) {

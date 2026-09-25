@@ -134,17 +134,81 @@ func requireGone(t *testing.T, pid int) {
 func TestStartRunsPhpspyOnThePidAtTheRate(t *testing.T) {
 	t.Parallel()
 
-	argsFile := filepath.Join(t.TempDir(), "args")
-	cfg := config(script(t, `printf '%s\n' "$@" > "`+argsFile+`"`+"\n"))
-	cfg.Args = []string{"--max-depth=-1", "-c"}
+	testCases := []struct {
+		name     string
+		args     []string
+		wantArgs string
+	}{
+		{
+			name:     "a large trace buffer unless the target sets one",
+			args:     []string{"--max-depth=-1", "-c"},
+			wantArgs: "-p\n4242\n-H\n25\n--max-depth=-1\n-c\n--buffer-size=1048576\n",
+		},
+		{
+			name:     "the target's own trace buffer",
+			args:     []string{"--max-depth=-1", "-b", "65536"},
+			wantArgs: "-p\n4242\n-H\n25\n--max-depth=-1\n-b\n65536\n",
+		},
+	}
 
-	a, err := attach.Start(context.Background(), cfg, make(chan *collector.Sample, 1))
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			argsFile := filepath.Join(t.TempDir(), "args")
+			cfg := config(script(t, `printf '%s\n' "$@" > "`+argsFile+`"`+"\n"))
+			cfg.Args = tc.args
+
+			a, err := attach.Start(context.Background(), cfg, make(chan *collector.Sample, 1))
+			require.NoError(t, err)
+			require.Equal(t, attach.Result{Outcome: attach.Exited}, awaitResult(t, a))
+
+			args, err := os.ReadFile(argsFile)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantArgs, string(args))
+		})
+	}
+}
+
+func TestWaitDropsTheBlocksPhpspyCutShort(t *testing.T) {
+	t.Parallel()
+
+	// phpspy under -c prints the diagnostic of a cut stack on stderr, then the frames it had on stdout.
+	partialBlock := "0 App\\\\Kernel::handle /srv/app/src/Kernel.php:12\n\n"
+	body := "echo 'event_handler_fout_snprintf: Not enough space in buffer; truncating' >&2\n" +
+		"printf '" + partialBlock + "'\n" +
+		"printf '" + traceBlock + "'\n" +
+		"echo 'copy_proc_mem: Failed to copy zfunc; err=Bad address raddr=0x7f00 size=160' >&2\n" +
+		"printf '" + partialBlock + "'\n"
+
+	cfg := config(script(t, body))
+	cfg.Counters = &attach.Counters{}
+	samples := make(chan *collector.Sample, 8)
+
+	a, err := attach.Start(context.Background(), cfg, samples)
 	require.NoError(t, err)
 	require.Equal(t, attach.Result{Outcome: attach.Exited}, awaitResult(t, a))
 
-	args, err := os.ReadFile(argsFile)
+	collected := drain(samples)
+	require.Len(t, collected, 1, "only the complete block becomes a sample")
+	require.Equal(t, `main /srv/app/public/index.php;App\Kernel::handle`, collected[0].Trace)
+	require.Equal(t, int64(2), cfg.Counters.PartialTraces.Load())
+}
+
+func TestWaitCountsTheBlocksOfAnotherEntrypoint(t *testing.T) {
+	t.Parallel()
+
+	cfg := config(script(t, "printf '"+traceBlock+traceBlock+"'\n"))
+	cfg.Parser.Entrypoints = []string{"/srv/app/bin/console"}
+	cfg.Counters = &attach.Counters{}
+	samples := make(chan *collector.Sample, 8)
+
+	a, err := attach.Start(context.Background(), cfg, samples)
 	require.NoError(t, err)
-	require.Equal(t, "-p\n4242\n-H\n25\n--max-depth=-1\n-c\n", string(args))
+	require.Equal(t, attach.Result{Outcome: attach.Exited}, awaitResult(t, a))
+
+	require.Empty(t, drain(samples))
+	require.Equal(t, int64(2), cfg.Counters.FilteredTraces.Load())
 }
 
 func TestWaitDeliversTheOutputPrintedBeforeExit(t *testing.T) {

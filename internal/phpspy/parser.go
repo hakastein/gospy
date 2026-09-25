@@ -34,7 +34,31 @@ type ParserConfig struct {
 	SampleRate         int
 }
 
+type BlockOutcome uint8
+
+const (
+	Sampled BlockOutcome = iota
+	// Partial blocks followed a diagnostic that cut the stack short and were dropped.
+	Partial
+	// Filtered blocks had an entry point the target does not keep.
+	Filtered
+	Malformed
+)
+
+type Observer interface {
+	// Diagnostic is a line phpspy printed about itself rather than about a trace.
+	Diagnostic(line string)
+	// Block comes before the sample is sent: a stalled collector must not look like a silent phpspy.
+	Block(outcome BlockOutcome)
+}
+
+type ignoreEverything struct{}
+
+func (ignoreEverything) Diagnostic(string)  {}
+func (ignoreEverything) Block(BlockOutcome) {}
+
 type Parser struct {
+	observer           Observer
 	staticTags         string
 	tagsMapping        map[string][]tag.DynamicTag
 	tagEntrypoint      bool
@@ -42,13 +66,20 @@ type Parser struct {
 	sampleRate         int
 	currentTrace       []string
 	currentMeta        []string
+	partial            bool
 	epValidator        *validator.EntryPointValidator
 	duplicateKeys      zerolog.Sampler
 }
 
-// NewParser initializes a new Parser.
-func NewParser(cfg ParserConfig) *Parser {
+// NewParser expects stdout and stderr as one stream: in -p mode phpspy prints a trace's
+// diagnostics before its block, and only that order ties them together.
+func NewParser(cfg ParserConfig, observer Observer) *Parser {
+	if observer == nil {
+		observer = ignoreEverything{}
+	}
+
 	return &Parser{
+		observer:           observer,
 		staticTags:         cfg.StaticTags,
 		tagsMapping:        cfg.DynamicTags,
 		tagEntrypoint:      cfg.TagEntrypoint,
@@ -99,8 +130,11 @@ func (parser *Parser) consumeLine(
 		if len(parser.tagsMapping) > 0 {
 			parser.currentMeta = append(parser.currentMeta, line)
 		}
-	default:
+	case isFrame(line):
 		parser.currentTrace = append(parser.currentTrace, line)
+	default:
+		parser.observer.Diagnostic(line)
+		parser.partial = parser.partial || cutsStack(line)
 	}
 
 	return nil
@@ -131,9 +165,16 @@ func (parser *Parser) processTrace(
 	ctx context.Context,
 	samples chan<- *collector.Sample,
 ) error {
+	if len(parser.currentTrace) == 0 {
+		parser.currentMeta = parser.currentMeta[:0]
+		return nil
+	}
+
 	defer parser.resetState()
 
-	if len(parser.currentTrace) == 0 {
+	if parser.partial {
+		log.Debug().Int("frames", len(parser.currentTrace)).Msg("partial trace dropped")
+		parser.observer.Block(Partial)
 		return nil
 	}
 
@@ -143,6 +184,7 @@ func (parser *Parser) processTrace(
 			Err(foldError).
 			Str("trace", strings.Join(parser.currentTrace, "\n")).
 			Msg("Failed to fold trace")
+		parser.observer.Block(Malformed)
 		return nil
 	}
 
@@ -150,8 +192,11 @@ func (parser *Parser) processTrace(
 		log.Debug().
 			Str("entrypoint", entryPoint).
 			Msg("Disallowed entrypoint in trace")
+		parser.observer.Block(Filtered)
 		return nil
 	}
+
+	parser.observer.Block(Sampled)
 
 	tags := parser.buildTags(entryPoint)
 	sample := &collector.Sample{
@@ -204,4 +249,5 @@ func joinTags(tags, more string) string {
 func (parser *Parser) resetState() {
 	parser.currentTrace = parser.currentTrace[:0]
 	parser.currentMeta = parser.currentMeta[:0]
+	parser.partial = false
 }
