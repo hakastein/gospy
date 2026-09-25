@@ -5,8 +5,10 @@ import (
 	"unicode/utf8"
 )
 
-const defaultStartKeep = 1
-const defaultEndKeep = 1
+const (
+	defaultStartKeep = 1
+	defaultEndKeep   = 1
+)
 
 // MaskString masks a string by replacing characters with '*'.
 // It preserves the first 'startKeep' and last 'endKeep' runes.

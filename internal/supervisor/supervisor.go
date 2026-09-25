@@ -69,7 +69,6 @@ func ManageProfiler(
 
 		log.Info().Msg("starting profiler")
 		stdoutScanner, stderrScanner, err := profilerInstance.Start(ctx)
-
 		if err != nil {
 			log.Error().Err(err).Msg("error starting profiler")
 			return err
