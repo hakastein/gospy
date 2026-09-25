@@ -74,7 +74,7 @@ gh attestation verify "gospy_${VERSION}_linux_${ARCH}.tar.gz" --repo hakastein/g
 
 ### go install
 
-Needs Go 1.23 or newer:
+Needs Go 1.26 or newer:
 
 ```bash
 go install github.com/hakastein/gospy/cmd/gospy@latest
@@ -85,7 +85,7 @@ module version it was built from in `gospy --version` (for example `v0.12.0`), n
 
 ### Building from source
 
-Needs Go 1.23 or newer and `make`:
+Needs Go 1.26 or newer and `make`:
 
 ```bash
 git clone https://github.com/hakastein/gospy.git

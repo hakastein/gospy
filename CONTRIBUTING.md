@@ -13,7 +13,7 @@ shape of a change in a ticket is cheaper than redoing a pull request.
 
 ## Getting set up
 
-You need Go 1.23.3 or newer and `make`.
+You need Go 1.26 or newer and `make`.
 
 ```bash
 git clone https://github.com/hakastein/gospy.git
