@@ -507,9 +507,12 @@ An attach ends in one of three ways:
   holds whatever the rotation period. An attach that is merely quiet, an idle worker with no
   errors or with a handful of transient read errors, is left alone.
 
-phpspy's stderr is logged at `warn` with the target name and the PID, at most 20 lines a second
-per attach, so the reason for a failed attach shows at the default verbosity and can be traced
-to the process that caused it.
+phpspy's stderr is logged as `phpspy stderr` with the target name and the PID. The first line of
+each kind per attach, compared without its addresses and sizes, goes to `warn`, so the reason for
+a failed attach shows at the default verbosity and can be traced to the process that caused it;
+repeats go to `debug`. Reads of memory the process was changing or had just released
+(`Bad address`, `raddr is NULL`, `No such process`) are routine when sampling a live process: they
+are logged at `debug` only and counted in `read_errors` of the [statistics](#statistics).
 
 A failure in one target never stops another target or gospy: a quiet cron target or a
 `ptrace_scope` problem shows up in the [statistics](#statistics), not as an exit. The one
@@ -791,7 +794,7 @@ Every `stats-interval` gospy logs one `info` line per enabled target and one for
 delivery. The target line is always emitted, so a target that finds nothing is visible:
 
 ```json
-{"level":"info","instance":"gospy","target":"fpm","matched":64,"attached":5,"rotations":2,"preemptions":0,"failed_attaches":0,"held":0,"partial_traces":0,"filtered_traces":12,"time":1790324841,"message":"target statistics"}
+{"level":"info","instance":"gospy","target":"fpm","matched":64,"attached":5,"rotations":2,"preemptions":0,"failed_attaches":0,"held":0,"partial_traces":0,"filtered_traces":12,"read_errors":31,"time":1790324841,"message":"target statistics"}
 ```
 
 | Field | Meaning |
@@ -804,6 +807,7 @@ delivery. The target line is always emitted, so a target that finds nothing is v
 | `held` | Matched processes sitting in a failure hold, retired ones included. |
 | `partial_traces` | Traces dropped in the interval because phpspy cut the stack short, see [phpspy compatibility](#phpspy-compatibility). |
 | `filtered_traces` | Traces dropped in the interval because their entry point is not in `entrypoints`. |
+| `read_errors` | phpspy's routine failed reads of a live process in the interval, logged at `debug` only. |
 
 The Pyroscope line covers the interval and is skipped when nothing was sent or dropped in it:
 

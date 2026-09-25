@@ -39,9 +39,8 @@ const DefaultSilenceTimeout = 15 * time.Second
 // phpspy's message for a read of the target's memory that failed.
 const memoryReadFailure = "copy_proc_mem"
 
-// phpspy is chatty on stderr under load, but the handful of lines explaining a failed attach
-// must always get through.
-const stderrBurst = 20
+// A helper phpspy runs while it attaches could print endless distinct lines.
+const maxDiagnosticKinds = 64
 
 // Config describes one attach.
 type Config struct {
@@ -51,7 +50,8 @@ type Config struct {
 	Rate   int
 	Args   []string
 	Parser phpspy.ParserConfig
-	// Logger receives phpspy's stderr at warn level; the caller stamps it with the target and PID.
+	// Logger receives the first diagnostic of each kind at warn and the rest at debug; the caller
+	// stamps it with the target and PID.
 	Logger zerolog.Logger
 	// SilenceTimeout at or below zero takes DefaultSilenceTimeout.
 	SilenceTimeout time.Duration
@@ -62,6 +62,7 @@ type Config struct {
 type Counters struct {
 	PartialTraces  atomic.Int64
 	FilteredTraces atomic.Int64
+	ReadErrors     atomic.Int64
 }
 
 // Outcome is how an attach ended.
@@ -99,20 +100,21 @@ type Result struct {
 
 // Attach is one running phpspy.
 type Attach struct {
-	cfg            Config
-	cmd            *exec.Cmd
-	output         *os.File
-	stderrLog      zerolog.Logger
-	endAttach      context.CancelFunc
-	detached       atomic.Bool
-	lastOutput     atomic.Int64
-	denied         atomic.Int64
-	deniedAtOutput atomic.Int64
-	silenced       atomic.Bool
-	exited         chan struct{}
-	waitErr        error
-	done           chan struct{}
-	result         Result
+	cfg    Config
+	cmd    *exec.Cmd
+	output *os.File
+	// seenDiagnostics belongs to the parser goroutine.
+	seenDiagnostics map[string]struct{}
+	endAttach       context.CancelFunc
+	detached        atomic.Bool
+	lastOutput      atomic.Int64
+	denied          atomic.Int64
+	deniedAtOutput  atomic.Int64
+	silenced        atomic.Bool
+	exited          chan struct{}
+	waitErr         error
+	done            chan struct{}
+	result          Result
 }
 
 // Start launches `<executable> -p <pid> -H <rate> <args…>` and returns once phpspy is running.
@@ -160,13 +162,13 @@ func Start(ctx context.Context, cfg Config, samples chan<- *collector.Sample) (*
 	}
 
 	attach := &Attach{
-		cfg:       cfg,
-		cmd:       cmd,
-		output:    output,
-		stderrLog: cfg.Logger.Sample(&zerolog.BurstSampler{Burst: stderrBurst, Period: time.Second}),
-		endAttach: endAttach,
-		exited:    make(chan struct{}),
-		done:      make(chan struct{}),
+		cfg:             cfg,
+		cmd:             cmd,
+		output:          output,
+		seenDiagnostics: make(map[string]struct{}),
+		endAttach:       endAttach,
+		exited:          make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 	attach.lastOutput.Store(time.Now().UnixNano())
 
@@ -331,11 +333,29 @@ type observer struct {
 }
 
 func (observer observer) Diagnostic(line string) {
+	attach := observer.attach
 	if strings.Contains(line, memoryReadFailure) {
-		observer.attach.denied.Add(1)
+		attach.denied.Add(1)
 	}
 
-	observer.attach.stderrLog.Warn().Str("line", line).Msg("phpspy stderr")
+	event := attach.cfg.Logger.Debug()
+	switch {
+	case phpspy.Transient(line):
+		attach.cfg.Counters.ReadErrors.Add(1)
+	case attach.firstOfKind(line):
+		event = attach.cfg.Logger.Warn()
+	}
+	event.Str("line", line).Msg("phpspy stderr")
+}
+
+func (attach *Attach) firstOfKind(line string) bool {
+	kind := phpspy.DiagnosticKind(line)
+	if _, seen := attach.seenDiagnostics[kind]; seen || len(attach.seenDiagnostics) >= maxDiagnosticKinds {
+		return false
+	}
+	attach.seenDiagnostics[kind] = struct{}{}
+
+	return true
 }
 
 func (observer observer) Block(outcome phpspy.BlockOutcome) {
