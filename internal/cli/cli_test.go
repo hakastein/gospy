@@ -1,23 +1,30 @@
 package cli_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 
 	"github.com/hakastein/gospy/internal/app"
 	"github.com/hakastein/gospy/internal/cli"
 )
 
-const pyroscopeURL = "http://pyroscope.test"
+const (
+	pyroscopeURL = "http://pyroscope.test"
+	appName      = "checkout"
+)
 
-// defaultConfig is what gospy runs with when only the required flag is given.
 func defaultConfig() app.Config {
 	return app.Config{
 		PyroscopeURL:       pyroscopeURL,
+		AppName:            appName,
 		PyroscopeWorkers:   5,
 		PyroscopeTimeout:   10 * time.Second,
 		KeepEntrypointName: true,
@@ -39,8 +46,8 @@ func TestNew(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "runs with defaults when only the required flag is given",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "phpspy"},
+			name: "runs with defaults when only the required flags are given",
+			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "phpspy"},
 			want: func(cfg *app.Config) {
 				cfg.ProfilerApp = "phpspy"
 				cfg.ProfilerArguments = []string{}
@@ -51,12 +58,12 @@ func TestNew(t *testing.T) {
 			args: []string{
 				"gospy",
 				"--pyroscope", pyroscopeURL,
-				"--app", "checkout",
+				"--app", "billing",
 				"--tag-entrypoint",
 				"phpspy", "-P", "php-fpm", "--rate-hz", "99",
 			},
 			want: func(cfg *app.Config) {
-				cfg.AppName = "checkout"
+				cfg.AppName = "billing"
 				cfg.TagEntrypoint = true
 				cfg.ProfilerApp = "phpspy"
 				cfg.ProfilerArguments = []string{"-P", "php-fpm", "--rate-hz", "99"}
@@ -64,7 +71,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "flags after the profiler command belong to the profiler",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "phpspy", "--app", "not-gospy"},
+			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "phpspy", "--app", "not-gospy"},
 			want: func(cfg *app.Config) {
 				cfg.ProfilerApp = "phpspy"
 				cfg.ProfilerArguments = []string{"--app", "not-gospy"}
@@ -72,7 +79,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "entry point name is kept unless it is turned off",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--keep-entrypoint-name=false", "phpspy"},
+			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "--keep-entrypoint-name=false", "phpspy"},
 			want: func(cfg *app.Config) {
 				cfg.KeepEntrypointName = false
 				cfg.ProfilerApp = "phpspy"
@@ -84,6 +91,7 @@ func TestNew(t *testing.T) {
 			args: []string{
 				"gospy",
 				"--pyroscope", pyroscopeURL,
+				"--app", appName,
 				"--tag", "env=production",
 				"--tag", `uri={{ "glopeek server.REQUEST_URI" }}`,
 				"--entrypoint", "index.php",
@@ -99,7 +107,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "pyroscope token is read from the environment",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "phpspy"},
+			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "phpspy"},
 			env:  map[string]string{"GOSPY_PYROSCOPE_AUTH": "token-from-env"},
 			want: func(cfg *app.Config) {
 				cfg.PyroscopeAuth = "token-from-env"
@@ -109,7 +117,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "pyroscope token on the command line wins over the environment",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--pyroscope-auth", "token-from-flag", "phpspy"},
+			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "--pyroscope-auth", "token-from-flag", "phpspy"},
 			env:  map[string]string{"GOSPY_PYROSCOPE_AUTH": "token-from-env"},
 			want: func(cfg *app.Config) {
 				cfg.PyroscopeAuth = "token-from-flag"
@@ -119,7 +127,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "drain timeout is taken from its flag",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--drain-timeout", "3s", "phpspy"},
+			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "--drain-timeout", "3s", "phpspy"},
 			want: func(cfg *app.Config) {
 				cfg.DrainTimeout = 3 * time.Second
 				cfg.ProfilerApp = "phpspy"
@@ -127,14 +135,14 @@ func TestNew(t *testing.T) {
 			},
 		},
 		{
-			name:    "invalid restart value is rejected",
-			args:    []string{"gospy", "--pyroscope", pyroscopeURL, "--restart", "sometimes", "phpspy"},
-			wantErr: "invalid restart option: sometimes",
+			name:    "missing pyroscope url is rejected",
+			args:    []string{"gospy", "--app", appName, "phpspy"},
+			wantErr: `Required flag "pyroscope" not set`,
 		},
 		{
-			name:    "missing pyroscope url is rejected",
-			args:    []string{"gospy", "phpspy"},
-			wantErr: `Required flag "pyroscope" not set`,
+			name:    "missing app name is rejected",
+			args:    []string{"gospy", "--pyroscope", pyroscopeURL, "phpspy"},
+			wantErr: `Required flag "app" not set`,
 		},
 	}
 
@@ -173,4 +181,113 @@ func TestNew(t *testing.T) {
 			require.Equal(t, want, got)
 		})
 	}
+}
+
+func TestNewWarnsAboutGospyFlagsAfterTheProfilerCommand(t *testing.T) {
+	testCases := []struct {
+		name         string
+		profilerArgs []string
+		wantWarned   []string
+	}{
+		{
+			name:         "long flag",
+			profilerArgs: []string{"-P", "php-fpm", "--app", "billing"},
+			wantWarned:   []string{"--app"},
+		},
+		{
+			name:         "flag with an inline value",
+			profilerArgs: []string{"--restart=always"},
+			wantWarned:   []string{"--restart=always"},
+		},
+		{
+			name:         "short alias",
+			profilerArgs: []string{"-p", "123", "-v"},
+			wantWarned:   []string{"-v"},
+		},
+		{
+			name:         "phpspy's own help and version",
+			profilerArgs: []string{"--help", "--version", "-V", "74"},
+		},
+		{
+			name:         "arguments of the traced command",
+			profilerArgs: []string{"--", "php", "--app", "-v"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreGlobalLevel(t)
+			logs := captureLogs(t)
+
+			command := cli.New(func(context.Context, app.Config) error { return nil })
+			command.Writer = io.Discard
+			command.ErrWriter = io.Discard
+
+			args := append([]string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "phpspy"}, tc.profilerArgs...)
+			require.NoError(t, command.Run(args))
+
+			var warned []string
+			decoder := json.NewDecoder(logs)
+			for decoder.More() {
+				var entry struct {
+					Level    string `json:"level"`
+					Argument string `json:"argument"`
+				}
+				require.NoError(t, decoder.Decode(&entry))
+				if entry.Level == zerolog.WarnLevel.String() && entry.Argument != "" {
+					warned = append(warned, entry.Argument)
+				}
+			}
+
+			require.Equal(t, tc.wantWarned, warned)
+		})
+	}
+}
+
+func TestNewSetsVerbosity(t *testing.T) {
+	testCases := []struct {
+		name      string
+		verbosity []string
+		want      zerolog.Level
+	}{
+		{name: "info by default", want: zerolog.InfoLevel},
+		{name: "one flag means debug", verbosity: []string{"-v"}, want: zerolog.DebugLevel},
+		{name: "two flags mean trace", verbosity: []string{"-vv"}, want: zerolog.TraceLevel},
+		{name: "more than two flags stay at trace", verbosity: []string{"-vvv"}, want: zerolog.TraceLevel},
+		{name: "separate flags add up", verbosity: []string{"-v", "-v", "-v"}, want: zerolog.TraceLevel},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreGlobalLevel(t)
+			zerolog.SetGlobalLevel(zerolog.PanicLevel)
+
+			args := append([]string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName}, tc.verbosity...)
+			command := cli.New(func(context.Context, app.Config) error { return nil })
+			command.Writer = io.Discard
+			command.ErrWriter = io.Discard
+
+			require.NoError(t, command.Run(append(args, "phpspy")))
+			require.Equal(t, tc.want, zerolog.GlobalLevel())
+		})
+	}
+}
+
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	previous := log.Logger
+	t.Cleanup(func() { log.Logger = previous })
+
+	var logs bytes.Buffer
+	log.Logger = zerolog.New(&logs)
+
+	return &logs
+}
+
+func restoreGlobalLevel(t *testing.T) {
+	t.Helper()
+
+	level := zerolog.GlobalLevel()
+	t.Cleanup(func() { zerolog.SetGlobalLevel(level) })
 }

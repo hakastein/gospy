@@ -106,6 +106,10 @@ func (profiler *Profiler) ValidateConfiguration() error {
 		return fmt.Errorf("event handler %q is unsupported by gospy, expected %s", handler, foutHandler)
 	}
 
+	if profiler.GetHZ() < 1 {
+		return fmt.Errorf("sleep interval %s ns is longer than one second: Pyroscope needs a sample rate of at least 1 Hz", args.text(optionSleepNs, ""))
+	}
+
 	if args.present(optionPgrep) {
 		bufferSize := args.number(optionBufferSize, defaultBufferSize)
 		if bufferSize > pipeBufSize && !strings.Contains(args.text(optionEventHandlerOpts, ""), "m") {

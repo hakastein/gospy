@@ -94,6 +94,15 @@ func TestProfilerValidateConfiguration(t *testing.T) {
 			args: []string{"-f", "-v"},
 		},
 		{
+			name: "a sleep interval of one second is the slowest rate",
+			args: []string{"-s", "1000000000"},
+		},
+		{
+			name:    "a sleep interval above one second leaves no whole sample per second",
+			args:    []string{"--sleep-ns=1500000000"},
+			wantErr: "sleep interval 1500000000 ns is longer than one second: Pyroscope needs a sample rate of at least 1 Hz",
+		},
+		{
 			name: "arguments of the traced command are not phpspy flags",
 			args: []string{"-p", "123", "--", "php", "-v"},
 		},

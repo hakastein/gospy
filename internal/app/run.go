@@ -32,7 +32,8 @@ const (
 
 var ErrDrainAborted = errors.New("shutdown drain aborted by a second signal")
 
-// Config: a nil Transport keeps the real one; a DrainTimeout at or below zero takes DefaultDrainTimeout.
+// Config: a nil Transport keeps the real one; a DrainTimeout at or below zero takes DefaultDrainTimeout;
+// an empty Restart never restarts.
 type Config struct {
 	PyroscopeURL       string
 	PyroscopeAuth      string
@@ -119,6 +120,16 @@ func newSource(cfg runtimeConfig) (profilerRunner, traceParser, error) {
 func validateConfig(cfg Config) error {
 	if cfg.ProfilerApp == "" {
 		return errors.New("no profiler application specified")
+	}
+
+	if cfg.AppName == "" {
+		return errors.New("no app name specified")
+	}
+
+	if cfg.Restart != "" {
+		if err := supervisor.ValidateRestart(cfg.Restart); err != nil {
+			return err
+		}
 	}
 
 	if cfg.PyroscopeWorkers < 1 {
