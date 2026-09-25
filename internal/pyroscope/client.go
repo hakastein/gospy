@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -16,9 +16,18 @@ import (
 	"github.com/hakastein/gospy/internal/version"
 )
 
+const (
+	// A Pyroscope reply carries a short status document; anything past this is a hostile
+	// or broken server and is dropped rather than buffered.
+	maxResponseBytes = 64 << 10
+	// Errors become keys in the statistics report, so only a prefix of a body reaches them.
+	maxErrorTextBytes = 256
+)
+
 type client struct {
 	httpClient *http.Client
-	url        string
+	url        *url.URL
+	urlErr     error
 	authToken  string
 	logger     zerolog.Logger
 }
@@ -28,17 +37,45 @@ type errorResponse struct {
 	Message string `json:"message"`
 }
 
-func newClient(url, authToken string, timeout time.Duration, transport http.RoundTripper, logger zerolog.Logger) *client {
+func newClient(rawURL, authToken string, timeout time.Duration, transport http.RoundTripper, logger zerolog.Logger) *client {
+	ingestURL, err := parseIngestURL(rawURL)
+
 	return &client{
-		httpClient: &http.Client{Timeout: timeout, Transport: transport},
-		url:        strings.TrimSuffix(url, "/") + "/ingest",
-		authToken:  authToken,
-		logger:     logger,
+		httpClient: &http.Client{
+			Timeout:   timeout,
+			Transport: transport,
+			// The Authorization header must never travel to a host the configuration did
+			// not name, so a redirect is reported instead of followed.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		url:       ingestURL,
+		urlErr:    err,
+		authToken: authToken,
+		logger:    logger,
 	}
 }
 
+// parseIngestURL appends the ingest path to the configured URL, keeping the query it already carries.
+func parseIngestURL(rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pyroscope url %q: %w", rawURL, err)
+	}
+
+	return parsed.JoinPath("ingest"), nil
+}
+
 func (client *client) send(ctx context.Context, profile payload) error {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, client.url, bytes.NewReader(profile.body))
+	if client.urlErr != nil {
+		return client.urlErr
+	}
+
+	target := *client.url
+	target.RawQuery = mergeQueries(client.url.RawQuery, profile.query)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(profile.body))
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
@@ -49,8 +86,6 @@ func (client *client) send(ctx context.Context, profile payload) error {
 		httpReq.Header.Set("Authorization", "Bearer "+client.authToken)
 	}
 
-	httpReq.URL.RawQuery = profile.query
-
 	client.logger.Debug().Str("query", httpReq.URL.RawQuery).Msg("requesting pyroscope")
 
 	resp, err := client.httpClient.Do(httpReq)
@@ -59,20 +94,42 @@ func (client *client) send(ctx context.Context, profile payload) error {
 	}
 	defer resp.Body.Close()
 
-	responseBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode == http.StatusOK && len(responseBody) != 0 {
-		return fmt.Errorf("server has returned body with 200 ok")
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("http code: %d, error reading response: %w", resp.StatusCode, err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		var result errorResponse
-		jsonParseErr := json.Unmarshal(responseBody, &result)
-		if jsonParseErr != nil {
-			return fmt.Errorf("http code: %d, response isn't json: %s", resp.StatusCode, responseBody)
-		}
-		return fmt.Errorf("http code: %d, error: %s, message: %s", resp.StatusCode, result.Code, result.Message)
+	return responseError(resp, responseBody)
+}
+
+func responseError(resp *http.Response, body []byte) error {
+	switch {
+	case resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices:
+		return nil
+	case resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest:
+		return fmt.Errorf("http code: %d, redirect to %s not followed", resp.StatusCode, truncate(resp.Header.Get("Location")))
 	}
 
-	return nil
+	var result errorResponse
+	if jsonParseErr := json.Unmarshal(body, &result); jsonParseErr != nil {
+		return fmt.Errorf("http code: %d, response isn't json: %s", resp.StatusCode, truncate(string(body)))
+	}
+
+	return fmt.Errorf("http code: %d, error: %s, message: %s", resp.StatusCode, truncate(result.Code), truncate(result.Message))
+}
+
+func mergeQueries(configured, profile string) string {
+	if configured == "" {
+		return profile
+	}
+
+	return configured + "&" + profile
+}
+
+func truncate(text string) string {
+	if len(text) <= maxErrorTextBytes {
+		return text
+	}
+
+	return text[:maxErrorTextBytes] + "..."
 }

@@ -40,6 +40,7 @@ func TestRun(t *testing.T) {
 			config: func(t *testing.T) app.Config {
 				return app.Config{
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     pyroscopeURL,
 					PyroscopeWorkers: 1,
 					StatsInterval:    -time.Second,
 				}
@@ -51,6 +52,7 @@ func TestRun(t *testing.T) {
 			config: func(t *testing.T) app.Config {
 				return app.Config{
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     pyroscopeURL,
 					PyroscopeWorkers: 1,
 					StatsInterval:    0,
 				}
@@ -62,6 +64,7 @@ func TestRun(t *testing.T) {
 			config: func(t *testing.T) app.Config {
 				return app.Config{
 					ProfilerApp:      filepath.Join(t.TempDir(), "phpspy"),
+					PyroscopeURL:     pyroscopeURL,
 					PyroscopeWorkers: 1,
 					StatsInterval:    time.Second,
 				}
@@ -73,6 +76,7 @@ func TestRun(t *testing.T) {
 			config: func(t *testing.T) app.Config {
 				return app.Config{
 					ProfilerApp:      writeProfilerScript(t, filepath.Join("usr", "bin", "phpspy"), "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     pyroscopeURL,
 					PyroscopeWorkers: 1,
 					StatsInterval:    time.Second,
 				}
@@ -84,6 +88,7 @@ func TestRun(t *testing.T) {
 			config: func(t *testing.T) app.Config {
 				return app.Config{
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 7\n"),
+					PyroscopeURL:     pyroscopeURL,
 					PyroscopeWorkers: 1,
 					StatsInterval:    time.Second,
 				}
@@ -95,6 +100,7 @@ func TestRun(t *testing.T) {
 			config: func(t *testing.T) app.Config {
 				return app.Config{
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     pyroscopeURL,
 					PyroscopeWorkers: 0,
 				}
 			},
@@ -105,10 +111,43 @@ func TestRun(t *testing.T) {
 			config: func(t *testing.T) app.Config {
 				return app.Config{
 					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     pyroscopeURL,
 					PyroscopeWorkers: -1,
 				}
 			},
 			wantErr: errors.New("pyroscope workers must be at least 1"),
+		},
+		{
+			name: "rejects an unparsable pyroscope url",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     "http://pyroscope.test:port",
+					PyroscopeWorkers: 1,
+				}
+			},
+			wantErr: errors.New(`invalid pyroscope url "http://pyroscope.test:port"`),
+		},
+		{
+			name: "rejects a pyroscope url that is neither http nor https",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeURL:     "pyroscope.test:4040",
+					PyroscopeWorkers: 1,
+				}
+			},
+			wantErr: errors.New("pyroscope url must be http or https"),
+		},
+		{
+			name: "rejects a missing pyroscope url",
+			config: func(t *testing.T) app.Config {
+				return app.Config{
+					ProfilerApp:      writeProfilerScript(t, "phpspy", "#!/bin/sh\nexit 0\n"),
+					PyroscopeWorkers: 1,
+				}
+			},
+			wantErr: errors.New("pyroscope url must be http or https"),
 		},
 	}
 
