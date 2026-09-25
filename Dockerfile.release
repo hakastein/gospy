@@ -4,7 +4,7 @@
 # phpspy, which attaches to a PHP process with ptrace, so gospy has to run in
 # the same container as php-fpm. Use this image as a binary source there:
 #
-#   COPY --from=ghcr.io/hakastein/gospy:v0.12.0 /gospy /usr/local/bin/gospy
+#   COPY --from=ghcr.io/hakastein/gospy:0.12.0 /gospy /usr/local/bin/gospy
 #
 # goreleaser puts the already built binary in the build context, so there is no
 # compile step here.
