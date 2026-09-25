@@ -10,11 +10,10 @@ import (
 
 const statsEventBuffer = 1000
 
-// statsEvent is either a finished send, or samples the producer dropped before they ever
-// became a batch: a positive dropped count tells the two apart.
 type statsEvent struct {
 	bytes   int
 	dropped int
+	retries int
 	err     error
 }
 
@@ -22,6 +21,7 @@ type statsReport struct {
 	totalRequests   int
 	totalBytes      int
 	successRequests int
+	retriedAttempts int
 	failedRequests  int
 	droppedSamples  int
 	errors          map[string]int
@@ -49,13 +49,13 @@ func startStatistics(ctx context.Context, interval time.Duration, logger zerolog
 	return stats
 }
 
-func (stats *statistics) record(ctx context.Context, bytes int, err error) {
+func (stats *statistics) record(ctx context.Context, event statsEvent) {
 	if stats == nil {
 		return
 	}
 
 	select {
-	case stats.events <- &statsEvent{bytes: bytes, err: err}:
+	case stats.events <- &event:
 	case <-ctx.Done():
 	}
 }
@@ -116,6 +116,7 @@ func (stats *statistics) flush(report statsReport) {
 		Int("total_requests", report.totalRequests).
 		Int("total_bytes", report.totalBytes).
 		Int("success_requests", report.successRequests).
+		Int("retried_attempts", report.retriedAttempts).
 		Int("failed_requests", report.failedRequests).
 		Int("dropped_samples", report.droppedSamples).
 		Interface("errors", report.errors).
@@ -134,6 +135,7 @@ func (report *statsReport) add(event *statsEvent) {
 
 	report.totalRequests++
 	report.totalBytes += event.bytes
+	report.retriedAttempts += event.retries
 
 	if event.err == nil {
 		report.successRequests++
