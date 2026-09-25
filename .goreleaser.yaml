@@ -49,7 +49,7 @@ sboms:
 # to that process with ptrace. So this image is not a runtime on its own: it is
 # a binary source for a php-fpm image.
 #
-#   COPY --from=ghcr.io/hakastein/gospy:v0.12.0 /gospy /usr/local/bin/gospy
+#   COPY --from=ghcr.io/hakastein/gospy:0.12.0 /gospy /usr/local/bin/gospy
 dockers:
   - id: linux-amd64
     goos: linux

@@ -31,11 +31,12 @@ with more privilege than an ordinary service. Understand this before deploying i
 - **It usually shares a namespace with the target.** To see php-fpm's PIDs, gospy is typically run
   inside the same container as php-fpm or in the same PID namespace (`--pid=container:php-fpm`).
   Anything that can execute code in gospy's context is therefore adjacent to your PHP workers.
-- **The Pyroscope token is passed on the command line.** `--pyroscope-auth` is a CLI flag, so the
-  token is visible to anything that can read the process command line — `ps`, `/proc/<pid>/cmdline`,
-  shell history, container inspect output, orchestrator manifests. Treat it as exposed to every
-  local user who can see the process, and prefer a token scoped to ingest only. Reading the token
-  from an environment variable is planned; it is not available yet.
+- **Pass the Pyroscope token through the environment.** gospy reads it from
+  `GOSPY_PYROSCOPE_AUTH`. The `--pyroscope-auth` flag still works, but a token on the command line
+  is readable by every process in the PID namespace (`ps`, `/proc/<pid>/cmdline`) and lands in
+  shell history. The environment is readable only by the same user and root, but container inspect
+  output and orchestrator manifests still show it, so feed it from a secret store. Either way,
+  prefer a token scoped to ingest only.
 - **gospy runs the profiler you tell it to.** It executes phpspy as a child process with the
   arguments you supply. Whoever controls those arguments controls a command line executed with
   gospy's privileges.
