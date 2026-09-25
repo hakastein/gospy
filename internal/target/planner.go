@@ -72,6 +72,8 @@ type Detach struct {
 type Plan struct {
 	Attach []Process
 	Detach []Detach
+	// Failed are the processes phpspy exited on that a scan started later still lists.
+	Failed []Process
 	// Matched is how many processes the scan brought, Held how many of them sit in a failure hold.
 	Matched int
 	Held    int
@@ -80,6 +82,8 @@ type Plan struct {
 type attach struct {
 	since     time.Time
 	detaching bool
+	// exited is when phpspy returned 0; the slot stays taken until a scan settles it.
+	exited time.Time
 }
 
 type history struct {
@@ -109,18 +113,19 @@ func New(cfg Config) *Planner {
 	}
 }
 
-// Plan takes the processes of one scan that belong to this target and decides what to do at
-// now. Every process it returns in Attach counts as attached from now on until Ended reports
-// it; every Detach counts as in flight until then too.
-func (planner *Planner) Plan(matched []Process, now time.Time) Plan {
+// Plan counts every process in Attach as attached, and every Detach as in flight, until Ended
+// or Exited reports it.
+func (planner *Planner) Plan(matched []Process, scanStarted, now time.Time) Plan {
 	present := make(map[Process]struct{}, len(matched))
 	for _, process := range matched {
 		present[process] = struct{}{}
 	}
 
+	plan := Plan{Matched: len(matched)}
+	plan.Failed = planner.settleExits(present, scanStarted)
+
 	planner.forgetGone(present)
 
-	plan := Plan{Matched: len(matched)}
 	plan.Detach = planner.departures(present)
 
 	candidates, neverTraced := planner.candidates(matched, now, &plan.Held)
@@ -182,6 +187,31 @@ func (planner *Planner) Ended(process Process, now time.Time, failed bool) {
 	record.holdUntil = now.Add(holdBase << (record.failures - 1))
 }
 
+// Exited keeps the slot taken: phpspy returns 0 once the traced process is gone, but a scan
+// started earlier may still list it, so only a scan started after exited settles it.
+func (planner *Planner) Exited(process Process, exited time.Time) {
+	if attach, live := planner.attaches[process]; live {
+		attach.exited = exited
+	}
+}
+
+func (planner *Planner) settleExits(present map[Process]struct{}, scanStarted time.Time) []Process {
+	var failed []Process
+	for process, attach := range planner.attaches {
+		if attach.exited.IsZero() || !scanStarted.After(attach.exited) {
+			continue
+		}
+
+		_, alive := present[process]
+		planner.Ended(process, attach.exited, alive)
+		if alive {
+			failed = append(failed, process)
+		}
+	}
+
+	return failed
+}
+
 // Attached is the number of slots in use, detaches in flight included.
 func (planner *Planner) Attached() int {
 	return len(planner.attaches)
@@ -192,7 +222,7 @@ func (planner *Planner) Attached() int {
 func (planner *Planner) departures(present map[Process]struct{}) []Detach {
 	var detaches []Detach
 	for process, attach := range planner.attaches {
-		if _, listed := present[process]; listed || attach.detaching {
+		if _, listed := present[process]; listed || attach.detaching || !attach.exited.IsZero() {
 			continue
 		}
 
@@ -268,6 +298,9 @@ func (planner *Planner) oldest() (Process, bool) {
 		found  bool
 	)
 	for process, attach := range planner.attaches {
+		if !attach.exited.IsZero() {
+			continue
+		}
 		if !found || attach.since.Before(planner.attaches[oldest].since) ||
 			(attach.since.Equal(planner.attaches[oldest].since) && process.PID < oldest.PID) {
 			oldest, found = process, true
