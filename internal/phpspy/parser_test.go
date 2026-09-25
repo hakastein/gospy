@@ -38,7 +38,7 @@ func (tc parserTestCase) parser() *phpspy.Parser {
 		TagEntrypoint:      tc.tagEntrypoint,
 		KeepEntrypointName: tc.keepEntrypointName,
 		SampleRate:         sampleRate,
-	})
+	}, nil)
 }
 
 func newScannerFromInput(input []string) *bufio.Scanner {
@@ -463,7 +463,7 @@ func TestParserParseReportsReadError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			parser := phpspy.NewParser(phpspy.ParserConfig{Entrypoints: []string{"/app/test.php"}})
+			parser := phpspy.NewParser(phpspy.ParserConfig{Entrypoints: []string{"/app/test.php"}}, nil)
 
 			scanner := bufio.NewScanner(tc.reader)
 			if tc.limitLineSize {
@@ -489,7 +489,7 @@ func TestParserParseReportsReadError(t *testing.T) {
 }
 
 func TestParserParseReturnsOnCancellationWhileChannelIsBlocked(t *testing.T) {
-	parser := phpspy.NewParser(phpspy.ParserConfig{Entrypoints: []string{"/app/test.php"}})
+	parser := phpspy.NewParser(phpspy.ParserConfig{Entrypoints: []string{"/app/test.php"}}, nil)
 	scanner := bufio.NewScanner(strings.NewReader("0 func1 /app/helper.php:10\n1 main /app/test.php:1\n\n"))
 	samplesChannel := make(chan *collector.Sample)
 
@@ -513,7 +513,7 @@ func TestParserParseReturnsOnCancellationWhileChannelIsBlocked(t *testing.T) {
 }
 
 func TestParserParseFlushesFinalTraceOnEOF(t *testing.T) {
-	parser := phpspy.NewParser(phpspy.ParserConfig{Entrypoints: []string{"/app/test.php"}})
+	parser := phpspy.NewParser(phpspy.ParserConfig{Entrypoints: []string{"/app/test.php"}}, nil)
 	scanner := bufio.NewScanner(strings.NewReader("0 func1 /app/helper.php:10\n1 main /app/test.php:1"))
 	samplesChannel := make(chan *collector.Sample, 1)
 
@@ -538,4 +538,97 @@ type errorReader struct{}
 
 func (errorReader) Read([]byte) (int, error) {
 	return 0, errSimulatedRead
+}
+
+type recordingObserver struct {
+	diagnostics []string
+	outcomes    []phpspy.BlockOutcome
+}
+
+func (observer *recordingObserver) Diagnostic(line string) {
+	observer.diagnostics = append(observer.diagnostics, line)
+}
+
+func (observer *recordingObserver) Block(outcome phpspy.BlockOutcome) {
+	observer.outcomes = append(observer.outcomes, outcome)
+}
+
+func TestParserDropsTheBlocksPhpspyCutShort(t *testing.T) {
+	t.Parallel()
+
+	const (
+		frames   = "0 App\\Kernel::handle /srv/app/src/Kernel.php:12\n1 <main> /srv/app/public/index.php:1\n"
+		uri      = "# glopeek server.REQUEST_URI = /orders/42\n"
+		complete = frames + uri + "\n"
+	)
+
+	testCases := []struct {
+		name         string
+		stream       string
+		wantOutcomes []phpspy.BlockOutcome
+	}{
+		{
+			name:         "a full buffer",
+			stream:       "event_handler_fout_snprintf: Not enough space in buffer; truncating\n" + frames + "\n" + complete,
+			wantOutcomes: []phpspy.BlockOutcome{phpspy.Partial, phpspy.Sampled},
+		},
+		{
+			name:         "a frame that could not be read",
+			stream:       "copy_proc_mem: Failed to copy zfunc; err=Bad address raddr=0x7f3a size=160\n" + frames + "\n" + complete,
+			wantOutcomes: []phpspy.BlockOutcome{phpspy.Partial, phpspy.Sampled},
+		},
+		{
+			name:         "a frame without its function",
+			stream:       "copy_proc_mem: Not copying zfunc; raddr is NULL\n" + frames + "\n" + complete,
+			wantOutcomes: []phpspy.BlockOutcome{phpspy.Partial, phpspy.Sampled},
+		},
+		{
+			name:         "a class name that could not be read",
+			stream:       "copy_proc_mem: Failed to copy class_name; err=Bad address raddr=0x7f3a size=24\n" + frames + "\n",
+			wantOutcomes: []phpspy.BlockOutcome{phpspy.Partial},
+		},
+		{
+			name:         "the process gone mid-walk",
+			stream:       "process_vm_readv: No such process\n" + frames + "\n",
+			wantOutcomes: []phpspy.BlockOutcome{phpspy.Partial},
+		},
+		{
+			name:         "a failure before the stack walk",
+			stream:       "copy_proc_mem: Failed to copy executor_globals; err=Bad address raddr=0x55aa size=1664\n" + complete,
+			wantOutcomes: []phpspy.BlockOutcome{phpspy.Sampled},
+		},
+		{
+			name:         "a failed peek",
+			stream:       "copy_proc_mem: Failed to copy array; err=Bad address raddr=0x7f3a size=56\n" + complete,
+			wantOutcomes: []phpspy.BlockOutcome{phpspy.Sampled},
+		},
+		{
+			name:         "a note about the sample rate",
+			stream:       "calc_sleep_time: Expected sleep_ns>0; decrease sample rate\n" + complete,
+			wantOutcomes: []phpspy.BlockOutcome{phpspy.Sampled},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			observer := &recordingObserver{}
+			parser := phpspy.NewParser(phpspy.ParserConfig{
+				DynamicTags: map[string][]tag.DynamicTag{"glopeek server.REQUEST_URI": {{TagKey: "uri"}}},
+				SampleRate:  sampleRate,
+			}, observer)
+			samples := make(chan *collector.Sample, 8)
+
+			require.NoError(t, parser.Parse(context.Background(), bufio.NewScanner(strings.NewReader(tc.stream)), samples))
+			close(samples)
+
+			require.Equal(t, tc.wantOutcomes, observer.outcomes)
+			require.Len(t, observer.diagnostics, 1, "the diagnostic reaches the observer, not the trace")
+			for sample := range samples {
+				require.Equal(t, `<main>;App\Kernel::handle`, sample.Trace)
+				require.Equal(t, "uri=/orders/42", sample.Tags)
+			}
+		})
+	}
 }

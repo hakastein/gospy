@@ -11,6 +11,12 @@ One observed stack occurrence at a point in time, with its tags and the rate it 
 **Trace block**:
 The unit of phpspy stdout: numbered frame lines plus `#`-prefixed meta lines, terminated by a blank line.
 
+**Diagnostic**:
+A line phpspy prints on stderr about itself, such as a failed memory read. It precedes the trace block of the same sample.
+
+**Partial trace**:
+A trace block phpspy cut short, on a full buffer or a failed read inside the stack walk: its outer frames and meta lines are missing, so it is dropped, never sampled.
+
 **Folded stack**:
 A semicolon-joined call chain (`main;handler;query`) — the wire format Pyroscope ingests.
 _Avoid_: collapsed stack, stack string
