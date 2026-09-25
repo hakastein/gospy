@@ -106,10 +106,10 @@ docker_manifests:
       - 'ghcr.io/hakastein/gospy:latest-arm64'
 
 # The release body comes from mikepenz/release-changelog-builder-action via
-# `release --release-notes`, so .github/configuration.json stays the single
-# source of truth for the sections. goreleaser must not overwrite it.
+# `release --release-notes`; goreleaser ignores that flag when its changelog is
+# disabled, so the changelog stays enabled and the flag skips its generation.
 changelog:
-  disable: true
+  use: git
 
 release:
   draft: false
