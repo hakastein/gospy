@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/hakastein/gospy/internal/tag"
@@ -13,7 +14,7 @@ import (
 
 // Keys are sorted so an identical tag set always yields the same string: the collector
 // groups Batches by that string.
-func metaToTags(lines []string, tagsMapping map[string][]tag.DynamicTag) string {
+func metaToTags(lines []string, tagsMapping map[string][]tag.DynamicTag, duplicateKeys zerolog.Sampler) string {
 	if len(tagsMapping) == 0 || len(lines) == 0 {
 		return ""
 	}
@@ -40,7 +41,8 @@ func metaToTags(lines []string, tagsMapping map[string][]tag.DynamicTag) string 
 			mappedValue := dynamicTag.GetValue(originalValue)
 
 			if oldValue, alreadyExists := mappedTags[dynamicTag.TagKey]; alreadyExists {
-				log.Warn().
+				logger := log.Sample(duplicateKeys)
+				logger.Warn().
 					Str("originalKey", originalKey).
 					Str("mappedKey", dynamicTag.TagKey).
 					Str("oldValue", oldValue).
