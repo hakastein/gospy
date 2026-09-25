@@ -1,7 +1,6 @@
 package pyroscope
 
 import (
-	"context"
 	"sync"
 	"time"
 
@@ -27,7 +26,8 @@ type statsReport struct {
 	errors          map[string]int
 }
 
-// A nil *statistics is the disabled mode: record, recordDropped and stop do nothing.
+// A nil *statistics is the disabled mode: record, recordDropped and stop do nothing. The loop
+// outlives a cancelled context so that the events the cancellation itself causes reach the last report.
 type statistics struct {
 	events   chan *statsEvent
 	done     chan struct{}
@@ -36,7 +36,7 @@ type statistics struct {
 	stopOnce sync.Once
 }
 
-func startStatistics(ctx context.Context, interval time.Duration, logger zerolog.Logger) *statistics {
+func startStatistics(interval time.Duration, logger zerolog.Logger) *statistics {
 	stats := &statistics{
 		events:   make(chan *statsEvent, statsEventBuffer),
 		done:     make(chan struct{}),
@@ -44,20 +44,17 @@ func startStatistics(ctx context.Context, interval time.Duration, logger zerolog
 		logger:   logger,
 	}
 
-	go stats.run(ctx)
+	go stats.run()
 
 	return stats
 }
 
-func (stats *statistics) record(ctx context.Context, event statsEvent) {
+func (stats *statistics) record(event statsEvent) {
 	if stats == nil {
 		return
 	}
 
-	select {
-	case stats.events <- &event:
-	case <-ctx.Done():
-	}
+	stats.events <- &event
 }
 
 // recordDropped never blocks its caller: counting is worth less than the pipeline it observes.
@@ -82,7 +79,7 @@ func (stats *statistics) stop() {
 	<-stats.done
 }
 
-func (stats *statistics) run(ctx context.Context) {
+func (stats *statistics) run() {
 	defer close(stats.done)
 
 	ticker := time.NewTicker(stats.interval)
@@ -101,8 +98,6 @@ func (stats *statistics) run(ctx context.Context) {
 		case <-ticker.C:
 			stats.flush(report)
 			report = newStatsReport()
-		case <-ctx.Done():
-			return
 		}
 	}
 }

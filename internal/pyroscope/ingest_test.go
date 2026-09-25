@@ -718,6 +718,81 @@ func TestIngestStopsOnContextCancellation(t *testing.T) {
 	}
 }
 
+func TestIngestFlushesStatisticsOnContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	delivered := make(chan struct{}, 1)
+	harness := startIngest(ctx, ingestOptions{
+		cfg: pyroscope.Config{
+			AppName:       "myapp",
+			StatsInterval: time.Hour,
+		},
+		respond: func(*http.Request) (*http.Response, error) {
+			delivered <- struct{}{}
+			return respondWith(http.StatusOK, ""), nil
+		},
+	})
+
+	harness.ingest.In() <- batch("env=test", map[string]int{"main;foo": 1})
+	<-delivered
+	cancel()
+	close(harness.ingest.In())
+	harness.ingest.Wait()
+
+	reports := harness.reports(t)
+	require.Len(t, reports, 1, "the window open at cancellation must still be reported")
+	assert.Equal(t, float64(1), reports[0]["total_requests"])
+	assert.Equal(t, float64(1), reports[0]["success_requests"])
+}
+
+func TestIngestCountsQueuedBatchesAsDroppedOnContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	started := make(chan struct{}, 1)
+	harness := startIngest(ctx, ingestOptions{
+		cfg: pyroscope.Config{
+			AppName:       "myapp",
+			StatsInterval: time.Hour,
+		},
+		respond: func(request *http.Request) (*http.Response, error) {
+			started <- struct{}{}
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		},
+	})
+
+	harness.ingest.In() <- batch("env=test", map[string]int{"main;foo": 1})
+	<-started
+	harness.ingest.In() <- batch("env=test", map[string]int{"main;bar": 2, "main;baz": 1})
+	cancel()
+	close(harness.ingest.In())
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		harness.ingest.Wait()
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait did not return after context cancellation")
+	}
+
+	require.Len(t, harness.transport.captured(), 1, "a batch queued behind the cancellation must not be sent")
+
+	reports := harness.reports(t)
+	require.Len(t, reports, 1)
+	assert.Equal(t, float64(1), reports[0]["failed_requests"], "the batch in flight must fail")
+	assert.Equal(t, float64(3), reports[0]["dropped_samples"], "the queued batch must be counted as dropped")
+}
+
 func TestIngestDeliversUnderRateLimit(t *testing.T) {
 	t.Parallel()
 
