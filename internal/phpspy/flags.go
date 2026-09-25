@@ -14,7 +14,10 @@ type option struct {
 	managed bool
 }
 
-// phpspy's getopt_long table. Reading one option needs the arity of them all: an option's
+// phpspy's getopt_long table: the 0.7.0 release plus what its unreleased master added (quiet,
+// max-depth-outer, peek-pdo). master also dropped the short forms of addr-executor-globals,
+// addr-sapi-globals, event-handler, event-handler-opts and libname-awk-patt; the long forms
+// stay, so the table keeps both. Reading one option needs the arity of them all: an option's
 // value can look like a flag ("-f -v" filters on "-v") and switches cluster ("-cq").
 var phpspyOptions = []option{
 	{long: "help", short: "h", managed: true},
@@ -27,6 +30,7 @@ var phpspyOptions = []option{
 	{long: "limit", short: "l", value: true, managed: true},
 	{long: "time-limit-ms", short: "i", value: true, managed: true},
 	{long: "max-depth", short: "n", value: true},
+	{long: "max-depth-outer", short: "N", value: true},
 	{long: "request-info", short: "r", value: true},
 	{long: "memory-usage", short: "m"},
 	{long: "output", short: "o", value: true, managed: true},
@@ -50,6 +54,7 @@ var phpspyOptions = []option{
 	{long: "pause-process", short: "S"},
 	{long: "peek-var", short: "e", value: true},
 	{long: "peek-global", short: "g", value: true},
+	{long: "peek-pdo", short: "D"},
 	{long: "top", short: "t", managed: true},
 	{long: "libname-awk-patt", short: "w", value: true},
 }

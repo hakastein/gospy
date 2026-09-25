@@ -33,6 +33,10 @@ func TestValidateArgs(t *testing.T) {
 			args: []string{"--max=3", "--peek-g", "server.REQUEST_URI", "--cont"},
 		},
 		{
+			name: "flags of phpspy's unreleased master",
+			args: []string{"-N", "5", "--max-depth-outer=3", "-D", "--peek-pdo", "-cD"},
+		},
+		{
 			name: "a flag phpspy does not know is left to phpspy",
 			args: []string{"--future-flag", "--other=value", "-Z"},
 		},
