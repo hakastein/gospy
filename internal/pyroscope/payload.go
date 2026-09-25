@@ -16,7 +16,6 @@ const (
 type appMetadata struct {
 	appName    string
 	staticTags string
-	sampleRate int
 }
 
 type payload struct {
@@ -24,11 +23,10 @@ type payload struct {
 	body  []byte
 }
 
-func newAppMetadata(appName, staticTags string, sampleRate int) *appMetadata {
+func newAppMetadata(appName, staticTags string) *appMetadata {
 	return &appMetadata{
 		appName:    appName,
 		staticTags: staticTags,
-		sampleRate: sampleRate,
 	}
 }
 
@@ -71,7 +69,7 @@ func (app *appMetadata) queryString(batch *collector.TagCollection) string {
 	builder.WriteString("&until=")
 	builder.WriteString(strconv.FormatInt(batch.Until().Unix(), 10))
 	builder.WriteString("&sampleRate=")
-	builder.WriteString(strconv.Itoa(app.sampleRate))
+	builder.WriteString(strconv.Itoa(batch.SampleRate()))
 	builder.WriteString("&format=folded")
 
 	return builder.String()

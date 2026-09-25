@@ -29,6 +29,7 @@ import (
 const (
 	unthrottledRateMB = 100
 	bytesPerMegabyte  = 1 << 20
+	sampleRate        = 100
 )
 
 var (
@@ -175,9 +176,13 @@ func (harness *ingestHarness) reports(t *testing.T) []map[string]any {
 }
 
 func batch(tags string, stacks map[string]int) *collector.TagCollection {
+	return batchAt(sampleRate, tags, stacks)
+}
+
+func batchAt(rate int, tags string, stacks map[string]int) *collector.TagCollection {
 	from := time.Date(2024, 5, 1, 10, 0, 0, 0, time.UTC)
 
-	return collector.NewTagCollection(from, from.Add(10*time.Second), tags, stacks)
+	return collector.NewTagCollection(from, from.Add(10*time.Second), tags, rate, stacks)
 }
 
 func TestIngestSendsBatchOverTheWire(t *testing.T) {
@@ -224,7 +229,6 @@ func TestIngestSendsBatchOverTheWire(t *testing.T) {
 					AuthToken:  tc.authToken,
 					AppName:    "test.app",
 					StaticTags: "env=prod",
-					SampleRate: 100,
 				},
 			})
 
@@ -298,11 +302,10 @@ func TestIngestComposesQuery(t *testing.T) {
 				cfg: pyroscope.Config{
 					AppName:    "myapp",
 					StaticTags: tc.staticTags,
-					SampleRate: 42,
 				},
 			})
 
-			sent := batch(tc.dynamicTags, map[string]int{"main;foo": 1})
+			sent := batchAt(42, tc.dynamicTags, map[string]int{"main;foo": 1})
 			harness.send(sent)
 
 			requests := harness.transport.captured()
@@ -316,6 +319,28 @@ func TestIngestComposesQuery(t *testing.T) {
 			assert.Equal(t, "folded", query.Get("format"))
 		})
 	}
+}
+
+func TestIngestSendsEachBatchAtItsOwnSampleRate(t *testing.T) {
+	t.Parallel()
+
+	harness := startIngest(context.Background(), ingestOptions{
+		cfg: pyroscope.Config{AppName: "myapp"},
+	})
+
+	harness.send(
+		batchAt(25, "source=fpm", map[string]int{"main;foo": 1}),
+		batchAt(10, "source=cli", map[string]int{"main;bar": 1}),
+	)
+
+	requests := harness.transport.captured()
+	require.Len(t, requests, 2)
+
+	rates := map[string]string{}
+	for _, request := range requests {
+		rates[request.query.Get("name")] = request.query.Get("sampleRate")
+	}
+	assert.Equal(t, map[string]string{"myapp{source=fpm}": "25", "myapp{source=cli}": "10"}, rates)
 }
 
 func TestIngestReportsFailedSends(t *testing.T) {

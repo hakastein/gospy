@@ -1,0 +1,10 @@
+Name:	php
+Umask:	0022
+State:	S (sleeping)
+Tgid:	300
+Ngid:	0
+Pid:	300
+PPid:	1
+TracerPid:	0
+Uid:	33	33	33	33
+Gid:	33	33	33	33

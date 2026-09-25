@@ -1,30 +1,8 @@
 package phpspy
 
 import (
-	"strconv"
+	"fmt"
 	"strings"
-)
-
-const (
-	stdoutPath        = "-"
-	foutHandler       = "fout"
-	defaultBufferSize = 4096
-	defaultRateHz     = 99
-
-	// pipeBufSize is the PIPE_BUF above which phpspy interlaces writes in pgrep mode.
-	pipeBufSize = 4096
-
-	nanosecondsPerSecond = 1000000000
-)
-
-const (
-	optionOutput           = "output"
-	optionPgrep            = "pgrep"
-	optionBufferSize       = "buffer-size"
-	optionEventHandler     = "event-handler"
-	optionEventHandlerOpts = "event-handler-opts"
-	optionRateHz           = "rate-hz"
-	optionSleepNs          = "sleep-ns"
 )
 
 type option struct {
@@ -38,30 +16,30 @@ type option struct {
 var phpspyOptions = []option{
 	{long: "help", short: "h"},
 	{long: "pid", short: "p", value: true},
-	{long: optionPgrep, short: "P", value: true},
+	{long: "pgrep", short: "P", value: true},
 	{long: "threads", short: "T", value: true},
-	{long: optionSleepNs, short: "s", value: true},
-	{long: optionRateHz, short: "H", value: true},
+	{long: "sleep-ns", short: "s", value: true},
+	{long: "rate-hz", short: "H", value: true},
 	{long: "php-version", short: "V", value: true},
 	{long: "limit", short: "l", value: true},
 	{long: "time-limit-ms", short: "i", value: true},
 	{long: "max-depth", short: "n", value: true},
 	{long: "request-info", short: "r", value: true},
 	{long: "memory-usage", short: "m"},
-	{long: optionOutput, short: "o", value: true},
+	{long: "output", short: "o", value: true},
 	{long: "child-stdout", short: "O", value: true},
 	{long: "child-stderr", short: "E", value: true},
 	{long: "addr-executor-globals", short: "x", value: true},
 	{long: "addr-sapi-globals", short: "a", value: true},
 	{long: "single-line", short: "1"},
-	{long: optionBufferSize, short: "b", value: true},
+	{long: "buffer-size", short: "b", value: true},
 	{long: "filter", short: "f", value: true},
 	{long: "filter-negate", short: "F", value: true},
 	{long: "verbose-fields", short: "d", value: true},
 	{long: "continue-on-error", short: "c"},
 	{long: "quiet", short: "q"},
-	{long: optionEventHandler, short: "j", value: true},
-	{long: optionEventHandlerOpts, short: "J", value: true},
+	{long: "event-handler", short: "j", value: true},
+	{long: "event-handler-opts", short: "J", value: true},
 	{long: "comment", short: "#", value: true},
 	{long: "nothing", short: "@"},
 	{long: "version", short: "v"},
@@ -70,6 +48,25 @@ var phpspyOptions = []option{
 	{long: "peek-global", short: "g", value: true},
 	{long: "top", short: "t"},
 	{long: "libname-awk-patt", short: "w", value: true},
+}
+
+// Options gospy sets itself, or that would make phpspy trace something else or print
+// something other than trace blocks. The rate and the target set have exactly one source of
+// truth: the configuration file.
+var managedOptions = []string{
+	"pid",
+	"pgrep",
+	"threads",
+	"rate-hz",
+	"sleep-ns",
+	"time-limit-ms",
+	"limit",
+	"output",
+	"event-handler",
+	"top",
+	"single-line",
+	"version",
+	"help",
 }
 
 func longOption(long string) (option, bool) {
@@ -92,12 +89,25 @@ func shortOption(short string) (option, bool) {
 	return option{}, false
 }
 
-type givenOption struct {
-	long  string
-	value string
+// ValidateArgs rejects extra phpspy arguments that name an option gospy manages, in short,
+// long or clustered form. Options phpspy does not know are passed through untouched.
+func ValidateArgs(args []string) error {
+	given := parseArgs(args)
+
+	for _, managed := range managedOptions {
+		if !given.present(managed) {
+			continue
+		}
+
+		opt, _ := longOption(managed)
+
+		return fmt.Errorf("phpspy flag -%s/--%s is managed by gospy and cannot be passed", opt.short, opt.long)
+	}
+
+	return nil
 }
 
-type givenOptions []givenOption
+type givenOptions []string
 
 // parseArgs follows getopt_long: "--" ends the option list, a short option takes its value
 // attached or from the next argument, and switches cluster into one word.
@@ -111,19 +121,15 @@ func parseArgs(args []string) givenOptions {
 		case arg == "--":
 			return given
 		case strings.HasPrefix(arg, "--"):
-			name, inline, hasInline := strings.Cut(arg[2:], "=")
+			name, _, hasInline := strings.Cut(arg[2:], "=")
 			opt, known := longOption(name)
 			if !known {
 				continue
 			}
 
-			switch {
-			case !opt.value:
-				given = append(given, givenOption{long: opt.long})
-			case hasInline:
-				given = append(given, givenOption{long: opt.long, value: inline})
-			default:
-				given = append(given, givenOption{long: opt.long, value: next(args, &i)})
+			given = append(given, opt.long)
+			if opt.value && !hasInline {
+				skip(args, &i)
 			}
 		case len(arg) > 1 && arg[0] == '-':
 			given = appendCluster(given, arg, args, &i)
@@ -140,59 +146,34 @@ func appendCluster(given givenOptions, cluster string, args []string, i *int) gi
 			return given
 		}
 
+		given = append(given, opt.long)
 		if !opt.value {
-			given = append(given, givenOption{long: opt.long})
 			continue
 		}
 
-		value := cluster[k+1:]
-		if value == "" {
-			value = next(args, i)
+		if cluster[k+1:] == "" {
+			skip(args, i)
 		}
 
-		return append(given, givenOption{long: opt.long, value: value})
+		return given
 	}
 
 	return given
 }
 
-func next(args []string, i *int) string {
-	if *i+1 >= len(args) {
-		return ""
+// skip consumes the next argument as the value of the option just read.
+func skip(args []string, i *int) {
+	if *i+1 < len(args) {
+		*i++
 	}
-
-	*i++
-
-	return args[*i]
 }
 
 func (given givenOptions) present(long string) bool {
 	for _, opt := range given {
-		if opt.long == long {
+		if opt == long {
 			return true
 		}
 	}
 
 	return false
-}
-
-// text returns the last occurrence, as every phpspy option overwrites the previous one.
-func (given givenOptions) text(long, defaultValue string) string {
-	value := defaultValue
-	for _, opt := range given {
-		if opt.long == long {
-			value = opt.value
-		}
-	}
-
-	return value
-}
-
-func (given givenOptions) number(long string, defaultValue int) int {
-	value, err := strconv.Atoi(given.text(long, ""))
-	if err != nil {
-		return defaultValue
-	}
-
-	return value
 }

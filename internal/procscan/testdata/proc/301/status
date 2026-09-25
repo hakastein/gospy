@@ -1,0 +1,10 @@
+Name:	php (evil) x
+Umask:	0022
+State:	R (sleeping)
+Tgid:	301
+Ngid:	0
+Pid:	301
+PPid:	300
+TracerPid:	0
+Uid:	33	33	33	33
+Gid:	33	33	33	33

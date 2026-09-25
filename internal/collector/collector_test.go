@@ -12,7 +12,10 @@ import (
 	"github.com/hakastein/gospy/internal/collector"
 )
 
-const dropReportBuffer = 8
+const (
+	dropReportBuffer = 8
+	sampleRate       = 99
+)
 
 type pipe struct {
 	samples chan *collector.Sample
@@ -95,7 +98,11 @@ func (p *pipe) drain(t *testing.T) []*collector.TagCollection {
 }
 
 func sample(at time.Time, trace, tags string) *collector.Sample {
-	return &collector.Sample{Time: at, Trace: trace, Tags: tags}
+	return &collector.Sample{Time: at, Trace: trace, Tags: tags, SampleRate: sampleRate}
+}
+
+func sampleAt(rate int, at time.Time, trace, tags string) *collector.Sample {
+	return &collector.Sample{Time: at, Trace: trace, Tags: tags, SampleRate: rate}
 }
 
 func TestCollectCutsABatchPerTagSetOnATick(t *testing.T) {
@@ -114,15 +121,45 @@ func TestCollectCutsABatchPerTagSetOnATick(t *testing.T) {
 
 	batch := p.next(t)
 	assert.Equal(t, "auth", batch.Tags())
+	assert.Equal(t, sampleRate, batch.SampleRate())
 	assert.Equal(t, map[string]int{"main;login": 2}, batch.Data())
 	assert.Equal(t, baseTime, batch.From())
 	assert.Equal(t, baseTime.Add(time.Second), batch.Until())
 
 	batch = p.next(t)
 	assert.Equal(t, "api", batch.Tags())
+	assert.Equal(t, sampleRate, batch.SampleRate())
 	assert.Equal(t, map[string]int{"http;handler": 1}, batch.Data())
 	assert.Equal(t, baseTime.Add(2*time.Second), batch.From())
 	assert.Equal(t, baseTime.Add(2*time.Second), batch.Until())
+
+	close(p.samples)
+	require.Empty(t, p.drain(t))
+}
+
+func TestCollectKeepsSampleRatesApart(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := startPipe(t, ctx, 0, collector.Config{})
+
+	p.samples <- sampleAt(25, baseTime, "main;login", "source=fpm")
+	p.samples <- sampleAt(10, baseTime.Add(time.Second), "main;login", "source=fpm")
+	p.samples <- sampleAt(25, baseTime.Add(2*time.Second), "main;logout", "source=fpm")
+	p.tick(t)
+
+	batch := p.next(t)
+	assert.Equal(t, "source=fpm", batch.Tags())
+	assert.Equal(t, 25, batch.SampleRate())
+	assert.Equal(t, map[string]int{"main;login": 1, "main;logout": 1}, batch.Data())
+
+	batch = p.next(t)
+	assert.Equal(t, "source=fpm", batch.Tags(), "the same tag set at another rate is a batch of its own")
+	assert.Equal(t, 10, batch.SampleRate())
+	assert.Equal(t, map[string]int{"main;login": 1}, batch.Data())
 
 	close(p.samples)
 	require.Empty(t, p.drain(t))
@@ -385,9 +422,10 @@ func TestTagCollectionGetters(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	batch := collector.NewTagCollection(now, now.Add(time.Second), "tags", map[string]int{"trace1": 1, "trace2": 3})
+	batch := collector.NewTagCollection(now, now.Add(time.Second), "tags", 42, map[string]int{"trace1": 1, "trace2": 3})
 
 	assert.Equal(t, "tags", batch.Tags())
+	assert.Equal(t, 42, batch.SampleRate())
 	assert.Equal(t, now, batch.From())
 	assert.Equal(t, now.Add(time.Second), batch.Until())
 	assert.Equal(t, map[string]int{"trace1": 1, "trace2": 3}, batch.Data())
@@ -417,9 +455,10 @@ func BenchmarkCollect(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		samples <- &collector.Sample{
-			Time:  now,
-			Trace: "main;func",
-			Tags:  fmt.Sprintf("tag%d", i%numTags),
+			Time:       now,
+			Trace:      "main;func",
+			Tags:       fmt.Sprintf("tag%d", i%numTags),
+			SampleRate: sampleRate,
 		}
 	}
 

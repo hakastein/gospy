@@ -21,12 +21,11 @@ labels: fix, needs-triage
 - Where it runs (host, container, shared PID namespace with php-fpm):
 - Pyroscope version, if relevant:
 
-## Command line
+## Configuration
 
-<!-- The full gospy invocation, with the --pyroscope-auth token redacted. -->
+<!-- The configuration file, with the values of any secret environment variables redacted. The token itself never belongs in the file. -->
 
-```
-gospy ...
+```yaml
 ```
 
 ## Logs

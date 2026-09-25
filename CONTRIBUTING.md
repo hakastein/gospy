@@ -22,10 +22,11 @@ make build   # builds ./gospy
 make test    # runs the suite over ./cmd/... and ./internal/...
 ```
 
-The tests are hermetic: none of them need phpspy, a PHP process or a Pyroscope server. Running
-gospy for real does need phpspy and the privileges it requires to attach to a running process —
-see [SECURITY.md](SECURITY.md) for the privilege model and the [README](README.md) for flags and
-container examples.
+The tests are hermetic: none of them need phpspy, a PHP process or a Pyroscope server; a scripted
+`phpspy` stand-in and a fixture `/proc` tree take their place. Running gospy for real does need
+phpspy and the privileges it requires to attach to a running process — see
+[SECURITY.md](SECURITY.md) for the privilege model and the [README](README.md) for the
+configuration file and container examples.
 
 ### Checks
 
@@ -104,7 +105,7 @@ The full vocabulary, the precedence order and the machinery behind it are in
 
 Run `make build`, `make test` and `make lint` before opening a pull request, and state in the
 body what you actually ran and what you did not cover. "Tested manually against a live php-fpm, no automated
-test for the restart path" is a useful sentence; silence is not. The pull request template asks
+test for the rotation path" is a useful sentence; silence is not. The pull request template asks
 for exactly this.
 
 Keep a pull request to one coherent change. Unrelated cleanups belong in their own branch.
@@ -112,8 +113,9 @@ Keep a pull request to one coherent change. Unrelated cleanups belong in their o
 ## What a good issue contains
 
 - What you did, what you expected and what happened instead.
-- The gospy version (`gospy --version`) and the full command line, with the auth token redacted.
-- The phpspy version and how it is invoked, if the problem involves parsing or process handling.
+- The gospy version (`gospy --version`) and the configuration file, with any secret redacted.
+- The phpspy version and the target's `phpspy-args`, if the problem involves parsing or process
+  handling.
 - Where it runs: host, container, PID namespace shared with php-fpm, and so on.
 - Relevant log output — run with `-v` or `-vv` for more detail.
 
@@ -146,9 +148,9 @@ Follow the conventions already in the file you are editing rather than importing
 ## Domain vocabulary
 
 [`CONTEXT.md`](CONTEXT.md) is the glossary — sample, trace block, folded stack, entry point,
-static and dynamic tags, batch, ingest, restart policy. Use those words in issues, commits and
-identifiers, and avoid the synonyms it lists. Decisions with lasting consequences are recorded as
-ADRs in [`docs/adr/`](docs/adr/).
+static and dynamic tags, batch, ingest, target, scan, slot, attach, rotation. Use those words in
+issues, commits and identifiers, and avoid the synonyms it lists. Decisions with lasting
+consequences are recorded as ADRs in [`docs/adr/`](docs/adr/).
 
 ## Coding agents
 

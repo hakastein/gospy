@@ -11,7 +11,7 @@ labels: feature, needs-triage
 
 ## What you want gospy to do
 
-<!-- The behaviour you are asking for. If it adds or changes a CLI flag, write out the flag and an example invocation. -->
+<!-- The behaviour you are asking for. If it adds or changes a configuration key, write out the key and an example file. -->
 
 ## What you do instead today
 

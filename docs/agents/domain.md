@@ -11,13 +11,16 @@ expected to use them.
   you are about to change. Today that is
   [`0001-single-ingest-front-door.md`](../adr/0001-single-ingest-front-door.md), which explains
   why `internal/pyroscope` exposes `Config` / `StartIngest` / `In()` / `Wait()` and keeps
-  everything else unexported.
+  everything else unexported, and
+  [`0002-own-discovery-one-phpspy-per-pid.md`](../adr/0002-own-discovery-one-phpspy-per-pid.md),
+  which explains why gospy discovers processes itself and runs one phpspy per PID instead of
+  feeding phpspy's pgrep mode.
 
 ## Use the glossary's vocabulary
 
 When your output names a domain concept — an issue title, a refactor proposal, a hypothesis, a
 test name, an identifier — use the term as `CONTEXT.md` defines it, and avoid the synonyms it
-lists under _Avoid_ (`collapsed stack`, `chunk`, `sender`, `restart mode`, …).
+lists under _Avoid_ (`collapsed stack`, `chunk`, `sender`, `session`, …).
 
 If the concept you need is not in the glossary, that is a signal: either you are inventing
 language the project does not use, in which case reconsider, or there is a real gap worth naming

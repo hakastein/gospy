@@ -11,6 +11,6 @@ import (
 
 func main() {
 	if err := cli.New(app.Run).Run(os.Args); err != nil {
-		log.Fatal().Err(err).Msg("can't start app")
+		log.Fatal().Err(err).Msg("gospy stopped")
 	}
 }
