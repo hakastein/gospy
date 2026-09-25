@@ -203,6 +203,7 @@ func (runner *targetRunner) logStatistics() {
 		Int("held", runner.stats.held).
 		Int64("partial_traces", runner.counters.PartialTraces.Swap(0)).
 		Int64("filtered_traces", runner.counters.FilteredTraces.Swap(0)).
+		Int64("read_errors", runner.counters.ReadErrors.Swap(0)).
 		Msg("target statistics")
 
 	runner.stats.rotations, runner.stats.preemptions, runner.stats.failed = 0, 0, 0

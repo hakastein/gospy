@@ -527,3 +527,29 @@ func TestAnEndedContextAbandonsTheAttach(t *testing.T) {
 	require.Equal(t, attach.Result{Outcome: attach.Detached}, awaitResult(t, a))
 	requireGone(t, pid)
 }
+
+func TestWaitLogsEachKindOfDiagnosticOnceAndCountsTransientReads(t *testing.T) {
+	t.Parallel()
+
+	body := "for i in 1 2 3 4 5; do\n" +
+		"echo \"copy_proc_mem: Failed to copy zfunc; err=Bad address raddr=0x7f0$i size=160\" >&2\n" +
+		"echo \"copy_proc_mem: Not copying zfunc; raddr is NULL\" >&2\n" +
+		"echo \"copy_proc_mem: Failed to copy executor_globals; err=Operation not permitted raddr=0x55a$i size=1664\" >&2\n" +
+		"echo \"calc_sleep_time: Expected sleep_ns>0; decrease sample rate\" >&2\n" +
+		"done\n"
+
+	var logs strings.Builder
+	cfg := config(script(t, body))
+	cfg.Logger = zerolog.New(&logs).Level(zerolog.WarnLevel)
+	cfg.Counters = &attach.Counters{}
+
+	a, err := attach.Start(context.Background(), cfg, make(chan *collector.Sample, 8))
+	require.NoError(t, err)
+	awaitResult(t, a)
+
+	warned := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	require.Len(t, warned, 2, "the denial and the rate note once each, the transient reads never: %s", logs.String())
+	require.Contains(t, warned[0], "Operation not permitted")
+	require.Contains(t, warned[1], "decrease sample rate")
+	require.Equal(t, int64(10), cfg.Counters.ReadErrors.Load())
+}
