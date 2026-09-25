@@ -55,6 +55,19 @@ func (tc *TagCollection) Tags() string {
 	return tc.tags
 }
 
+func (tc *TagCollection) SampleCount() int {
+	return countSamples(tc.data)
+}
+
+func countSamples(stacks map[string]int) int {
+	total := 0
+	for _, count := range stacks {
+		total += count
+	}
+
+	return total
+}
+
 // Config tunes when batches are cut and how much the collector may hold while a batch waits
 // for its consumer. Every tick on Ticks cuts all open batches; a nil Ticks leaves the closing
 // of the input as the only time-based cut. A cap at or below zero falls back to its default;
@@ -107,6 +120,7 @@ func Collect(ctx context.Context, samples <-chan *Sample, batches chan<- *TagCol
 
 		select {
 		case <-ctx.Done():
+			tc.abandon()
 			log.Info().Msg("collector shutting down")
 			return
 		case output <- batch:
@@ -176,6 +190,22 @@ func (tc *traceCollector) cut(tags string) {
 	delete(tc.groups, tags)
 
 	tc.ready.PushBack(NewTagCollection(group.from, group.until, tags, group.stacks))
+}
+
+func (tc *traceCollector) abandon() {
+	tc.reportDropped()
+
+	held := 0
+	for element := tc.ready.Front(); element != nil; element = element.Next() {
+		held += element.Value.(*TagCollection).SampleCount()
+	}
+	for _, group := range tc.groups {
+		held += countSamples(group.stacks)
+	}
+
+	if held > 0 && tc.config.OnDrop != nil {
+		tc.config.OnDrop(held)
+	}
 }
 
 func (tc *traceCollector) reportDropped() {

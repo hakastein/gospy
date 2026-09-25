@@ -41,8 +41,8 @@ type Ingest struct {
 	workers  sync.WaitGroup
 }
 
-// StartIngest expects its producer to feed batches into In and close it exactly once;
-// cancelling ctx drops whatever is still in flight.
+// StartIngest expects its producer to feed batches into In and close it exactly once, cancelled
+// or not. Cancelling ctx fails the batches in flight and counts those still queued as dropped samples.
 func StartIngest(ctx context.Context, cfg Config) *Ingest {
 	workers := max(cfg.Workers, 1)
 
@@ -61,7 +61,7 @@ func StartIngest(ctx context.Context, cfg Config) *Ingest {
 	}
 
 	if cfg.StatsInterval > 0 && cfg.Logger.Info().Enabled() {
-		ingest.stats = startStatistics(ctx, cfg.StatsInterval, cfg.Logger)
+		ingest.stats = startStatistics(cfg.StatsInterval, cfg.Logger)
 	}
 
 	for i := 0; i < workers; i++ {
@@ -94,17 +94,13 @@ func (ingest *Ingest) work(ctx context.Context) {
 	ingest.logger.Info().Msg("pyroscope ingest worker started")
 	defer ingest.logger.Info().Msg("pyroscope ingest worker shutting down")
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case batch, ok := <-ingest.input:
-			if !ok {
-				return
-			}
-
-			ingest.deliver(ctx, batch)
+	for batch := range ingest.input {
+		if ctx.Err() != nil {
+			ingest.stats.recordDropped(batch.SampleCount())
+			continue
 		}
+
+		ingest.deliver(ctx, batch)
 	}
 }
 
@@ -133,7 +129,7 @@ func (ingest *Ingest) deliver(ctx context.Context, batch *collector.TagCollectio
 			Msg("successfully sent data to Pyroscope")
 	}
 
-	ingest.stats.record(ctx, statsEvent{bytes: len(profile.body), retries: attempts - 1, err: err})
+	ingest.stats.record(statsEvent{bytes: len(profile.body), retries: attempts - 1, err: err})
 }
 
 func (ingest *Ingest) send(ctx context.Context, profile payload) (int, error) {

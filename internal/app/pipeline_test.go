@@ -223,7 +223,7 @@ func TestRunShipsABurstAsOneRequestPerTagSet(t *testing.T) {
 	transport := &captureTransport{}
 
 	require.NoError(t, app.Run(context.Background(), app.Config{
-		ProfilerApp:        writeProfilerScript(t, "phpspy", "#!/bin/sh\ncat "+fixture+"\nsleep 1\ncat "+fixture+"\n"),
+		ProfilerApp:        writeProfilerScript(t, "phpspy", "#!/bin/sh\ncat "+fixture+"\nsleep 2\ncat "+fixture+"\n"),
 		AppName:            "checkout",
 		AppTags:            []string{"env=production", `uri={{ "glopeek server.REQUEST_URI" }}`},
 		KeepEntrypointName: true,

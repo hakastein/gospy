@@ -121,6 +121,11 @@ func New(run Runner) *ucli.App {
 				Usage: "Interval at which the application will log its sending statistics; set to 0 or less to disable statistics logging",
 				Value: DefaultStatsInterval,
 			},
+			&ucli.DurationFlag{
+				Name:  "drain-timeout",
+				Usage: "How long a shutdown keeps sending buffered batches before dropping them; a second SIGTERM or SIGINT ends it at once",
+				Value: app.DefaultDrainTimeout,
+			},
 			&ucli.BoolFlag{
 				Name:    "verbose",
 				Usage:   "Verbosity level; use twice to increase verbosity",
@@ -152,6 +157,7 @@ func configFrom(c *ucli.Context) app.Config {
 		Entrypoints:        c.StringSlice("entrypoint"),
 		BatchInterval:      c.Duration("batch-interval"),
 		StatsInterval:      c.Duration("stats-interval"),
+		DrainTimeout:       c.Duration("drain-timeout"),
 	}
 
 	if arguments := c.Args().Slice(); len(arguments) > 0 {

@@ -26,6 +26,7 @@ func defaultConfig() app.Config {
 		RateBurstMB:        6,
 		BatchInterval:      5 * time.Second,
 		StatsInterval:      10 * time.Second,
+		DrainTimeout:       10 * time.Second,
 	}
 }
 
@@ -112,6 +113,15 @@ func TestNew(t *testing.T) {
 			env:  map[string]string{"GOSPY_PYROSCOPE_AUTH": "token-from-env"},
 			want: func(cfg *app.Config) {
 				cfg.PyroscopeAuth = "token-from-flag"
+				cfg.ProfilerApp = "phpspy"
+				cfg.ProfilerArguments = []string{}
+			},
+		},
+		{
+			name: "drain timeout is taken from its flag",
+			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--drain-timeout", "3s", "phpspy"},
+			want: func(cfg *app.Config) {
+				cfg.DrainTimeout = 3 * time.Second
 				cfg.ProfilerApp = "phpspy"
 				cfg.ProfilerArguments = []string{}
 			},

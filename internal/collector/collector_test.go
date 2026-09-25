@@ -356,16 +356,42 @@ func TestCollectStopsOnContextCancellation(t *testing.T) {
 	require.Empty(t, p.drain(t), "cancelled collect must not emit batches")
 }
 
+func TestCollectCountsHeldSamplesAsDroppedOnContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	baseTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := startPipe(t, ctx, 0, collector.Config{})
+
+	p.samples <- sample(baseTime, "main;login", "auth")
+	p.samples <- sample(baseTime.Add(time.Second), "main;login", "auth")
+	p.samples <- sample(baseTime.Add(2*time.Second), "http;handler", "api")
+	p.tick(t)
+	p.samples <- sample(baseTime.Add(3*time.Second), "main;logout", "auth")
+
+	cancel()
+
+	select {
+	case dropped := <-p.drops:
+		assert.Equal(t, 4, dropped, "cut batches nobody took and the open window must both be counted")
+	case <-time.After(5 * time.Second):
+		t.Fatal("collector reported no dropped samples on cancellation")
+	}
+
+	require.Empty(t, p.drain(t), "cancelled collect must not emit batches")
+}
+
 func TestTagCollectionGetters(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	batch := collector.NewTagCollection(now, now.Add(time.Second), "tags", map[string]int{"trace1": 1})
+	batch := collector.NewTagCollection(now, now.Add(time.Second), "tags", map[string]int{"trace1": 1, "trace2": 3})
 
 	assert.Equal(t, "tags", batch.Tags())
 	assert.Equal(t, now, batch.From())
 	assert.Equal(t, now.Add(time.Second), batch.Until())
-	assert.Equal(t, map[string]int{"trace1": 1}, batch.Data())
+	assert.Equal(t, map[string]int{"trace1": 1, "trace2": 3}, batch.Data())
+	assert.Equal(t, 4, batch.SampleCount())
 }
 
 func BenchmarkCollect(b *testing.B) {
