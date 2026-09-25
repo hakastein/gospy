@@ -401,17 +401,17 @@ func TestParserParseReturnsOnCancellationWhileChannelIsBlocked(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		parser.Parse(ctx, scanner, samplesChannel)
-		close(done)
+		done <- parser.Parse(ctx, scanner, samplesChannel)
 	}()
 
 	time.Sleep(20 * time.Millisecond)
 	cancel()
 
 	select {
-	case <-done:
+	case err := <-done:
+		require.NoError(t, err)
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("Parse did not return after context cancellation")
 	}
