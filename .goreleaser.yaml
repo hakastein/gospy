@@ -50,60 +50,27 @@ sboms:
 # a binary source for a php-fpm image.
 #
 #   COPY --from=ghcr.io/hakastein/gospy:0.12.0 /gospy /usr/local/bin/gospy
-dockers:
-  - id: linux-amd64
-    goos: linux
-    goarch: amd64
+dockers_v2:
+  - id: gospy
     ids:
       - gospy
     dockerfile: Dockerfile.release
-    use: buildx
-    image_templates:
-      - 'ghcr.io/hakastein/gospy:{{ .Version }}-amd64'
-      - 'ghcr.io/hakastein/gospy:latest-amd64'
-    build_flag_templates:
-      - '--platform=linux/amd64'
-      - '--label=org.opencontainers.image.title={{ .ProjectName }}'
-      - '--label=org.opencontainers.image.description=Ships phpspy profiles to Pyroscope'
-      - '--label=org.opencontainers.image.version={{ .Version }}'
-      - '--label=org.opencontainers.image.revision={{ .FullCommit }}'
-      - '--label=org.opencontainers.image.created={{ .Date }}'
-      - '--label=org.opencontainers.image.source=https://github.com/hakastein/gospy'
-      - '--label=org.opencontainers.image.licenses=MIT'
-
-  - id: linux-arm64
-    goos: linux
-    goarch: arm64
-    ids:
-      - gospy
-    dockerfile: Dockerfile.release
-    use: buildx
-    image_templates:
-      - 'ghcr.io/hakastein/gospy:{{ .Version }}-arm64'
-      - 'ghcr.io/hakastein/gospy:latest-arm64'
-    build_flag_templates:
-      - '--platform=linux/arm64'
-      - '--label=org.opencontainers.image.title={{ .ProjectName }}'
-      - '--label=org.opencontainers.image.description=Ships phpspy profiles to Pyroscope'
-      - '--label=org.opencontainers.image.version={{ .Version }}'
-      - '--label=org.opencontainers.image.revision={{ .FullCommit }}'
-      - '--label=org.opencontainers.image.created={{ .Date }}'
-      - '--label=org.opencontainers.image.source=https://github.com/hakastein/gospy'
-      - '--label=org.opencontainers.image.licenses=MIT'
-
-docker_manifests:
-  - name_template: 'ghcr.io/hakastein/gospy:{{ .Version }}'
-    image_templates:
-      - 'ghcr.io/hakastein/gospy:{{ .Version }}-amd64'
-      - 'ghcr.io/hakastein/gospy:{{ .Version }}-arm64'
-
-  # latest keeps pointing at the last stable release, so a v1.0.0-rc1 tag does
-  # not hand release candidates to everyone pulling latest.
-  - name_template: 'ghcr.io/hakastein/gospy:latest'
-    skip_push: '{{ if .Prerelease }}true{{ else }}false{{ end }}'
-    image_templates:
-      - 'ghcr.io/hakastein/gospy:latest-amd64'
-      - 'ghcr.io/hakastein/gospy:latest-arm64'
+    images:
+      - ghcr.io/hakastein/gospy
+    tags:
+      - '{{ .Version }}'
+      - '{{ if not .Prerelease }}latest{{ end }}'
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: '{{ .ProjectName }}'
+      org.opencontainers.image.description: Ships phpspy profiles to Pyroscope
+      org.opencontainers.image.version: '{{ .Version }}'
+      org.opencontainers.image.revision: '{{ .FullCommit }}'
+      org.opencontainers.image.created: '{{ .Date }}'
+      org.opencontainers.image.source: https://github.com/hakastein/gospy
+      org.opencontainers.image.licenses: MIT
 
 # The release body comes from mikepenz/release-changelog-builder-action via
 # `release --release-notes`; goreleaser ignores that flag when its changelog is
