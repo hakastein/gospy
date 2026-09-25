@@ -24,6 +24,7 @@ func defaultConfig() app.Config {
 		Restart:            "no",
 		RateMB:             4,
 		RateBurstMB:        6,
+		BatchInterval:      5 * time.Second,
 		StatsInterval:      10 * time.Second,
 	}
 }

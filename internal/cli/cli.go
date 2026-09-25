@@ -111,6 +111,11 @@ func New(run Runner) *ucli.App {
 				Value: "gospy",
 			},
 			&ucli.DurationFlag{
+				Name:  "batch-interval",
+				Usage: "Window over which samples are accumulated before a batch is sent to Pyroscope",
+				Value: app.DefaultBatchInterval,
+			},
+			&ucli.DurationFlag{
 				Name:  "stats-interval",
 				Usage: "Interval at which the application will log its sending statistics; set to 0 or less to disable statistics logging",
 				Value: DefaultStatsInterval,
@@ -144,6 +149,7 @@ func configFrom(c *ucli.Context) app.Config {
 		RateBurstMB:        c.Float64("rate-burst-mb"),
 		AppTags:            c.StringSlice("tag"),
 		Entrypoints:        c.StringSlice("entrypoint"),
+		BatchInterval:      c.Duration("batch-interval"),
 		StatsInterval:      c.Duration("stats-interval"),
 	}
 

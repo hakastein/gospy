@@ -15,7 +15,7 @@ const (
 
 	// commaReplacement stands in for a comma, which would otherwise start a new label.
 	// The Greek lower numeral sign looks like a comma and carries no meaning in the grammar.
-	commaReplacement = '͵'
+	commaReplacement    = '͵'
 	reservedReplacement = '_'
 )
 
