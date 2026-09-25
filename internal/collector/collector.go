@@ -16,31 +16,44 @@ const (
 	DefaultMaxPendingBatches = 64
 )
 
+// Sample is one observed stack with its tags and the rate, in Hz, it was sampled at.
 type Sample struct {
-	Time  time.Time
-	Trace string
-	Tags  string
+	Time       time.Time
+	Trace      string
+	Tags       string
+	SampleRate int
 }
 
-// TagCollection represents the Data of traces categorized by Tags over a period of time.
+// TagCollection is a Batch: the stacks collected for one tag set at one sample rate over a
+// period of time. Tag set and rate together form the key, as Pyroscope converts a batch's
+// counts into CPU time with the rate the request declares.
 type TagCollection struct {
-	tags  string
-	data  map[string]int
-	from  time.Time
-	until time.Time
+	tags       string
+	sampleRate int
+	data       map[string]int
+	from       time.Time
+	until      time.Time
 }
 
-func NewTagCollection(from time.Time, until time.Time, tags string, data map[string]int) *TagCollection {
+// NewTagCollection builds a batch of the stacks in data, counted per folded stack, that were
+// sampled at sampleRate between from and until under one tag set.
+func NewTagCollection(from time.Time, until time.Time, tags string, sampleRate int, data map[string]int) *TagCollection {
 	return &TagCollection{
-		from:  from,
-		until: until,
-		tags:  tags,
-		data:  data,
+		from:       from,
+		until:      until,
+		tags:       tags,
+		sampleRate: sampleRate,
+		data:       data,
 	}
 }
 
 func (tc *TagCollection) Data() map[string]int {
 	return tc.data
+}
+
+// SampleRate is the rate, in Hz, every stack in the batch was sampled at.
+func (tc *TagCollection) SampleRate() int {
+	return tc.sampleRate
 }
 
 func (tc *TagCollection) From() time.Time {
@@ -80,6 +93,11 @@ type Config struct {
 	OnDrop            func(count int)
 }
 
+type groupKey struct {
+	tags       string
+	sampleRate int
+}
+
 type traceGroup struct {
 	stacks map[string]int
 	from   time.Time
@@ -90,7 +108,7 @@ type traceGroup struct {
 // traceCollector cuts the oldest accumulated batch first.
 type traceCollector struct {
 	config           Config
-	groups           map[string]*traceGroup
+	groups           map[groupKey]*traceGroup
 	queue            *list.List
 	ready            *list.List
 	droppedTagGroups int
@@ -151,7 +169,7 @@ func newTraceCollector(config Config) *traceCollector {
 
 	return &traceCollector{
 		config: config,
-		groups: make(map[string]*traceGroup),
+		groups: make(map[groupKey]*traceGroup),
 		queue:  list.New(),
 		ready:  list.New(),
 	}
@@ -175,7 +193,7 @@ func (tc *traceCollector) drain() {
 
 func (tc *traceCollector) cutAll() {
 	for front := tc.queue.Front(); front != nil; front = tc.queue.Front() {
-		tc.cut(front.Value.(string))
+		tc.cut(front.Value.(groupKey))
 	}
 }
 
@@ -183,13 +201,13 @@ func (tc *traceCollector) canCut() bool {
 	return tc.ready.Len() < tc.config.MaxPendingBatches
 }
 
-func (tc *traceCollector) cut(tags string) {
-	group := tc.groups[tags]
+func (tc *traceCollector) cut(key groupKey) {
+	group := tc.groups[key]
 
 	tc.queue.Remove(group.queued)
-	delete(tc.groups, tags)
+	delete(tc.groups, key)
 
-	tc.ready.PushBack(NewTagCollection(group.from, group.until, tags, group.stacks))
+	tc.ready.PushBack(NewTagCollection(group.from, group.until, key.tags, key.sampleRate, group.stacks))
 }
 
 func (tc *traceCollector) abandon() {
@@ -229,7 +247,9 @@ func (tc *traceCollector) reportDropped() {
 }
 
 func (tc *traceCollector) add(sample *Sample) {
-	group, exists := tc.groups[sample.Tags]
+	key := groupKey{tags: sample.Tags, sampleRate: sample.SampleRate}
+
+	group, exists := tc.groups[key]
 	if !exists {
 		if len(tc.groups) >= tc.config.MaxTagGroups {
 			tc.droppedTagGroups++
@@ -241,8 +261,8 @@ func (tc *traceCollector) add(sample *Sample) {
 			from:   sample.Time,
 			until:  sample.Time,
 		}
-		tc.groups[sample.Tags] = group
-		group.queued = tc.queue.PushBack(sample.Tags)
+		tc.groups[key] = group
+		group.queued = tc.queue.PushBack(key)
 	}
 
 	if _, known := group.stacks[sample.Trace]; !known && len(group.stacks) >= tc.config.MaxStacksPerGroup {
@@ -260,12 +280,13 @@ func (tc *traceCollector) add(sample *Sample) {
 
 	log.Trace().
 		Str("tags", sample.Tags).
+		Int("sample_rate", sample.SampleRate).
 		Str("trace", sample.Trace).
 		Int("trace_count", group.stacks[sample.Trace]).
 		Int("queued_tag_groups", tc.queue.Len()).
 		Msg("sample added to collector")
 
 	if len(group.stacks) >= tc.config.MaxStacksPerGroup && tc.canCut() {
-		tc.cut(sample.Tags)
+		tc.cut(key)
 	}
 }

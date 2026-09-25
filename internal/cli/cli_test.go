@@ -1,245 +1,160 @@
 package cli_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 
 	"github.com/hakastein/gospy/internal/app"
 	"github.com/hakastein/gospy/internal/cli"
 )
 
-const (
-	pyroscopeURL = "http://pyroscope.test"
-	appName      = "checkout"
-)
+const configuration = `
+pyroscope:
+  url: http://pyroscope.test
+app: checkout
+instance-name: gospy-test
+targets:
+  - name: fpm
+    match: { comm: php-fpm }
+    max-processes: 5
+    rate: 25
+`
 
-func defaultConfig() app.Config {
-	return app.Config{
-		PyroscopeURL:       pyroscopeURL,
-		AppName:            appName,
-		PyroscopeWorkers:   5,
-		PyroscopeTimeout:   10 * time.Second,
-		KeepEntrypointName: true,
-		Restart:            "no",
-		RateMB:             4,
-		RateBurstMB:        6,
-		BatchInterval:      5 * time.Second,
-		StatsInterval:      10 * time.Second,
-		DrainTimeout:       10 * time.Second,
-	}
+func writeConfig(t *testing.T, content string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "gospy.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	return path
 }
 
-func TestNew(t *testing.T) {
+type runnerDouble struct {
+	started bool
+	cfg     app.Config
+}
+
+func (double *runnerDouble) run(_ context.Context, cfg app.Config) error {
+	double.started = true
+	double.cfg = cfg
+
+	return nil
+}
+
+func runCommand(t *testing.T, args ...string) (*runnerDouble, error) {
+	t.Helper()
+
+	double := &runnerDouble{}
+	command := cli.New(double.run)
+	command.Writer = io.Discard
+	command.ErrWriter = io.Discard
+
+	return double, command.Run(append([]string{"gospy"}, args...))
+}
+
+func TestNewLoadsTheConfigurationNamedOnTheCommandLine(t *testing.T) {
+	restoreGlobalLevel(t)
+	t.Setenv("GOSPY_PYROSCOPE_AUTH", "token-from-env")
+
+	double, err := runCommand(t, "--config", writeConfig(t, configuration))
+	require.NoError(t, err)
+	require.True(t, double.started)
+
+	require.Equal(t, "checkout", double.cfg.App)
+	require.Equal(t, "http://pyroscope.test", double.cfg.Pyroscope.URL)
+	require.Equal(t, "token-from-env", double.cfg.Pyroscope.Auth, "the token comes from the environment")
+	require.Equal(t, 10*time.Second, double.cfg.Pyroscope.Timeout, "defaults are applied by the loader")
+	require.Len(t, double.cfg.Targets, 1)
+	require.Equal(t, "fpm", double.cfg.Targets[0].Name)
+	require.Equal(t, 25, double.cfg.Targets[0].Rate)
+	require.Nil(t, double.cfg.Transport, "the command line never injects a transport")
+	require.Nil(t, double.cfg.Processes, "the command line never injects a process source")
+}
+
+func TestNewReadsThePathFromTheEnvironment(t *testing.T) {
+	restoreGlobalLevel(t)
+
+	t.Setenv("GOSPY_CONFIG", writeConfig(t, configuration))
+
+	double, err := runCommand(t)
+	require.NoError(t, err)
+	require.True(t, double.started)
+	require.Equal(t, "checkout", double.cfg.App)
+}
+
+func TestNewPrefersTheFlagOverTheEnvironment(t *testing.T) {
+	restoreGlobalLevel(t)
+
+	t.Setenv("GOSPY_CONFIG", writeConfig(t, "pyroscope: [\n"))
+
+	double, err := runCommand(t, "--config", writeConfig(t, configuration))
+	require.NoError(t, err)
+	require.True(t, double.started)
+}
+
+func TestNewReadsTheDefaultPathWhenNothingIsNamed(t *testing.T) {
+	restoreGlobalLevel(t)
+
+	double, err := runCommand(t)
+	if _, statErr := os.Stat(cli.DefaultConfigPath); os.IsNotExist(statErr) {
+		require.ErrorContains(t, err, cli.DefaultConfigPath)
+		require.False(t, double.started)
+		return
+	}
+
+	t.Skipf("%s exists on this machine", cli.DefaultConfigPath)
+}
+
+func TestNewRejectsWhatItCannotRun(t *testing.T) {
+	restoreGlobalLevel(t)
+
 	testCases := []struct {
 		name    string
-		args    []string
-		env     map[string]string
-		want    func(*app.Config)
+		args    func(t *testing.T) []string
 		wantErr string
 	}{
 		{
-			name: "runs with defaults when only the required flags are given",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "phpspy"},
-			want: func(cfg *app.Config) {
-				cfg.ProfilerApp = "phpspy"
-				cfg.ProfilerArguments = []string{}
+			name: "a positional argument",
+			args: func(t *testing.T) []string {
+				return []string{"--config", writeConfig(t, configuration), "phpspy"}
 			},
+			wantErr: `unexpected argument "phpspy": gospy takes no positional arguments, the configuration lives in the file named by --config`,
 		},
 		{
-			name: "gospy flags end at the first non-flag word",
-			args: []string{
-				"gospy",
-				"--pyroscope", pyroscopeURL,
-				"--app", "billing",
-				"--tag-entrypoint",
-				"phpspy", "-P", "php-fpm", "--rate-hz", "99",
+			name: "a flag of the old command line",
+			args: func(t *testing.T) []string {
+				return []string{"--config", writeConfig(t, configuration), "--pyroscope", "http://pyroscope.test"}
 			},
-			want: func(cfg *app.Config) {
-				cfg.AppName = "billing"
-				cfg.TagEntrypoint = true
-				cfg.ProfilerApp = "phpspy"
-				cfg.ProfilerArguments = []string{"-P", "php-fpm", "--rate-hz", "99"}
-			},
+			wantErr: "flag provided but not defined: -pyroscope",
 		},
 		{
-			name: "flags after the profiler command belong to the profiler",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "phpspy", "--app", "not-gospy"},
-			want: func(cfg *app.Config) {
-				cfg.ProfilerApp = "phpspy"
-				cfg.ProfilerArguments = []string{"--app", "not-gospy"}
+			name: "a missing file",
+			args: func(t *testing.T) []string {
+				return []string{"--config", filepath.Join(t.TempDir(), "missing.yaml")}
 			},
+			wantErr: "cannot read configuration",
 		},
 		{
-			name: "entry point name is kept unless it is turned off",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "--keep-entrypoint-name=false", "phpspy"},
-			want: func(cfg *app.Config) {
-				cfg.KeepEntrypointName = false
-				cfg.ProfilerApp = "phpspy"
-				cfg.ProfilerArguments = []string{}
+			name: "a broken file",
+			args: func(t *testing.T) []string {
+				return []string{"--config", writeConfig(t, "pyroscope: { url: http://pyroscope.test }\napp: checkout\n")}
 			},
-		},
-		{
-			name: "repeated tag and entrypoint flags accumulate",
-			args: []string{
-				"gospy",
-				"--pyroscope", pyroscopeURL,
-				"--app", appName,
-				"--tag", "env=production",
-				"--tag", `uri={{ "glopeek server.REQUEST_URI" }}`,
-				"--entrypoint", "index.php",
-				"--entrypoint", "console",
-				"phpspy",
-			},
-			want: func(cfg *app.Config) {
-				cfg.AppTags = []string{"env=production", `uri={{ "glopeek server.REQUEST_URI" }}`}
-				cfg.Entrypoints = []string{"index.php", "console"}
-				cfg.ProfilerApp = "phpspy"
-				cfg.ProfilerArguments = []string{}
-			},
-		},
-		{
-			name: "pyroscope token is read from the environment",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "phpspy"},
-			env:  map[string]string{"GOSPY_PYROSCOPE_AUTH": "token-from-env"},
-			want: func(cfg *app.Config) {
-				cfg.PyroscopeAuth = "token-from-env"
-				cfg.ProfilerApp = "phpspy"
-				cfg.ProfilerArguments = []string{}
-			},
-		},
-		{
-			name: "pyroscope token on the command line wins over the environment",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "--pyroscope-auth", "token-from-flag", "phpspy"},
-			env:  map[string]string{"GOSPY_PYROSCOPE_AUTH": "token-from-env"},
-			want: func(cfg *app.Config) {
-				cfg.PyroscopeAuth = "token-from-flag"
-				cfg.ProfilerApp = "phpspy"
-				cfg.ProfilerArguments = []string{}
-			},
-		},
-		{
-			name: "drain timeout is taken from its flag",
-			args: []string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "--drain-timeout", "3s", "phpspy"},
-			want: func(cfg *app.Config) {
-				cfg.DrainTimeout = 3 * time.Second
-				cfg.ProfilerApp = "phpspy"
-				cfg.ProfilerArguments = []string{}
-			},
-		},
-		{
-			name:    "missing pyroscope url is rejected",
-			args:    []string{"gospy", "--app", appName, "phpspy"},
-			wantErr: `Required flag "pyroscope" not set`,
-		},
-		{
-			name:    "missing app name is rejected",
-			args:    []string{"gospy", "--pyroscope", pyroscopeURL, "phpspy"},
-			wantErr: `Required flag "app" not set`,
+			wantErr: "targets is required",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			for name, value := range tc.env {
-				t.Setenv(name, value)
-			}
-
-			var (
-				started bool
-				got     app.Config
-			)
-
-			command := cli.New(func(_ context.Context, cfg app.Config) error {
-				started = true
-				got = cfg
-				return nil
-			})
-			command.Writer = io.Discard
-			command.ErrWriter = io.Discard
-
-			err := command.Run(tc.args)
-
-			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
-				require.False(t, started, "pipeline started despite an invalid command line")
-				return
-			}
-
-			require.NoError(t, err)
-			require.True(t, started)
-
-			want := defaultConfig()
-			tc.want(&want)
-			require.Equal(t, want, got)
-		})
-	}
-}
-
-func TestNewWarnsAboutGospyFlagsAfterTheProfilerCommand(t *testing.T) {
-	testCases := []struct {
-		name         string
-		profilerArgs []string
-		wantWarned   []string
-	}{
-		{
-			name:         "long flag",
-			profilerArgs: []string{"-P", "php-fpm", "--app", "billing"},
-			wantWarned:   []string{"--app"},
-		},
-		{
-			name:         "flag with an inline value",
-			profilerArgs: []string{"--restart=always"},
-			wantWarned:   []string{"--restart=always"},
-		},
-		{
-			name:         "short alias",
-			profilerArgs: []string{"-p", "123", "-v"},
-			wantWarned:   []string{"-v"},
-		},
-		{
-			name:         "phpspy's own help and version",
-			profilerArgs: []string{"--help", "--version", "-V", "74"},
-		},
-		{
-			name:         "arguments of the traced command",
-			profilerArgs: []string{"--", "php", "--app", "-v"},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			restoreGlobalLevel(t)
-			logs := captureLogs(t)
-
-			command := cli.New(func(context.Context, app.Config) error { return nil })
-			command.Writer = io.Discard
-			command.ErrWriter = io.Discard
-
-			args := append([]string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName, "phpspy"}, tc.profilerArgs...)
-			require.NoError(t, command.Run(args))
-
-			var warned []string
-			decoder := json.NewDecoder(logs)
-			for decoder.More() {
-				var entry struct {
-					Level    string `json:"level"`
-					Argument string `json:"argument"`
-				}
-				require.NoError(t, decoder.Decode(&entry))
-				if entry.Level == zerolog.WarnLevel.String() && entry.Argument != "" {
-					warned = append(warned, entry.Argument)
-				}
-			}
-
-			require.Equal(t, tc.wantWarned, warned)
+			double, err := runCommand(t, tc.args(t)...)
+			require.ErrorContains(t, err, tc.wantErr)
+			require.False(t, double.started, "the runtime started despite a bad command line")
 		})
 	}
 }
@@ -262,27 +177,19 @@ func TestNewSetsVerbosity(t *testing.T) {
 			restoreGlobalLevel(t)
 			zerolog.SetGlobalLevel(zerolog.PanicLevel)
 
-			args := append([]string{"gospy", "--pyroscope", pyroscopeURL, "--app", appName}, tc.verbosity...)
-			command := cli.New(func(context.Context, app.Config) error { return nil })
-			command.Writer = io.Discard
-			command.ErrWriter = io.Discard
-
-			require.NoError(t, command.Run(append(args, "phpspy")))
+			args := append([]string{"--config", writeConfig(t, configuration)}, tc.verbosity...)
+			double, err := runCommand(t, args...)
+			require.NoError(t, err)
+			require.True(t, double.started)
 			require.Equal(t, tc.want, zerolog.GlobalLevel())
 		})
 	}
 }
 
-func captureLogs(t *testing.T) *bytes.Buffer {
-	t.Helper()
-
-	previous := log.Logger
-	t.Cleanup(func() { log.Logger = previous })
-
-	var logs bytes.Buffer
-	log.Logger = zerolog.New(&logs)
-
-	return &logs
+func TestNewPrintsTheVersionWithoutAConfiguration(t *testing.T) {
+	double, err := runCommand(t, "--version")
+	require.NoError(t, err)
+	require.False(t, double.started)
 }
 
 func restoreGlobalLevel(t *testing.T) {

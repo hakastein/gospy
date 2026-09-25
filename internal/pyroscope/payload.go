@@ -14,9 +14,7 @@ const (
 )
 
 type appMetadata struct {
-	appName    string
-	staticTags string
-	sampleRate int
+	appName string
 }
 
 type payload struct {
@@ -24,12 +22,8 @@ type payload struct {
 	body  []byte
 }
 
-func newAppMetadata(appName, staticTags string, sampleRate int) *appMetadata {
-	return &appMetadata{
-		appName:    appName,
-		staticTags: staticTags,
-		sampleRate: sampleRate,
-	}
+func newAppMetadata(appName string) *appMetadata {
+	return &appMetadata{appName: appName}
 }
 
 func (app *appMetadata) newPayload(batch *collector.TagCollection) payload {
@@ -39,22 +33,15 @@ func (app *appMetadata) newPayload(batch *collector.TagCollection) payload {
 	}
 }
 
-// fullAppName combines the app name with static and dynamic tags in Pyroscope format.
-func (app *appMetadata) fullAppName(dynamicTags string) string {
+// fullAppName combines the app name with the batch's tag set in Pyroscope format; every tag
+// of a sample, static or dynamic, is already in that set.
+func (app *appMetadata) fullAppName(tags string) string {
 	var builder strings.Builder
 	builder.Grow(appNameEstimatedLength)
 
 	builder.WriteString(app.appName)
 	builder.WriteRune('{')
-	if app.staticTags != "" {
-		builder.WriteString(app.staticTags)
-	}
-	if app.staticTags != "" && dynamicTags != "" {
-		builder.WriteRune(',')
-	}
-	if dynamicTags != "" {
-		builder.WriteString(dynamicTags)
-	}
+	builder.WriteString(tags)
 	builder.WriteRune('}')
 
 	return builder.String()
@@ -71,7 +58,7 @@ func (app *appMetadata) queryString(batch *collector.TagCollection) string {
 	builder.WriteString("&until=")
 	builder.WriteString(strconv.FormatInt(batch.Until().Unix(), 10))
 	builder.WriteString("&sampleRate=")
-	builder.WriteString(strconv.Itoa(app.sampleRate))
+	builder.WriteString(strconv.Itoa(batch.SampleRate()))
 	builder.WriteString("&format=folded")
 
 	return builder.String()

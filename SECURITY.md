@@ -31,15 +31,15 @@ with more privilege than an ordinary service. Understand this before deploying i
 - **It usually shares a namespace with the target.** To see php-fpm's PIDs, gospy is typically run
   inside the same container as php-fpm or in the same PID namespace (`--pid=container:php-fpm`).
   Anything that can execute code in gospy's context is therefore adjacent to your PHP workers.
-- **Pass the Pyroscope token through the environment.** gospy reads it from
-  `GOSPY_PYROSCOPE_AUTH`. The `--pyroscope-auth` flag still works, but a token on the command line
-  is readable by every process in the PID namespace (`ps`, `/proc/<pid>/cmdline`) and lands in
-  shell history. The environment is readable only by the same user and root, but container inspect
-  output and orchestrator manifests still show it, so feed it from a secret store. Either way,
-  prefer a token scoped to ingest only.
-- **gospy runs the profiler you tell it to.** It executes phpspy as a child process with the
-  arguments you supply. Whoever controls those arguments controls a command line executed with
-  gospy's privileges.
+- **The Pyroscope token lives in the environment only.** gospy reads it from
+  `GOSPY_PYROSCOPE_AUTH` and refuses a token written into the configuration file, so the file can
+  be baked into an image. The environment is readable only by the same user and root, but
+  container inspect output and orchestrator manifests still show it, so feed it from a secret
+  store. Prefer a token scoped to ingest only.
+- **gospy runs the profiler the file names.** It executes the `phpspy` binary from the
+  configuration file as a child process, once per process it attaches to, with the `phpspy-args`
+  you supply per target. Whoever controls the file controls a command line executed with gospy's
+  privileges, and a `cmdline` matcher decides which processes get traced.
 
 Grant the narrowest thing that works: prefer `CAP_SYS_PTRACE` on a dedicated non-root user over
 running the whole thing as root, and do not expose the container gospy shares to untrusted input.
@@ -48,7 +48,8 @@ running the whole thing as root, and do not expose the container gospy shares to
 
 It does:
 
-- spawn the configured profiler (phpspy) as a child process and read its stdout;
+- read the process table from `/proc` on every scan to find the processes its targets select;
+- spawn phpspy as a child process per attach and read its stdout;
 - make outbound HTTPS requests to the Pyroscope URL you configure, and to nothing else;
 - write logs to stderr.
 
@@ -56,7 +57,8 @@ It does not:
 
 - open any listening socket — there is no HTTP server, no admin port, no metrics endpoint;
 - write profile data, spool files or caches to disk;
-- read configuration from a file, a network location or any path other than the command line;
+- read anything but the configuration file named by `--config` (or `GOSPY_CONFIG`), the
+  environment variables that file references, and `/proc`;
 - talk to any host you have not configured.
 
 Everything it collects is in memory: parsed samples, the folded stacks aggregated per tag set, and

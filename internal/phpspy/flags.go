@@ -1,198 +1,192 @@
 package phpspy
 
 import (
-	"strconv"
+	"fmt"
 	"strings"
-)
-
-const (
-	stdoutPath        = "-"
-	foutHandler       = "fout"
-	defaultBufferSize = 4096
-	defaultRateHz     = 99
-
-	// pipeBufSize is the PIPE_BUF above which phpspy interlaces writes in pgrep mode.
-	pipeBufSize = 4096
-
-	nanosecondsPerSecond = 1000000000
-)
-
-const (
-	optionOutput           = "output"
-	optionPgrep            = "pgrep"
-	optionBufferSize       = "buffer-size"
-	optionEventHandler     = "event-handler"
-	optionEventHandlerOpts = "event-handler-opts"
-	optionRateHz           = "rate-hz"
-	optionSleepNs          = "sleep-ns"
 )
 
 type option struct {
 	long  string
 	short string
 	value bool
+	// managed marks an option gospy sets itself, or one that would make phpspy trace something
+	// else or print something other than trace blocks; it cannot come from the configuration.
+	managed bool
 }
 
-// phpspy's getopt_long table. Reading one option needs the arity of them all: an option's
+// phpspy's getopt_long table: the 0.7.0 release plus what its unreleased master added (quiet,
+// max-depth-outer, peek-pdo). master also dropped the short forms of addr-executor-globals,
+// addr-sapi-globals, event-handler, event-handler-opts and libname-awk-patt; the long forms
+// stay, so the table keeps both. Reading one option needs the arity of them all: an option's
 // value can look like a flag ("-f -v" filters on "-v") and switches cluster ("-cq").
 var phpspyOptions = []option{
-	{long: "help", short: "h"},
-	{long: "pid", short: "p", value: true},
-	{long: optionPgrep, short: "P", value: true},
-	{long: "threads", short: "T", value: true},
-	{long: optionSleepNs, short: "s", value: true},
-	{long: optionRateHz, short: "H", value: true},
+	{long: "help", short: "h", managed: true},
+	{long: "pid", short: "p", value: true, managed: true},
+	{long: "pgrep", short: "P", value: true, managed: true},
+	{long: "threads", short: "T", value: true, managed: true},
+	{long: "sleep-ns", short: "s", value: true, managed: true},
+	{long: "rate-hz", short: "H", value: true, managed: true},
 	{long: "php-version", short: "V", value: true},
-	{long: "limit", short: "l", value: true},
-	{long: "time-limit-ms", short: "i", value: true},
+	{long: "limit", short: "l", value: true, managed: true},
+	{long: "time-limit-ms", short: "i", value: true, managed: true},
 	{long: "max-depth", short: "n", value: true},
+	{long: "max-depth-outer", short: "N", value: true},
 	{long: "request-info", short: "r", value: true},
 	{long: "memory-usage", short: "m"},
-	{long: optionOutput, short: "o", value: true},
+	{long: "output", short: "o", value: true, managed: true},
 	{long: "child-stdout", short: "O", value: true},
 	{long: "child-stderr", short: "E", value: true},
 	{long: "addr-executor-globals", short: "x", value: true},
 	{long: "addr-sapi-globals", short: "a", value: true},
-	{long: "single-line", short: "1"},
-	{long: optionBufferSize, short: "b", value: true},
+	{long: "single-line", short: "1", managed: true},
+	{long: "buffer-size", short: "b", value: true},
 	{long: "filter", short: "f", value: true},
 	{long: "filter-negate", short: "F", value: true},
 	{long: "verbose-fields", short: "d", value: true},
 	{long: "continue-on-error", short: "c"},
-	{long: "quiet", short: "q"},
-	{long: optionEventHandler, short: "j", value: true},
-	{long: optionEventHandlerOpts, short: "J", value: true},
+	// quiet silences the copy_proc_mem lines the silent-denial watchdog reads.
+	{long: "quiet", short: "q", managed: true},
+	{long: "event-handler", short: "j", value: true, managed: true},
+	{long: "event-handler-opts", short: "J", value: true},
 	{long: "comment", short: "#", value: true},
 	{long: "nothing", short: "@"},
-	{long: "version", short: "v"},
+	{long: "version", short: "v", managed: true},
 	{long: "pause-process", short: "S"},
 	{long: "peek-var", short: "e", value: true},
 	{long: "peek-global", short: "g", value: true},
-	{long: "top", short: "t"},
+	{long: "peek-pdo", short: "D"},
+	{long: "top", short: "t", managed: true},
 	{long: "libname-awk-patt", short: "w", value: true},
 }
 
-func longOption(long string) (option, bool) {
-	for _, opt := range phpspyOptions {
-		if opt.long == long {
-			return opt, true
+// ValidateArgs rejects extra phpspy arguments that phpspy would not read as gospy means them:
+// an option gospy manages, in short, long, abbreviated or clustered form; an option without
+// its value; an ambiguous abbreviation; and a bare word, at which phpspy stops reading
+// options altogether. Options phpspy 0.7.0 does not know are passed through untouched.
+func ValidateArgs(args []string) error {
+	given, err := parseArgs(args)
+	if err != nil {
+		return err
+	}
+
+	for _, opt := range given {
+		if opt.managed {
+			return fmt.Errorf("phpspy flag -%s/--%s is managed by gospy and cannot be passed", opt.short, opt.long)
 		}
 	}
 
-	return option{}, false
+	return nil
 }
 
-func shortOption(short string) (option, bool) {
-	for _, opt := range phpspyOptions {
-		if opt.short == short {
-			return opt, true
+// longOption resolves a long option the way getopt_long does: an exact name wins, otherwise
+// the one option the text is a prefix of. An unknown name resolves to nothing.
+func longOption(name string) (*option, error) {
+	var matches []*option
+	for index := range phpspyOptions {
+		opt := &phpspyOptions[index]
+		if opt.long == name {
+			return opt, nil
+		}
+		if strings.HasPrefix(opt.long, name) {
+			matches = append(matches, opt)
 		}
 	}
 
-	return option{}, false
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return matches[0], nil
+	default:
+		names := make([]string, 0, len(matches))
+		for _, opt := range matches {
+			names = append(names, "--"+opt.long)
+		}
+
+		return nil, fmt.Errorf("phpspy flag --%s is ambiguous: it could be %s", name, strings.Join(names, ", "))
+	}
 }
 
-type givenOption struct {
-	long  string
-	value string
+func shortOption(short byte) (*option, bool) {
+	for index := range phpspyOptions {
+		if phpspyOptions[index].short == string(short) {
+			return &phpspyOptions[index], true
+		}
+	}
+
+	return nil, false
 }
 
-type givenOptions []givenOption
-
-// parseArgs follows getopt_long: "--" ends the option list, a short option takes its value
-// attached or from the next argument, and switches cluster into one word.
-func parseArgs(args []string) givenOptions {
-	given := make(givenOptions, 0, len(args))
+// parseArgs follows getopt_long as phpspy calls it: a long option may be abbreviated, a short
+// option takes its value attached or from the next argument, switches cluster into one word,
+// and a letter phpspy does not know is skipped. phpspy stops at the first word that is not an
+// option and never sees the flags after it, so a bare word is an error here; a value for an
+// option the table does not know has to be written inline (--flag=value).
+func parseArgs(args []string) ([]option, error) {
+	var given []option
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 
 		switch {
-		case arg == "--":
-			return given
+		case arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-"):
+			return nil, fmt.Errorf("phpspy argument %q is not a flag: phpspy stops reading options at the first bare word", arg)
 		case strings.HasPrefix(arg, "--"):
-			name, inline, hasInline := strings.Cut(arg[2:], "=")
-			opt, known := longOption(name)
-			if !known {
+			name, _, hasInline := strings.Cut(arg[2:], "=")
+			opt, err := longOption(name)
+			if err != nil {
+				return nil, err
+			}
+			if opt == nil {
 				continue
 			}
 
-			switch {
-			case !opt.value:
-				given = append(given, givenOption{long: opt.long})
-			case hasInline:
-				given = append(given, givenOption{long: opt.long, value: inline})
-			default:
-				given = append(given, givenOption{long: opt.long, value: next(args, &i)})
+			given = append(given, *opt)
+			if opt.value && !hasInline {
+				if i, err = valueAt(args, i, opt); err != nil {
+					return nil, err
+				}
 			}
-		case len(arg) > 1 && arg[0] == '-':
-			given = appendCluster(given, arg, args, &i)
+		default:
+			var err error
+			if given, i, err = appendCluster(given, arg, args, i); err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	return given
+	return given, nil
 }
 
-func appendCluster(given givenOptions, cluster string, args []string, i *int) givenOptions {
+func appendCluster(given []option, cluster string, args []string, i int) ([]option, int, error) {
 	for k := 1; k < len(cluster); k++ {
-		opt, known := shortOption(cluster[k : k+1])
+		opt, known := shortOption(cluster[k])
 		if !known {
-			return given
-		}
-
-		if !opt.value {
-			given = append(given, givenOption{long: opt.long})
 			continue
 		}
 
-		value := cluster[k+1:]
-		if value == "" {
-			value = next(args, i)
+		given = append(given, *opt)
+		if !opt.value {
+			continue
 		}
 
-		return append(given, givenOption{long: opt.long, value: value})
-	}
-
-	return given
-}
-
-func next(args []string, i *int) string {
-	if *i+1 >= len(args) {
-		return ""
-	}
-
-	*i++
-
-	return args[*i]
-}
-
-func (given givenOptions) present(long string) bool {
-	for _, opt := range given {
-		if opt.long == long {
-			return true
+		if cluster[k+1:] != "" {
+			return given, i, nil
 		}
+
+		i, err := valueAt(args, i, opt)
+
+		return given, i, err
 	}
 
-	return false
+	return given, i, nil
 }
 
-// text returns the last occurrence, as every phpspy option overwrites the previous one.
-func (given givenOptions) text(long, defaultValue string) string {
-	value := defaultValue
-	for _, opt := range given {
-		if opt.long == long {
-			value = opt.value
-		}
+// valueAt consumes the argument after i as the value of opt.
+func valueAt(args []string, i int, opt *option) (int, error) {
+	if i+1 >= len(args) {
+		return i, fmt.Errorf("phpspy flag -%s/--%s needs a value", opt.short, opt.long)
 	}
 
-	return value
-}
-
-func (given givenOptions) number(long string, defaultValue int) int {
-	value, err := strconv.Atoi(given.text(long, ""))
-	if err != nil {
-		return defaultValue
-	}
-
-	return value
+	return i + 1, nil
 }

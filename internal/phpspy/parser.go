@@ -22,10 +22,24 @@ const (
 // A tag mapping that collides does so on every sample.
 const duplicateKeyLogPeriod = time.Minute
 
+// ParserConfig describes how one phpspy stream turns into samples: which entry points are
+// kept, the static tags every sample carries, how meta lines map to dynamic tags, and the
+// rate every sample is stamped with.
+type ParserConfig struct {
+	Entrypoints        []string
+	StaticTags         string
+	DynamicTags        map[string][]tag.DynamicTag
+	TagEntrypoint      bool
+	KeepEntrypointName bool
+	SampleRate         int
+}
+
 type Parser struct {
+	staticTags         string
 	tagsMapping        map[string][]tag.DynamicTag
 	tagEntrypoint      bool
 	keepEntrypointName bool
+	sampleRate         int
 	currentTrace       []string
 	currentMeta        []string
 	epValidator        *validator.EntryPointValidator
@@ -33,19 +47,16 @@ type Parser struct {
 }
 
 // NewParser initializes a new Parser.
-func NewParser(
-	entryPoints []string,
-	tagsMapping map[string][]tag.DynamicTag,
-	tagEntrypoint bool,
-	keepEntrypointName bool,
-) *Parser {
+func NewParser(cfg ParserConfig) *Parser {
 	return &Parser{
-		tagsMapping:        tagsMapping,
-		tagEntrypoint:      tagEntrypoint,
-		keepEntrypointName: keepEntrypointName,
+		staticTags:         cfg.StaticTags,
+		tagsMapping:        cfg.DynamicTags,
+		tagEntrypoint:      cfg.TagEntrypoint,
+		keepEntrypointName: cfg.KeepEntrypointName,
+		sampleRate:         cfg.SampleRate,
 		currentTrace:       make([]string, 0, traceCapacity),
 		currentMeta:        make([]string, 0, metaCapacity),
-		epValidator:        validator.New(entryPoints),
+		epValidator:        validator.New(cfg.Entrypoints),
 		duplicateKeys:      &zerolog.BurstSampler{Burst: 1, Period: duplicateKeyLogPeriod},
 	}
 }
@@ -143,8 +154,14 @@ func (parser *Parser) processTrace(
 	}
 
 	tags := parser.buildTags(entryPoint)
+	sample := &collector.Sample{
+		Trace:      foldedStack,
+		Tags:       tags,
+		Time:       time.Now(),
+		SampleRate: parser.sampleRate,
+	}
 	select {
-	case samples <- &collector.Sample{Trace: foldedStack, Tags: tags, Time: time.Now()}:
+	case samples <- sample:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -160,20 +177,28 @@ func (parser *Parser) processTrace(
 	return nil
 }
 
+// buildTags lists the static tags, then the dynamic ones, then the entry point: the order
+// Pyroscope shows the label set in.
 func (parser *Parser) buildTags(entryPoint string) string {
-	parsedTags := metaToTags(parser.currentMeta, parser.tagsMapping, parser.duplicateKeys)
+	tags := parser.staticTags
 
-	if !parser.tagEntrypoint {
-		return parsedTags
+	if dynamicTags := metaToTags(parser.currentMeta, parser.tagsMapping, parser.duplicateKeys); dynamicTags != "" {
+		tags = joinTags(tags, dynamicTags)
 	}
 
-	entryPointTag := "entrypoint=" + tag.SanitizeValue(entryPoint)
-
-	if parsedTags == "" {
-		return entryPointTag
+	if parser.tagEntrypoint {
+		tags = joinTags(tags, "entrypoint="+tag.SanitizeValue(entryPoint))
 	}
 
-	return parsedTags + "," + entryPointTag
+	return tags
+}
+
+func joinTags(tags, more string) string {
+	if tags == "" {
+		return more
+	}
+
+	return tags + "," + more
 }
 
 func (parser *Parser) resetState() {

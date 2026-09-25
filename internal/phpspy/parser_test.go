@@ -17,14 +17,28 @@ import (
 	"github.com/hakastein/gospy/internal/tag"
 )
 
+const sampleRate = 99
+
 type parserTestCase struct {
 	name               string
 	input              []string // each element represents a complete trace block
 	entryPoints        []string
+	staticTags         string
 	tagsMapping        map[string][]tag.DynamicTag
 	tagEntrypoint      bool
 	keepEntrypointName bool
 	expectedSamples    []collector.Sample // verify exact data, not just count
+}
+
+func (tc parserTestCase) parser() *phpspy.Parser {
+	return phpspy.NewParser(phpspy.ParserConfig{
+		Entrypoints:        tc.entryPoints,
+		StaticTags:         tc.staticTags,
+		DynamicTags:        tc.tagsMapping,
+		TagEntrypoint:      tc.tagEntrypoint,
+		KeepEntrypointName: tc.keepEntrypointName,
+		SampleRate:         sampleRate,
+	})
 }
 
 func newScannerFromInput(input []string) *bufio.Scanner {
@@ -99,6 +113,30 @@ func TestParser_Parse(t *testing.T) {
 			expectedSamples: []collector.Sample{
 				{Trace: "main;func1", Tags: "test=value1,entrypoint=/app/test.php"},
 				{Trace: "main;func2", Tags: "test=value2,entrypoint=/app/test.php"},
+			},
+		},
+		{
+			name: "static tags - lead every sample, before dynamic tags and the entry point",
+			input: []string{
+				"# glopeek test.key = value1\n0 func1 /app/some/helper.php:10\n1 main /app/test.php:1",
+				"0 func2 /app/some/helper.php:20\n1 main /app/test.php:1",
+			},
+			staticTags:    "env=production,source=fpm",
+			tagsMapping:   map[string][]tag.DynamicTag{"glopeek test.key": {{TagKey: "test"}}},
+			tagEntrypoint: true,
+			expectedSamples: []collector.Sample{
+				{Trace: "main;func1", Tags: "env=production,source=fpm,test=value1,entrypoint=/app/test.php"},
+				{Trace: "main;func2", Tags: "env=production,source=fpm,entrypoint=/app/test.php"},
+			},
+		},
+		{
+			name: "static tags - alone when nothing dynamic applies",
+			input: []string{
+				"0 func1 /app/some/helper.php:10\n1 main /app/test.php:1",
+			},
+			staticTags: "source=cli",
+			expectedSamples: []collector.Sample{
+				{Trace: "main;func1", Tags: "source=cli"},
 			},
 		},
 		{
@@ -318,7 +356,7 @@ func TestParser_Parse(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			parser := phpspy.NewParser(tc.entryPoints, tc.tagsMapping, tc.tagEntrypoint, tc.keepEntrypointName)
+			parser := tc.parser()
 
 			scanner := newScannerFromInput(tc.input)
 			samplesChannel := make(chan *collector.Sample, 100)
@@ -345,6 +383,7 @@ func TestParser_Parse(t *testing.T) {
 			for i, expected := range tc.expectedSamples {
 				require.Equal(t, expected.Trace, samples[i].Trace, "Sample %d trace mismatch", i)
 				require.Equal(t, expected.Tags, samples[i].Tags, "Sample %d tags mismatch", i)
+				require.Equal(t, sampleRate, samples[i].SampleRate, "Sample %d must carry the configured rate", i)
 				require.NotZero(t, samples[i].Time) // parser should set time
 			}
 		})
@@ -357,7 +396,7 @@ func TestParser_ParseWithContextCancellation(t *testing.T) {
 		input:       []string{"0 func1 /app/some/helper.php:10\n1 main /app/test.php:1"},
 		entryPoints: []string{"/app/test.php"},
 	}
-	parser := phpspy.NewParser(tc.entryPoints, tc.tagsMapping, tc.tagEntrypoint, tc.keepEntrypointName)
+	parser := tc.parser()
 
 	scanner := newScannerFromInput(tc.input)
 	samplesChannel := make(chan *collector.Sample, 100)
@@ -424,7 +463,7 @@ func TestParserParseReportsReadError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			parser := phpspy.NewParser([]string{"/app/test.php"}, nil, false, false)
+			parser := phpspy.NewParser(phpspy.ParserConfig{Entrypoints: []string{"/app/test.php"}})
 
 			scanner := bufio.NewScanner(tc.reader)
 			if tc.limitLineSize {
@@ -450,7 +489,7 @@ func TestParserParseReportsReadError(t *testing.T) {
 }
 
 func TestParserParseReturnsOnCancellationWhileChannelIsBlocked(t *testing.T) {
-	parser := phpspy.NewParser([]string{"/app/test.php"}, nil, false, false)
+	parser := phpspy.NewParser(phpspy.ParserConfig{Entrypoints: []string{"/app/test.php"}})
 	scanner := bufio.NewScanner(strings.NewReader("0 func1 /app/helper.php:10\n1 main /app/test.php:1\n\n"))
 	samplesChannel := make(chan *collector.Sample)
 
@@ -474,7 +513,7 @@ func TestParserParseReturnsOnCancellationWhileChannelIsBlocked(t *testing.T) {
 }
 
 func TestParserParseFlushesFinalTraceOnEOF(t *testing.T) {
-	parser := phpspy.NewParser([]string{"/app/test.php"}, nil, false, false)
+	parser := phpspy.NewParser(phpspy.ParserConfig{Entrypoints: []string{"/app/test.php"}})
 	scanner := bufio.NewScanner(strings.NewReader("0 func1 /app/helper.php:10\n1 main /app/test.php:1"))
 	samplesChannel := make(chan *collector.Sample, 1)
 

@@ -1,229 +1,106 @@
+// Package app is the gospy runtime: it takes a loaded configuration, discovers the processes
+// of every target, runs one phpspy per attach and ships what they see through one collector
+// and one ingest.
 package app
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/hakastein/gospy/internal/collector"
-	"github.com/hakastein/gospy/internal/phpspy"
+	"github.com/hakastein/gospy/internal/config"
+	"github.com/hakastein/gospy/internal/procscan"
 	"github.com/hakastein/gospy/internal/pyroscope"
-	"github.com/hakastein/gospy/internal/supervisor"
-	"github.com/hakastein/gospy/internal/tag"
 	"github.com/hakastein/gospy/internal/version"
 )
 
-const (
-	sampleBuffer         = 1000
-	DefaultBatchInterval = 5 * time.Second
-	DefaultDrainTimeout  = 10 * time.Second
-)
+const sampleBuffer = 1000
 
+// ErrDrainAborted is returned when a second signal cuts the shutdown drain short.
 var ErrDrainAborted = errors.New("shutdown drain aborted by a second signal")
 
-// Config: a nil Transport keeps the real one; a DrainTimeout at or below zero takes DefaultDrainTimeout;
-// an empty Restart never restarts.
+// ProcessSource is where a Scan reads the process table from.
+type ProcessSource interface {
+	Scan() ([]procscan.Process, error)
+}
+
+// Config is the configuration as config.Load validated it, plus the seams tests use: a nil
+// Transport keeps the real one, a nil Processes reads the live procfs, and a
+// SilentAttachTimeout at or below zero takes the attach package's default.
 type Config struct {
-	PyroscopeURL       string
-	PyroscopeAuth      string
-	PyroscopeWorkers   int
-	PyroscopeTimeout   time.Duration
-	TagEntrypoint      bool
-	KeepEntrypointName bool
-	AppName            string
-	Restart            string
-	RateMB             float64
-	RateBurstMB        float64
-	PyroscopeRetry     pyroscope.Retry
-	AppTags            []string
-	Entrypoints        []string
-	BatchInterval      time.Duration
-	StatsInterval      time.Duration
-	DrainTimeout       time.Duration
-	ProfilerApp        string
-	ProfilerArguments  []string
-	Transport          http.RoundTripper
+	config.Config
+	Transport           http.RoundTripper
+	Processes           ProcessSource
+	SilentAttachTimeout time.Duration
 }
 
-type runtimeConfig struct {
-	Config
-	staticTags  string
-	dynamicTags map[string][]tag.DynamicTag
-}
-
-type profilerRunner interface {
-	Start(ctx context.Context) (*bufio.Scanner, *bufio.Scanner, error)
-	Wait() error
-	ValidateConfiguration() error
-	GetHZ() int
-}
-
-type traceParser interface {
-	Parse(ctx context.Context, scanner *bufio.Scanner, samplesChannel chan<- *collector.Sample) error
-}
-
+// Run profiles until ctx ends or a stop signal arrives, then drains what it holds. It returns
+// an error when phpspy cannot be started at all, or when the drain is aborted.
 func Run(ctx context.Context, cfg Config) error {
-	runtimeCfg, err := prepareConfig(cfg)
+	executable, err := exec.LookPath(cfg.Phpspy)
 	if err != nil {
-		return err
+		return fmt.Errorf("phpspy cannot be started: %w", err)
 	}
 
-	profilerImpl, parserImpl, err := newSource(runtimeCfg)
-	if err != nil {
-		return err
-	}
-
-	if validationErr := profilerImpl.ValidateConfiguration(); validationErr != nil {
-		return validationErr
-	}
-
-	return runPipeline(ctx, runtimeCfg, profilerImpl, parserImpl)
-}
-
-func prepareConfig(cfg Config) (runtimeConfig, error) {
-	if err := validateConfig(cfg); err != nil {
-		return runtimeConfig{}, err
-	}
-
-	staticTags, dynamicTags, err := tag.ParseInput(cfg.AppTags)
-	if err != nil {
-		return runtimeConfig{}, err
-	}
-
-	return runtimeConfig{
-		Config:      cfg,
-		staticTags:  staticTags,
-		dynamicTags: dynamicTags,
-	}, nil
-}
-
-func newSource(cfg runtimeConfig) (profilerRunner, traceParser, error) {
-	switch filepath.Base(cfg.ProfilerApp) {
-	case "phpspy":
-		return phpspy.NewProfiler(cfg.ProfilerApp, cfg.ProfilerArguments), phpspy.NewParser(cfg.Entrypoints, cfg.dynamicTags, cfg.TagEntrypoint, cfg.KeepEntrypointName), nil
-	default:
-		return nil, nil, fmt.Errorf("unsupported profiler: %s", cfg.ProfilerApp)
-	}
-}
-
-func validateConfig(cfg Config) error {
-	if cfg.ProfilerApp == "" {
-		return errors.New("no profiler application specified")
-	}
-
-	if cfg.AppName == "" {
-		return errors.New("no app name specified")
-	}
-
-	if cfg.Restart != "" {
-		if err := supervisor.ValidateRestart(cfg.Restart); err != nil {
-			return err
-		}
-	}
-
-	if cfg.PyroscopeWorkers < 1 {
-		return fmt.Errorf("pyroscope workers must be at least 1, got %d", cfg.PyroscopeWorkers)
-	}
-
-	pyroscopeURL, err := url.Parse(cfg.PyroscopeURL)
-	if err != nil {
-		return fmt.Errorf("invalid pyroscope url %q: %w", cfg.PyroscopeURL, err)
-	}
-
-	if pyroscopeURL.Scheme != "http" && pyroscopeURL.Scheme != "https" {
-		return fmt.Errorf("pyroscope url must be http or https, got %q", cfg.PyroscopeURL)
-	}
-
-	if cfg.RateMB < 0 {
-		return fmt.Errorf("pyroscope rate limit must not be negative, got %v MB", cfg.RateMB)
-	}
-
-	if cfg.RateBurstMB < 0 {
-		return fmt.Errorf("pyroscope rate limit burst must not be negative, got %v MB", cfg.RateBurstMB)
-	}
-
-	if cfg.RateMB > 0 && cfg.RateBurstMB == 0 {
-		return errors.New("pyroscope rate limit burst must be above zero when a rate limit is set")
-	}
-
-	if pyroscopeURL.Scheme == "http" && cfg.PyroscopeAuth != "" {
-		log.Warn().
-			Str("pyroscope_url", cfg.PyroscopeURL).
-			Msg("pyroscope url is plain http, the authentication token travels in cleartext")
-	}
-
-	return nil
-}
-
-func runPipeline(
-	ctx context.Context,
-	cfg runtimeConfig,
-	profilerImpl profilerRunner,
-	parserImpl traceParser,
-) error {
 	log.Info().
-		Str("pyroscope_url", cfg.PyroscopeURL).
-		Str("pyroscope_auth", maskedToken(cfg.PyroscopeAuth)).
-		Str("app_name", cfg.AppName).
-		Bool("tag_entrypoint", cfg.TagEntrypoint).
-		Bool("keep_entrypoint_name", cfg.KeepEntrypointName).
-		Str("restart", cfg.Restart).
-		Float64("rate_mb", cfg.RateMB).
-		Float64("rate_burst_mb", cfg.RateBurstMB).
+		Str("pyroscope_url", cfg.Pyroscope.URL).
+		Str("pyroscope_auth", maskedToken(cfg.Pyroscope.Auth)).
+		Str("app_name", cfg.App).
+		Str("phpspy", executable).
+		Int("targets", len(cfg.Targets)).
 		Str("version", version.Get()).
-		Strs("tags", cfg.AppTags).
 		Msg("gospy started")
 
-	profilerCtx, stopProfiler := context.WithCancel(ctx)
-	defer stopProfiler()
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
 
 	drainCtx, abandonDrain := context.WithCancel(context.WithoutCancel(ctx))
 	defer abandonDrain()
 
-	aborted, stopSignals := forwardSignals(profilerCtx, stopProfiler)
+	aborted, stopSignals := forwardSignals(runCtx, stop)
 	defer stopSignals()
 
-	stacks := make(chan *collector.Sample, sampleBuffer)
-	ingest := pyroscope.StartIngest(drainCtx, cfg.ingestConfig(profilerImpl.GetHZ()))
+	samples := make(chan *collector.Sample, sampleBuffer)
+	ingest := pyroscope.StartIngest(drainCtx, cfg.ingestConfig())
 
-	batchTicker := time.NewTicker(cfg.batchInterval())
+	batchTicker := time.NewTicker(cfg.BatchInterval)
 	defer batchTicker.Stop()
 
 	collectorDone := make(chan struct{})
 	go func() {
 		defer close(collectorDone)
-		collector.Collect(drainCtx, stacks, ingest.In(), collector.Config{
+		collector.Collect(drainCtx, samples, ingest.In(), collector.Config{
 			Ticks:  batchTicker.C,
 			OnDrop: ingest.CountDropped,
 		})
 	}()
 
-	runErr := supervisor.ManageProfiler(profilerCtx, profilerImpl, parserImpl, stacks, supervisor.RestartPolicy{Mode: cfg.Restart})
+	profiling := newProfiling(cfg, executable, samples, drainCtx, stop)
 
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
-		close(stacks)
+		profiling.run(runCtx)
+		close(samples)
 		<-collectorDone
 		ingest.Wait()
 	}()
 
-	if drainErr := awaitDrain(drained, aborted, abandonDrain, cfg.drainTimeout()); drainErr != nil {
-		return errors.Join(runErr, drainErr)
-	}
-
+	<-runCtx.Done()
 	log.Info().Msg("shutting down")
-	return runErr
+
+	drainErr := awaitDrain(drained, aborted, abandonDrain, cfg.DrainTimeout)
+
+	return errors.Join(profiling.fatal(), drainErr)
 }
 
 // awaitDrain relies on the ingest fast-fail contract: once the drain context is cancelled the
@@ -260,41 +137,31 @@ func maskedToken(token string) string {
 	return "***"
 }
 
-func (cfg runtimeConfig) batchInterval() time.Duration {
-	if cfg.BatchInterval <= 0 {
-		return DefaultBatchInterval
-	}
-
-	return cfg.BatchInterval
-}
-
-func (cfg runtimeConfig) drainTimeout() time.Duration {
-	if cfg.DrainTimeout <= 0 {
-		return DefaultDrainTimeout
-	}
-
-	return cfg.DrainTimeout
-}
-
-func (cfg runtimeConfig) ingestConfig(sampleRate int) pyroscope.Config {
+// Every sample carries its target's static tags already, so the ingest adds none of its own.
+func (cfg Config) ingestConfig() pyroscope.Config {
 	return pyroscope.Config{
-		URL:           cfg.PyroscopeURL,
-		AuthToken:     cfg.PyroscopeAuth,
-		AppName:       cfg.AppName,
-		StaticTags:    cfg.staticTags,
-		SampleRate:    sampleRate,
-		Workers:       cfg.PyroscopeWorkers,
-		Timeout:       cfg.PyroscopeTimeout,
-		RateMB:        cfg.RateMB,
-		RateBurstMB:   cfg.RateBurstMB,
-		Retry:         cfg.PyroscopeRetry,
+		URL:           cfg.Pyroscope.URL,
+		AuthToken:     cfg.Pyroscope.Auth,
+		AppName:       cfg.App,
+		Workers:       cfg.Pyroscope.Workers,
+		Timeout:       cfg.Pyroscope.Timeout,
+		RateMB:        cfg.Pyroscope.RateMB,
+		RateBurstMB:   cfg.Pyroscope.RateBurstMB,
 		StatsInterval: cfg.StatsInterval,
 		Logger:        log.Logger,
 		Transport:     cfg.Transport,
 	}
 }
 
-func forwardSignals(profilerCtx context.Context, stopProfiler context.CancelFunc) (<-chan struct{}, func()) {
+func (cfg Config) processes() ProcessSource {
+	if cfg.Processes != nil {
+		return cfg.Processes
+	}
+
+	return procscan.New(procscan.DefaultRoot, cfg.ScanFields())
+}
+
+func forwardSignals(runCtx context.Context, stop context.CancelFunc) (<-chan struct{}, func()) {
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 
@@ -306,8 +173,8 @@ func forwardSignals(profilerCtx context.Context, stopProfiler context.CancelFunc
 			select {
 			case sig := <-signals:
 				log.Info().Str("signal", sig.String()).Msg("signal received")
-				if profilerCtx.Err() == nil {
-					stopProfiler()
+				if runCtx.Err() == nil {
+					stop()
 					continue
 				}
 

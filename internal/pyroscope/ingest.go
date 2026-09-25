@@ -17,16 +17,17 @@ const (
 	defaultTimeout   = 10 * time.Second
 )
 
-// Config: a nil Transport keeps the real one, a RateMB at or below zero is unlimited.
+// Config: a nil Transport keeps the real one, a RateMB at or below zero is unlimited. Neither
+// tags nor a sample rate are configured here: every Batch carries its own.
 type Config struct {
-	URL, AuthToken, AppName, StaticTags string
-	SampleRate, Workers                 int
-	Timeout                             time.Duration
-	RateMB, RateBurstMB                 float64
-	Retry                               Retry
-	StatsInterval                       time.Duration
-	Logger                              zerolog.Logger
-	Transport                           http.RoundTripper
+	URL, AuthToken, AppName string
+	Workers                 int
+	Timeout                 time.Duration
+	RateMB, RateBurstMB     float64
+	Retry                   Retry
+	StatsInterval           time.Duration
+	Logger                  zerolog.Logger
+	Transport               http.RoundTripper
 }
 
 // Ingest failures are logged and counted, never returned.
@@ -54,7 +55,7 @@ func StartIngest(ctx context.Context, cfg Config) *Ingest {
 	ingest := &Ingest{
 		input:    make(chan *collector.TagCollection, workers),
 		client:   newClient(cfg.URL, cfg.AuthToken, timeout, cfg.Transport, cfg.Logger),
-		metadata: newAppMetadata(cfg.AppName, cfg.StaticTags, cfg.SampleRate),
+		metadata: newAppMetadata(cfg.AppName),
 		limiter:  newLimiter(cfg.RateMB, cfg.RateBurstMB),
 		retry:    newRetryPolicy(cfg.Retry),
 		logger:   cfg.Logger,
@@ -109,6 +110,7 @@ func (ingest *Ingest) deliver(ctx context.Context, batch *collector.TagCollectio
 
 	ingest.logger.Debug().
 		Str("tags", batch.Tags()).
+		Int("sample_rate", batch.SampleRate()).
 		Int("bytes", len(profile.body)).
 		Int("samples", len(batch.Data())).
 		Time("from", batch.From()).

@@ -1,0 +1,10 @@
+Name:	kthreadd
+Umask:	0022
+State:	S (sleeping)
+Tgid:	2
+Ngid:	0
+Pid:	2
+PPid:	0
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
