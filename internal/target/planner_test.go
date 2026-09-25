@@ -40,7 +40,7 @@ func traced(t *testing.T, planner *target.Planner, start time.Time, ends map[tar
 		processes = append(processes, process)
 	}
 
-	plan := planner.Plan(processes, start)
+	plan := planner.Plan(processes, start, start)
 	require.ElementsMatch(t, processes, plan.Attach, "the history scan needs a slot per process")
 	for process, end := range ends {
 		planner.Ended(process, end, false)
@@ -92,7 +92,7 @@ func TestPlanFillsFreeSlots(t *testing.T) {
 
 			planner := newPlanner(tc.slots, time.Minute)
 
-			require.Equal(t, tc.want, planner.Plan(tc.matched, at(0)))
+			require.Equal(t, tc.want, planner.Plan(tc.matched, at(0), at(0)))
 			require.Equal(t, len(tc.want.Attach), planner.Attached())
 		})
 	}
@@ -104,13 +104,13 @@ func TestPlanKeepsAnAttachUntilItEnds(t *testing.T) {
 	planner := newPlanner(1, 0)
 	matched := []target.Process{process(1), process(2)}
 
-	require.Equal(t, []target.Process{process(1)}, planner.Plan(matched, at(0)).Attach)
-	require.Empty(t, planner.Plan(matched, at(time.Second)).Attach, "a live attach holds its slot")
+	require.Equal(t, []target.Process{process(1)}, planner.Plan(matched, at(0), at(0)).Attach)
+	require.Empty(t, planner.Plan(matched, at(time.Second), at(time.Second)).Attach, "a live attach holds its slot")
 	require.Equal(t, 1, planner.Attached())
 
 	planner.Ended(process(1), at(2*time.Second), false)
 	require.Equal(t, 0, planner.Attached())
-	require.Equal(t, []target.Process{process(2)}, planner.Plan(matched, at(3*time.Second)).Attach, "the freed slot goes to the waiting process")
+	require.Equal(t, []target.Process{process(2)}, planner.Plan(matched, at(3*time.Second), at(3*time.Second)).Attach, "the freed slot goes to the waiting process")
 }
 
 func TestPlanOrdersCandidates(t *testing.T) {
@@ -148,7 +148,7 @@ func TestPlanOrdersCandidates(t *testing.T) {
 		{
 			name: "a failed attach counts as traced",
 			history: func(t *testing.T, planner *target.Planner) {
-				plan := planner.Plan([]target.Process{process(1)}, at(0))
+				plan := planner.Plan([]target.Process{process(1)}, at(0), at(0))
 				require.Equal(t, []target.Process{process(1)}, plan.Attach)
 				planner.Ended(process(1), at(time.Second), true)
 			},
@@ -164,7 +164,7 @@ func TestPlanOrdersCandidates(t *testing.T) {
 			planner := newPlanner(len(tc.matched), 0)
 			tc.history(t, planner)
 
-			require.Equal(t, tc.want, planner.Plan(tc.matched, at(time.Hour)).Attach)
+			require.Equal(t, tc.want, planner.Plan(tc.matched, at(time.Hour), at(time.Hour)).Attach)
 		})
 	}
 }
@@ -178,7 +178,7 @@ func TestPlanBreaksTiesAtRandom(t *testing.T) {
 		source := rand.New(rand.NewPCG(seed, seed))
 		planner := target.New(target.Config{Slots: len(matched), Rand: source.IntN})
 
-		return planner.Plan(matched, at(0)).Attach
+		return planner.Plan(matched, at(0), at(0)).Attach
 	}
 
 	require.Equal(t, order(7), order(7), "the same source must give the same order")
@@ -201,9 +201,9 @@ func TestPlanNeverRotatesWithoutAWaitingProcess(t *testing.T) {
 
 	planner := newPlanner(1, rotate)
 	only := []target.Process{process(1)}
-	require.Equal(t, only, planner.Plan(only, at(0)).Attach)
+	require.Equal(t, only, planner.Plan(only, at(0), at(0)).Attach)
 
-	require.Empty(t, planner.Plan(only, at(rotate+time.Minute)).Detach, "without a waiting process there is nothing to rotate for")
+	require.Empty(t, planner.Plan(only, at(rotate+time.Minute), at(rotate+time.Minute)).Detach, "without a waiting process there is nothing to rotate for")
 	require.Equal(t, 1, planner.Attached())
 }
 
@@ -216,17 +216,17 @@ func TestPlanRotatesForAWaitingProcess(t *testing.T) {
 	traced(t, planner, at(0), map[target.Process]time.Time{process(2): at(0)})
 
 	waiting := []target.Process{process(1), process(2)}
-	require.Equal(t, []target.Process{process(1)}, planner.Plan(waiting, at(time.Second)).Attach, "a process never traced goes first")
+	require.Equal(t, []target.Process{process(1)}, planner.Plan(waiting, at(time.Second), at(time.Second)).Attach, "a process never traced goes first")
 
-	require.Empty(t, planner.Plan(waiting, at(time.Second+rotate)).Detach, "an attach exactly as old as the period is not rotated yet")
+	require.Empty(t, planner.Plan(waiting, at(time.Second+rotate), at(time.Second+rotate)).Detach, "an attach exactly as old as the period is not rotated yet")
 
-	plan := planner.Plan(waiting, at(2*time.Second+rotate))
+	plan := planner.Plan(waiting, at(2*time.Second+rotate), at(2*time.Second+rotate))
 	require.Equal(t, []target.Detach{{Process: process(1), Reason: target.Rotation}}, plan.Detach)
 	require.Empty(t, plan.Attach, "the slot is still taken until the detach ends")
 	require.Equal(t, 1, planner.Attached())
 
 	planner.Ended(process(1), at(3*time.Second+rotate), false)
-	require.Equal(t, []target.Process{process(2)}, planner.Plan(waiting, at(4*time.Second+rotate)).Attach)
+	require.Equal(t, []target.Process{process(2)}, planner.Plan(waiting, at(4*time.Second+rotate), at(4*time.Second+rotate)).Attach)
 }
 
 func TestPlanNeverRotatesWithoutAPeriod(t *testing.T) {
@@ -236,9 +236,9 @@ func TestPlanNeverRotatesWithoutAPeriod(t *testing.T) {
 	traced(t, planner, at(0), map[target.Process]time.Time{process(2): at(0)})
 
 	waiting := []target.Process{process(1), process(2)}
-	require.Equal(t, []target.Process{process(1)}, planner.Plan(waiting, at(time.Second)).Attach)
+	require.Equal(t, []target.Process{process(1)}, planner.Plan(waiting, at(time.Second), at(time.Second)).Attach)
 
-	require.Empty(t, planner.Plan(waiting, at(24*time.Hour)).Detach)
+	require.Empty(t, planner.Plan(waiting, at(24*time.Hour), at(24*time.Hour)).Detach)
 }
 
 func TestPlanDetachesAtMostOnePerScan(t *testing.T) {
@@ -250,16 +250,16 @@ func TestPlanDetachesAtMostOnePerScan(t *testing.T) {
 	traced(t, planner, at(0), map[target.Process]time.Time{process(3): at(0), process(4): at(0)})
 
 	matched := []target.Process{process(1), process(2), process(3), process(4)}
-	require.Equal(t, []target.Process{process(1), process(2)}, planner.Plan(matched, at(time.Second)).Attach)
+	require.Equal(t, []target.Process{process(1), process(2)}, planner.Plan(matched, at(time.Second), at(time.Second)).Attach)
 
-	plan := planner.Plan(matched, at(time.Minute))
+	plan := planner.Plan(matched, at(time.Minute), at(time.Minute))
 	require.Len(t, plan.Detach, 1, "two attaches past the period and two waiting processes still rotate one at a time")
 	require.Equal(t, target.Rotation, plan.Detach[0].Reason)
 
-	require.Empty(t, planner.Plan(matched, at(time.Minute+time.Second)).Detach, "a detach in flight blocks the next one")
+	require.Empty(t, planner.Plan(matched, at(time.Minute+time.Second), at(time.Minute+time.Second)).Detach, "a detach in flight blocks the next one")
 
 	planner.Ended(plan.Detach[0].Process, at(time.Minute+2*time.Second), false)
-	next := planner.Plan(matched, at(time.Minute+3*time.Second))
+	next := planner.Plan(matched, at(time.Minute+3*time.Second), at(time.Minute+3*time.Second))
 	require.Len(t, next.Attach, 1)
 	require.Len(t, next.Detach, 1, "once the slot changed hands the next attach past the period rotates")
 }
@@ -319,9 +319,9 @@ func TestPlanPreemptsForAProcessNeverTraced(t *testing.T) {
 				traced(t, planner, at(0), map[target.Process]time.Time{process(2): at(0)})
 				matched = append(matched, process(2))
 			}
-			require.Equal(t, []target.Process{process(1)}, planner.Plan(matched, at(time.Second)).Attach)
+			require.Equal(t, []target.Process{process(1)}, planner.Plan(matched, at(time.Second), at(time.Second)).Attach)
 
-			plan := planner.Plan([]target.Process{process(1), process(2)}, at(time.Second+tc.age))
+			plan := planner.Plan([]target.Process{process(1), process(2)}, at(time.Second+tc.age), at(time.Second+tc.age))
 			require.Equal(t, tc.wantDetach, plan.Detach)
 		})
 	}
@@ -335,12 +335,12 @@ func TestPlanHoldsAFailedProcess(t *testing.T) {
 
 	failAt := func(start time.Time) {
 		t.Helper()
-		require.Equal(t, only, planner.Plan(only, start).Attach)
+		require.Equal(t, only, planner.Plan(only, start, start).Attach)
 		planner.Ended(process(1), start, true)
 	}
 	heldAt := func(now time.Time, reason string) {
 		t.Helper()
-		plan := planner.Plan(only, now)
+		plan := planner.Plan(only, now, now)
 		require.Empty(t, plan.Attach, reason)
 		require.Equal(t, 1, plan.Held, reason)
 	}
@@ -362,17 +362,17 @@ func TestPlanResetsTheHoldAfterASuccessfulAttach(t *testing.T) {
 	planner := newPlanner(1, time.Minute)
 	only := []target.Process{process(1)}
 
-	require.Equal(t, only, planner.Plan(only, at(0)).Attach)
+	require.Equal(t, only, planner.Plan(only, at(0), at(0)).Attach)
 	planner.Ended(process(1), at(0), true)
 
-	require.Equal(t, only, planner.Plan(only, at(30*time.Second)).Attach)
+	require.Equal(t, only, planner.Plan(only, at(30*time.Second), at(30*time.Second)).Attach)
 	planner.Ended(process(1), at(40*time.Second), false)
 
-	require.Equal(t, only, planner.Plan(only, at(41*time.Second)).Attach)
+	require.Equal(t, only, planner.Plan(only, at(41*time.Second), at(41*time.Second)).Attach)
 	planner.Ended(process(1), at(41*time.Second), true)
 
-	require.Empty(t, planner.Plan(only, at(41*time.Second+29*time.Second)).Attach)
-	require.Equal(t, only, planner.Plan(only, at(41*time.Second+30*time.Second)).Attach, "a clean attach in between opens a new streak with the base hold")
+	require.Empty(t, planner.Plan(only, at(41*time.Second+29*time.Second), at(41*time.Second+29*time.Second)).Attach)
+	require.Equal(t, only, planner.Plan(only, at(41*time.Second+30*time.Second), at(41*time.Second+30*time.Second)).Attach, "a clean attach in between opens a new streak with the base hold")
 }
 
 func TestPlanDetachesAProcessThatLeftTheTarget(t *testing.T) {
@@ -405,14 +405,14 @@ func TestPlanDetachesAProcessThatLeftTheTarget(t *testing.T) {
 			t.Parallel()
 
 			planner := newPlanner(1, time.Minute)
-			require.Equal(t, []target.Process{process(1)}, planner.Plan([]target.Process{process(1), process(2)}, at(0)).Attach)
+			require.Equal(t, []target.Process{process(1)}, planner.Plan([]target.Process{process(1), process(2)}, at(0), at(0)).Attach)
 
-			plan := planner.Plan(tc.matched, at(time.Second))
+			plan := planner.Plan(tc.matched, at(time.Second), at(time.Second))
 			require.Equal(t, tc.want, plan.Detach)
 			require.Empty(t, plan.Attach, "the slot is taken until the detach ends")
 			require.Equal(t, 1, planner.Attached())
 
-			require.Empty(t, planner.Plan(tc.matched, at(2*time.Second)).Detach, "a departure is reported once")
+			require.Empty(t, planner.Plan(tc.matched, at(2*time.Second), at(2*time.Second)).Detach, "a departure is reported once")
 		})
 	}
 }
@@ -424,13 +424,13 @@ func TestPlanDeparturesDoNotCountAgainstRotation(t *testing.T) {
 	traced(t, planner, at(0), map[target.Process]time.Time{process(3): at(0)})
 
 	matched := []target.Process{process(1), process(2), process(3)}
-	require.Equal(t, []target.Process{process(1), process(2)}, planner.Plan(matched, at(time.Second)).Attach)
+	require.Equal(t, []target.Process{process(1), process(2)}, planner.Plan(matched, at(time.Second), at(time.Second)).Attach)
 
-	plan := planner.Plan([]target.Process{process(2), process(3)}, at(2*time.Minute))
+	plan := planner.Plan([]target.Process{process(2), process(3)}, at(2*time.Minute), at(2*time.Minute))
 	require.Equal(t, []target.Detach{{Process: process(1), Reason: target.Departure}}, plan.Detach, "a departure blocks the rotation of the same scan")
 
 	planner.Ended(process(1), at(2*time.Minute+time.Second), false)
-	next := planner.Plan([]target.Process{process(2), process(3)}, at(2*time.Minute+2*time.Second))
+	next := planner.Plan([]target.Process{process(2), process(3)}, at(2*time.Minute+2*time.Second), at(2*time.Minute+2*time.Second))
 	require.Equal(t, []target.Process{process(3)}, next.Attach)
 }
 
@@ -459,14 +459,14 @@ func TestPlanForgetsAProcessThatExited(t *testing.T) {
 			retired := target.Process{PID: 1, StartTime: 1000}
 			for i := range 3 {
 				start := at(time.Duration(i) * time.Hour)
-				require.Equal(t, []target.Process{retired}, planner.Plan([]target.Process{retired}, start).Attach)
+				require.Equal(t, []target.Process{retired}, planner.Plan([]target.Process{retired}, start, start).Attach)
 				planner.Ended(retired, start, true)
 			}
-			require.Equal(t, 1, planner.Plan([]target.Process{retired}, at(4*time.Hour)).Held)
+			require.Equal(t, 1, planner.Plan([]target.Process{retired}, at(4*time.Hour), at(4*time.Hour)).Held)
 
-			require.Equal(t, target.Plan{}, planner.Plan(nil, at(5*time.Hour)), "a scan without the process is its exit")
+			require.Equal(t, target.Plan{}, planner.Plan(nil, at(5*time.Hour), at(5*time.Hour)), "a scan without the process is its exit")
 
-			plan := planner.Plan([]target.Process{tc.reappear}, at(6*time.Hour))
+			plan := planner.Plan([]target.Process{tc.reappear}, at(6*time.Hour), at(6*time.Hour))
 			require.Equal(t, []target.Process{tc.reappear}, plan.Attach)
 			require.Zero(t, plan.Held)
 		})
@@ -481,7 +481,7 @@ func TestPlanPrefersAReusedPIDAsNeverTraced(t *testing.T) {
 	traced(t, planner, at(0), map[target.Process]time.Time{old: at(time.Second), process(2): at(3 * time.Second)})
 
 	reused := target.Process{PID: 1, StartTime: 5000}
-	plan := planner.Plan([]target.Process{process(2), reused}, at(time.Minute))
+	plan := planner.Plan([]target.Process{process(2), reused}, at(time.Minute), at(time.Minute))
 	require.Equal(t, []target.Process{reused, process(2)}, plan.Attach, "a new start time under an old pid has no history and goes first")
 }
 
@@ -491,6 +491,68 @@ func TestEndedIgnoresAProcessThatIsNotAttached(t *testing.T) {
 	planner := newPlanner(1, 0)
 	planner.Ended(process(1), at(0), true)
 
-	plan := planner.Plan([]target.Process{process(1)}, at(time.Second))
+	plan := planner.Plan([]target.Process{process(1)}, at(time.Second), at(time.Second))
 	require.Equal(t, attachedOnly(process(1)), plan, "a stray end report leaves no hold behind")
+}
+
+func TestPlanSettlesAnExitOnlyAgainstALaterScan(t *testing.T) {
+	t.Parallel()
+
+	exited := at(10 * time.Second)
+
+	testCases := []struct {
+		name        string
+		matched     []target.Process
+		scanStarted time.Time
+		want        target.Plan
+	}{
+		{
+			name:        "a scan started before the exit keeps the slot",
+			matched:     []target.Process{process(1), process(2)},
+			scanStarted: exited.Add(-time.Millisecond),
+			want:        target.Plan{Matched: 2},
+		},
+		{
+			name:        "a scan started at the exit keeps the slot",
+			matched:     []target.Process{process(1), process(2)},
+			scanStarted: exited,
+			want:        target.Plan{Matched: 2},
+		},
+		{
+			name:        "a scan started before the exit and missing the process detaches nothing",
+			matched:     []target.Process{process(2)},
+			scanStarted: exited.Add(-time.Millisecond),
+			want:        target.Plan{Matched: 1},
+		},
+		{
+			name:        "a later scan without the process frees the slot",
+			matched:     []target.Process{process(2)},
+			scanStarted: exited.Add(time.Millisecond),
+			want:        attachedOnly(process(2)),
+		},
+		{
+			name:        "a later scan still listing the process fails the attach",
+			matched:     []target.Process{process(1), process(2)},
+			scanStarted: exited.Add(time.Millisecond),
+			want: target.Plan{
+				Attach:  []target.Process{process(2)},
+				Failed:  []target.Process{process(1)},
+				Matched: 2,
+				Held:    1,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			planner := newPlanner(1, 0)
+			require.Equal(t, []target.Process{process(1)}, planner.Plan([]target.Process{process(1)}, at(0), at(0)).Attach)
+			planner.Exited(process(1), exited)
+
+			now := exited.Add(time.Second)
+			require.Equal(t, tc.want, planner.Plan(tc.matched, tc.scanStarted, now))
+		})
+	}
 }

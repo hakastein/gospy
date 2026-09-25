@@ -490,9 +490,9 @@ more file per process per scan; the other matchers need none.
 
 An attach ends in one of three ways:
 
-- **phpspy exits 0**: the process it traced ended. The slot is freed once the next scan
-  confirms the process is gone; nothing is held against it. A process that is still running
-  after its phpspy returned 0 did not end, so that exit counts as a failed attach instead of a
+- **phpspy exits 0**: the process it traced ended. The slot is freed once a scan that started after
+  the exit confirms the process is gone; nothing is held against it. A process that such a scan
+  still lists did not end, so that exit counts as a failed attach instead of a
   reason to run phpspy on it again every scan.
 - **phpspy exits non-zero**, or its output cannot be read: a failed attach. The process enters a
   hold of 30 seconds, then 60 seconds after a second consecutive failure. After three consecutive
@@ -791,7 +791,7 @@ delivery. The target line is always emitted, so a target that finds nothing is v
 | Field | Meaning |
 | --- | --- |
 | `matched` | Processes the last scan sorted into this target. |
-| `attached` | Attaches held right now, detaches in flight and exits waiting for the next scan included. |
+| `attached` | Attaches held right now, detaches in flight and exits waiting for a later scan included. |
 | `rotations` | Attaches detached in the interval because they reached `rotate` while a process waited. |
 | `preemptions` | Attaches detached in the interval to hand a slot to a process never traced before. |
 | `failed_attaches` | Attaches that ended in a failure in the interval, an exit 0 on a process still running included. |

@@ -31,11 +31,7 @@ type targetRunner struct {
 	planner   *target.Planner
 	attaches  map[target.Process]*attach.Attach
 	ended     chan attachEnd
-	// exits are the attaches whose phpspy returned 0 and whose slot waits for the next scan:
-	// a process still listed then did not die, so that exit was not the end of its life.
-	exits    map[target.Process]*classified
-	snapshot *classified
-	stats    statisticsReport
+	stats     statisticsReport
 }
 
 func newTargetRunner(p *profiling, index int, cfg config.Target, logger zerolog.Logger) *targetRunner {
@@ -48,7 +44,6 @@ func newTargetRunner(p *profiling, index int, cfg config.Target, logger zerolog.
 		attaches:  make(map[target.Process]*attach.Attach, cfg.MaxProcesses),
 		// Every attach reports its end once and the planner never holds more than the slots.
 		ended: make(chan attachEnd, cfg.MaxProcesses),
-		exits: make(map[target.Process]*classified),
 	}
 }
 
@@ -84,13 +79,12 @@ func (runner *targetRunner) scan(now time.Time) {
 		return
 	}
 
-	matched := latest.byTarget[runner.index]
-	if latest != runner.snapshot {
-		runner.snapshot = latest
-		runner.settleExits(matched, now)
-	}
+	plan := runner.planner.Plan(latest.byTarget[runner.index], latest.scanStarted, now)
 
-	plan := runner.planner.Plan(matched, now)
+	for _, process := range plan.Failed {
+		runner.stats.failed++
+		runner.logger.Warn().Int("pid", process.PID).Msg("phpspy exited as if the process had ended, but it is still running")
+	}
 
 	for _, detach := range plan.Detach {
 		runner.logger.Debug().Int("pid", detach.Process.PID).Stringer("reason", detach.Reason).Msg("detaching phpspy")
@@ -103,31 +97,6 @@ func (runner *targetRunner) scan(now time.Time) {
 	}
 
 	runner.stats.matched, runner.stats.held = plan.Matched, plan.Held
-}
-
-// settleExits reports the attaches that ended with phpspy's exit 0 against a scan taken after
-// it. Absent from it, the process died and the slot is simply free; still listed, it lives
-// on and the exit counts as a failed attach, so a phpspy that keeps returning 0 on a live
-// process is held and retired instead of re-run on every scan.
-func (runner *targetRunner) settleExits(matched []target.Process, now time.Time) {
-	listed := make(map[target.Process]struct{}, len(matched))
-	for _, process := range matched {
-		listed[process] = struct{}{}
-	}
-
-	for process, seen := range runner.exits {
-		if seen == runner.snapshot {
-			continue
-		}
-		delete(runner.exits, process)
-
-		_, alive := listed[process]
-		runner.planner.Ended(process, now, alive)
-		if alive {
-			runner.stats.failed++
-			runner.logger.Warn().Int("pid", process.PID).Msg("phpspy exited as if the process had ended, but it is still running")
-		}
-	}
 }
 
 func (runner *targetRunner) start(process target.Process, now time.Time) {
@@ -201,7 +170,7 @@ func (runner *targetRunner) finish(end attachEnd, now time.Time) {
 		Msg("attach ended")
 
 	if end.result.Outcome == attach.Exited {
-		runner.exits[end.process] = runner.snapshot
+		runner.planner.Exited(end.process, now)
 		return
 	}
 

@@ -25,7 +25,8 @@ const scanErrorPeriod = time.Minute
 // classified is one scan sorted into targets: byTarget[i] holds the processes that belong to
 // the i-th configured target, gospy and its descendants already left out.
 type classified struct {
-	byTarget [][]target.Process
+	byTarget    [][]target.Process
+	scanStarted time.Time
 }
 
 // profiling runs the targets: one scan loop feeding the latest classified snapshot to one
@@ -118,13 +119,16 @@ func (p *profiling) scanLoop(ctx context.Context) {
 	scanFailures := log.Sample(&zerolog.BurstSampler{Burst: 1, Period: scanErrorPeriod})
 
 	scan := func() {
+		started := time.Now()
 		processes, err := source.Scan()
 		if err != nil {
 			scanFailures.Warn().Err(err).Msg("cannot read the process table")
 			return
 		}
 
-		p.latest.Store(classify(processes, p.cfg.Targets, p.ownPID))
+		snapshot := classify(processes, p.cfg.Targets, p.ownPID)
+		snapshot.scanStarted = started
+		p.latest.Store(snapshot)
 	}
 
 	scan()
