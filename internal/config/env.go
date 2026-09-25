@@ -75,7 +75,7 @@ func validName(name string) bool {
 	for i, r := range name {
 		letter := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
 		digit := r >= '0' && r <= '9'
-		if !letter && !(digit && i > 0) {
+		if !(letter || (digit && i > 0)) {
 			return false
 		}
 	}

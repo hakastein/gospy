@@ -114,7 +114,7 @@ type Attach struct {
 // Start launches `<executable> -p <pid> -H <rate> <args…>` and returns once phpspy is running.
 // An error means phpspy could not be started at all: a missing or unusable binary, a failed
 // fork, or a ctx that had already ended. Cancelling ctx abandons the attach: phpspy is
-// signalled and the parser stops at once, unlike Detach, which lets the parser drain what
+// signaled and the parser stops at once, unlike Detach, which lets the parser drain what
 // phpspy already wrote.
 func Start(ctx context.Context, cfg Config, samples chan<- *collector.Sample) (*Attach, error) {
 	if cfg.SilenceTimeout <= 0 {
