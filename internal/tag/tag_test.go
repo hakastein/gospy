@@ -2,14 +2,15 @@ package tag_test
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/hakastein/gospy/internal/tag"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestParseInput(t *testing.T) {
-	// Happy path тесты: корректные входные данные.
 	t.Run("HappyPath", func(t *testing.T) {
 		tests := []struct {
 			name        string
@@ -21,6 +22,12 @@ func TestParseInput(t *testing.T) {
 				name:        "Static Tags Only",
 				input:       []string{"env=production", "version=1.0.0"},
 				wantStatic:  "env=production,version=1.0.0",
+				wantDynamic: map[string][]tag.DynamicTag{},
+			},
+			{
+				name:        "Static Tag with Surrounding Whitespace",
+				input:       []string{"  env = production  "},
+				wantStatic:  "env=production",
 				wantDynamic: map[string][]tag.DynamicTag{},
 			},
 			{
@@ -40,6 +47,24 @@ func TestParseInput(t *testing.T) {
 						TagKey:     "user",
 						TagRegexp:  regexp.MustCompile("^[a-z]+$"),
 						TagReplace: "user_$1",
+					}},
+				},
+			},
+			{
+				name:  "Dynamic Tag with Trailing Whitespace",
+				input: []string{`uri={{ "glopeek server.REQUEST_URI" }} `},
+				wantDynamic: map[string][]tag.DynamicTag{
+					"glopeek server.REQUEST_URI": {{
+						TagKey: "uri",
+					}},
+				},
+			},
+			{
+				name:  "Dynamic Tag with Leading Whitespace",
+				input: []string{` uri={{"glopeek server.REQUEST_URI"}}`},
+				wantDynamic: map[string][]tag.DynamicTag{
+					"glopeek server.REQUEST_URI": {{
+						TagKey: "uri",
 					}},
 				},
 			},
@@ -124,14 +149,13 @@ func TestParseInput(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				static, dynamic, err := tag.ParseInput(tt.input)
-				assert.NoError(t, err)
-				assert.Equal(t, tt.wantStatic, static)
-				compareDynamic(t, tt.wantDynamic, dynamic)
+				require.NoError(t, err)
+				require.Equal(t, tt.wantStatic, static)
+				requireSameDynamic(t, tt.wantDynamic, dynamic)
 			})
 		}
 	})
 
-	// Error кейсы: некорректные входные данные.
 	t.Run("ErrorCases", func(t *testing.T) {
 		tests := []struct {
 			name  string
@@ -140,6 +164,14 @@ func TestParseInput(t *testing.T) {
 			{
 				name:  "Missing Equal Sign",
 				input: []string{"envproduction"},
+			},
+			{
+				name:  "Empty Tag Key",
+				input: []string{"=production"},
+			},
+			{
+				name:  "Blank Tag Key",
+				input: []string{"   =production"},
 			},
 			{
 				name:  "Invalid Tag Key Characters",
@@ -154,8 +186,36 @@ func TestParseInput(t *testing.T) {
 				input: []string{`user={{"username" "[A-Z+" "user_$1"}}`},
 			},
 			{
+				name:  "Dynamic Tag without Closing Braces",
+				input: []string{`user={{"username"`},
+			},
+			{
+				name:  "Dynamic Tag with Trailing Space after Closing Braces and Missing Quote",
+				input: []string{`user={{"username }} `},
+			},
+			{
+				name:  "Dynamic Tag Opened but Empty",
+				input: []string{`user={{}}`},
+			},
+			{
 				name:  "Static Tag with Comma",
 				input: []string{"env=prod,uction"},
+			},
+			{
+				name:  "Static Tag with Opening Brace",
+				input: []string{"env=prod{uction"},
+			},
+			{
+				name:  "Static Tag with Closing Brace",
+				input: []string{"env=prod}uction"},
+			},
+			{
+				name:  "Static Tag with Equals Sign",
+				input: []string{"env=prod=uction"},
+			},
+			{
+				name:  "Static Tag with Inner Whitespace",
+				input: []string{"env=prod uction"},
 			},
 			{
 				name:  "Dynamic Tag with unexpected character (unquoted content)",
@@ -174,27 +234,35 @@ func TestParseInput(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				_, _, err := tag.ParseInput(tt.input)
-				assert.Error(t, err)
+				require.Error(t, err)
 			})
 		}
 	})
+
+	t.Run("ErrorNamesTheTag", func(t *testing.T) {
+		_, _, err := tag.ParseInput([]string{`uri={{"glopeek server.REQUEST_URI"`})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "uri")
+	})
 }
 
-func compareDynamic(t *testing.T, want, got map[string][]tag.DynamicTag) {
-	assert.Equal(t, len(want), len(got))
-	for key, wTags := range want {
-		gTags, ok := got[key]
-		assert.True(t, ok, "key %q not found", key)
-		assert.Equal(t, len(wTags), len(gTags))
-		for i := range wTags {
-			assert.Equal(t, wTags[i].TagKey, gTags[i].TagKey)
-			if wTags[i].TagRegexp == nil {
-				assert.Nil(t, gTags[i].TagRegexp)
+func requireSameDynamic(t *testing.T, want, got map[string][]tag.DynamicTag) {
+	t.Helper()
+
+	require.Len(t, got, len(want))
+	for key, wantTags := range want {
+		gotTags, ok := got[key]
+		require.True(t, ok, "key %q not found", key)
+		require.Len(t, gotTags, len(wantTags))
+		for i := range wantTags {
+			require.Equal(t, wantTags[i].TagKey, gotTags[i].TagKey)
+			if wantTags[i].TagRegexp == nil {
+				require.Nil(t, gotTags[i].TagRegexp)
 			} else {
-				assert.NotNil(t, gTags[i].TagRegexp)
-				assert.Equal(t, wTags[i].TagRegexp.String(), gTags[i].TagRegexp.String())
+				require.NotNil(t, gotTags[i].TagRegexp)
+				require.Equal(t, wantTags[i].TagRegexp.String(), gotTags[i].TagRegexp.String())
 			}
-			assert.Equal(t, wTags[i].TagReplace, gTags[i].TagReplace)
+			require.Equal(t, wantTags[i].TagReplace, gotTags[i].TagReplace)
 		}
 	}
 }
@@ -219,10 +287,10 @@ func TestDynamicTag_GetValue(t *testing.T) {
 			expected: "barbar",
 		},
 		{
-			name:     "Only Comma Replacement",
-			tag:      tag.DynamicTag{TagKey: "desc"},
-			input:    "hello,world",
-			expected: "hello͵world",
+			name:     "Empty Replacement Strips the Match",
+			tag:      tag.DynamicTag{TagKey: "uri", TagRegexp: regexp.MustCompile(`\?.*$`)},
+			input:    "/orders?id=7",
+			expected: "/orders",
 		},
 		{
 			name:     "Regex and Comma Replacement",
@@ -230,12 +298,70 @@ func TestDynamicTag_GetValue(t *testing.T) {
 			input:    "a,a",
 			expected: "b͵b",
 		},
+		{
+			name:     "Hostile Value Is Sanitized",
+			tag:      tag.DynamicTag{TagKey: "uri"},
+			input:    `/x}}, evil=1 {`,
+			expected: "/x__͵_evil_1__",
+		},
+		{
+			name:     "Whitespace and Quotes Are Sanitized",
+			tag:      tag.DynamicTag{TagKey: "uri"},
+			input:    "a\tb\nc\"d",
+			expected: "a_b_c_d",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res := tt.tag.GetValue(tt.input)
-			assert.Equal(t, tt.expected, res)
+			got := tt.tag.GetValue(tt.input)
+			require.Equal(t, tt.expected, got)
+			require.False(t, strings.ContainsAny(got, `{}=,"`), "sanitized value still carries reserved characters")
+		})
+	}
+}
+
+func TestSanitizeValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Plain Value Is Untouched",
+			input:    "/app/index.php",
+			expected: "/app/index.php",
+		},
+		{
+			name:     "Empty Value",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "Comma Becomes the Greek Lower Numeral Sign",
+			input:    "a,b",
+			expected: "a͵b",
+		},
+		{
+			name:     "Reserved Characters Become Underscores",
+			input:    `{a}=b "c" d`,
+			expected: "_a__b__c__d",
+		},
+		{
+			name:     "Control Characters Become Underscores",
+			input:    "a\x00b",
+			expected: "a_b",
+		},
+		{
+			name:     "Non-ASCII Characters Survive",
+			input:    "путь/файл.php",
+			expected: "путь/файл.php",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, tag.SanitizeValue(tt.input))
 		})
 	}
 }
