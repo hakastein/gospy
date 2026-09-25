@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/hakastein/gospy/internal/collector"
@@ -18,6 +19,9 @@ const (
 	metaCapacity  = 16
 )
 
+// A tag mapping that collides does so on every sample.
+const duplicateKeyLogPeriod = time.Minute
+
 type Parser struct {
 	tagsMapping        map[string][]tag.DynamicTag
 	tagEntrypoint      bool
@@ -25,6 +29,7 @@ type Parser struct {
 	currentTrace       []string
 	currentMeta        []string
 	epValidator        *validator.EntryPointValidator
+	duplicateKeys      zerolog.Sampler
 }
 
 // NewParser initializes a new Parser.
@@ -41,6 +46,7 @@ func NewParser(
 		currentTrace:       make([]string, 0, traceCapacity),
 		currentMeta:        make([]string, 0, metaCapacity),
 		epValidator:        validator.New(entryPoints),
+		duplicateKeys:      &zerolog.BurstSampler{Burst: 1, Period: duplicateKeyLogPeriod},
 	}
 }
 
@@ -155,7 +161,7 @@ func (parser *Parser) processTrace(
 }
 
 func (parser *Parser) buildTags(entryPoint string) string {
-	parsedTags := metaToTags(parser.currentMeta, parser.tagsMapping)
+	parsedTags := metaToTags(parser.currentMeta, parser.tagsMapping, parser.duplicateKeys)
 
 	if !parser.tagEntrypoint {
 		return parsedTags

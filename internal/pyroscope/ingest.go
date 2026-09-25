@@ -60,7 +60,7 @@ func StartIngest(ctx context.Context, cfg Config) *Ingest {
 		logger:   cfg.Logger,
 	}
 
-	if cfg.StatsInterval > 0 && cfg.Logger.Info().Enabled() {
+	if cfg.StatsInterval > 0 && max(cfg.Logger.GetLevel(), zerolog.GlobalLevel()) <= zerolog.InfoLevel {
 		ingest.stats = startStatistics(cfg.StatsInterval, cfg.Logger)
 	}
 

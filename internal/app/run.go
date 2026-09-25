@@ -16,7 +16,6 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/hakastein/gospy/internal/collector"
-	"github.com/hakastein/gospy/internal/obfuscation"
 	"github.com/hakastein/gospy/internal/phpspy"
 	"github.com/hakastein/gospy/internal/pyroscope"
 	"github.com/hakastein/gospy/internal/supervisor"
@@ -32,7 +31,8 @@ const (
 
 var ErrDrainAborted = errors.New("shutdown drain aborted by a second signal")
 
-// Config: a nil Transport keeps the real one; a DrainTimeout at or below zero takes DefaultDrainTimeout.
+// Config: a nil Transport keeps the real one; a DrainTimeout at or below zero takes DefaultDrainTimeout;
+// an empty Restart never restarts.
 type Config struct {
 	PyroscopeURL       string
 	PyroscopeAuth      string
@@ -121,6 +121,16 @@ func validateConfig(cfg Config) error {
 		return errors.New("no profiler application specified")
 	}
 
+	if cfg.AppName == "" {
+		return errors.New("no app name specified")
+	}
+
+	if cfg.Restart != "" {
+		if err := supervisor.ValidateRestart(cfg.Restart); err != nil {
+			return err
+		}
+	}
+
 	if cfg.PyroscopeWorkers < 1 {
 		return fmt.Errorf("pyroscope workers must be at least 1, got %d", cfg.PyroscopeWorkers)
 	}
@@ -163,7 +173,7 @@ func runPipeline(
 ) error {
 	log.Info().
 		Str("pyroscope_url", cfg.PyroscopeURL).
-		Str("pyroscope_auth", obfuscation.MaskString(cfg.PyroscopeAuth, 4, 2)).
+		Str("pyroscope_auth", maskedToken(cfg.PyroscopeAuth)).
 		Str("app_name", cfg.AppName).
 		Bool("tag_entrypoint", cfg.TagEntrypoint).
 		Bool("keep_entrypoint_name", cfg.KeepEntrypointName).
@@ -240,6 +250,14 @@ func awaitDrain(drained, aborted <-chan struct{}, abandonDrain context.CancelFun
 	abandonDrain()
 	log.Warn().Msg("shutdown drain aborted by a second signal")
 	return ErrDrainAborted
+}
+
+func maskedToken(token string) string {
+	if token == "" {
+		return ""
+	}
+
+	return "***"
 }
 
 func (cfg runtimeConfig) batchInterval() time.Duration {
