@@ -16,8 +16,8 @@ import (
 // always get through.
 const stderrBurst = 20
 
-// os/exec closes a StderrPipe in Wait, so the reader has to finish first — bounded, because phpspy
-// in pgrep mode forks children that inherit the pipe and outlive their parent.
+// The profiler closes its stderr in Wait, so the reader has to finish first — bounded, because a
+// descendant that left the profiler's process group can keep stderr open.
 const stderrDrainGrace = 2 * time.Second
 
 type profilerRunner interface {

@@ -37,8 +37,15 @@ var unsupportedModes = []option{
 type Profiler struct {
 	executable string
 	args       []string
-	cmd        *exec.Cmd
+	session    *session
 	mu         sync.Mutex
+}
+
+type session struct {
+	stdout *os.File
+	stderr *os.File
+	exited chan struct{}
+	err    error
 }
 
 func NewProfiler(
@@ -66,21 +73,33 @@ func (profiler *Profiler) Start(ctx context.Context) (*bufio.Scanner, *bufio.Sca
 		Strs("args", profiler.args).
 		Msg("launching profiler process")
 
-	stdout, pipeError := cmd.StdoutPipe()
+	// Own pipes instead of os/exec's: Cmd.Wait closes those, losing phpspy's last output after it exits.
+	stdout, stdoutWriter, pipeError := os.Pipe()
 	if pipeError != nil {
 		return nil, nil, fmt.Errorf("stdout pipe error: %w", pipeError)
 	}
 
-	stderr, pipeError := cmd.StderrPipe()
+	stderr, stderrWriter, pipeError := os.Pipe()
 	if pipeError != nil {
+		closeAll(stdout, stdoutWriter)
 		return nil, nil, fmt.Errorf("stderr pipe error: %w", pipeError)
 	}
 
-	if startError := cmd.Start(); startError != nil {
+	cmd.Stdout, cmd.Stderr = stdoutWriter, stderrWriter
+	startError := cmd.Start()
+	// os/exec leaves a caller's files open, and a write end kept here would hold off EOF for good.
+	closeAll(stdoutWriter, stderrWriter)
+	if startError != nil {
+		closeAll(stdout, stderr)
 		return nil, nil, startError
 	}
 
-	profiler.cmd = cmd
+	profiler.session = &session{
+		stdout: stdout,
+		stderr: stderr,
+		exited: make(chan struct{}),
+	}
+	go profiler.session.reap(cmd)
 
 	stdoutScanner := bufio.NewScanner(stdout)
 	stdoutScanner.Buffer(make([]byte, 0, initialStdoutBufferSize), maxStdoutLineSize)
@@ -88,22 +107,36 @@ func (profiler *Profiler) Start(ctx context.Context) (*bufio.Scanner, *bufio.Sca
 	return stdoutScanner, bufio.NewScanner(stderr), nil
 }
 
+// Wait closes the output behind the scanners Start returned: read them to the end first.
 func (profiler *Profiler) Wait() error {
 	profiler.mu.Lock()
 	defer profiler.mu.Unlock()
 
-	if profiler.cmd == nil {
+	if profiler.session == nil {
 		return errors.New("no command to wait for")
 	}
 
-	waitErr := profiler.cmd.Wait()
+	<-profiler.session.exited
+	closeAll(profiler.session.stdout, profiler.session.stderr)
 
-	// The group outlives its leader while phpspy's own children are left in it.
-	if killErr := signalGroup(profiler.cmd.Process.Pid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+	return profiler.session.err
+}
+
+// In pgrep mode phpspy's children stay in its group after it exits and hold the output open.
+func (session *session) reap(cmd *exec.Cmd) {
+	defer close(session.exited)
+
+	session.err = cmd.Wait()
+
+	if killErr := signalGroup(cmd.Process.Pid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 		log.Warn().Err(killErr).Msg("cannot kill processes the profiler left behind")
 	}
+}
 
-	return waitErr
+func closeAll(files ...*os.File) {
+	for _, file := range files {
+		_ = file.Close()
+	}
 }
 
 // signalGroup reports os.ErrProcessDone once nothing is left in the group, as exec.Cmd.Cancel expects.

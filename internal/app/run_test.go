@@ -327,3 +327,17 @@ func TestRunEndsTheSessionOnAnOverLongProfilerLine(t *testing.T) {
 		t.Fatal("the sample parsed before the over-long line never reached pyroscope")
 	}
 }
+
+func TestRunEndsTheSessionWhenTheProfilerExitsBeforeItsChildren(t *testing.T) {
+	t.Parallel()
+
+	transport := &captureTransport{}
+	// sleep stands in for a pgrep-mode child: it inherits phpspy's stdout and outlives phpspy.
+	cfg := checkoutConfig(writeProfilerScript(t, "phpspy", "#!/bin/sh\nsleep 60 &\ncat "+fixturePath(t, "peek-global.txt")+"\n"))
+	cfg.PyroscopeURL = pyroscopeURL
+	cfg.Transport = transport
+
+	require.NoError(t, awaitRun(t, startRun(context.Background(), cfg)))
+
+	require.Equal(t, peekGlobalCheckoutStacks(), countStacks(t, transport.captured()), "every sample printed before the profiler exited must be delivered")
+}

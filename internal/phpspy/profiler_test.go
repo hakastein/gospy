@@ -1,9 +1,13 @@
 package phpspy_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -26,6 +30,34 @@ func TestProfilerStartExposesStderrScanner(t *testing.T) {
 	require.NoError(t, profiler.Wait())
 }
 
+func TestProfilerOutputOutlivesTheProfiler(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	profiler := phpspy.NewProfiler("sh", []string{"-c", `echo trace; echo failure >&2; echo $$ > "$1"`, "sh", pidFile})
+
+	stdout, stderr, err := profiler.Start(context.Background())
+	require.NoError(t, err)
+
+	// A zombie still answers signal 0, so ESRCH means the profiler is gone for good.
+	require.Eventually(t, func() bool {
+		content, err := os.ReadFile(pidFile)
+		if err != nil || !bytes.HasSuffix(content, []byte("\n")) {
+			return false
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(content)))
+		return err == nil && errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+	}, 5*time.Second, 10*time.Millisecond, "the profiler did not go away on its own")
+
+	require.True(t, stdout.Scan())
+	require.Equal(t, "trace", stdout.Text())
+	require.False(t, stdout.Scan())
+	require.NoError(t, stdout.Err())
+
+	require.True(t, stderr.Scan())
+	require.Equal(t, "failure", stderr.Text())
+
+	require.NoError(t, profiler.Wait())
+}
+
 func TestProfilerLeavesNoProcessBehind(t *testing.T) {
 	testCases := []struct {
 		name   string
@@ -35,6 +67,14 @@ func TestProfilerLeavesNoProcessBehind(t *testing.T) {
 		{
 			name:   "the profiler exits on its own",
 			script: "sleep 60 >/dev/null 2>&1 &\necho $!\n",
+		},
+		{
+			name:   "the profiler exits while its child holds stdout",
+			script: "sleep 60 2>/dev/null &\necho $!\n",
+		},
+		{
+			name:   "the profiler exits while its child holds stderr",
+			script: "sleep 60 >/dev/null &\necho $!\n",
 		},
 		{
 			name:   "the profiler is cancelled",
@@ -49,7 +89,7 @@ func TestProfilerLeavesNoProcessBehind(t *testing.T) {
 			defer cancel()
 
 			profiler := phpspy.NewProfiler("sh", []string{"-c", tc.script})
-			stdout, _, err := profiler.Start(ctx)
+			stdout, stderr, err := profiler.Start(ctx)
 			require.NoError(t, err)
 
 			require.True(t, stdout.Scan())
@@ -61,17 +101,19 @@ func TestProfilerLeavesNoProcessBehind(t *testing.T) {
 				cancel()
 			}
 
-			// The cancelled child holds stdout, so EOF only comes once the whole group is signaled.
+			// A child left holding the output keeps it open until the whole group is signaled.
 			drained := make(chan struct{})
 			go func() {
 				defer close(drained)
 				for stdout.Scan() {
 				}
+				for stderr.Scan() {
+				}
 			}()
 			select {
 			case <-drained:
 			case <-time.After(10 * time.Second):
-				t.Fatal("the profiler's child still holds stdout")
+				t.Fatal("the profiler's child still holds its output")
 			}
 
 			_ = profiler.Wait()

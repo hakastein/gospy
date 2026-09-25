@@ -30,6 +30,18 @@ func checkoutConfig(profilerApp string) app.Config {
 	}
 }
 
+func peekGlobalCheckoutStacks() map[string]map[string]int {
+	return map[string]map[string]int{
+		"checkout{env=production,uri=/orders/42}": {
+			`main /srv/app/public/index.php;App\Kernel::handle;App\Controller\OrderController::show;App\Repository\OrderRepository::find;PDO::prepare`: 2,
+			`main /srv/app/public/index.php;App\Kernel::handle;App\Controller\OrderController::show;json_encode`:                                       1,
+		},
+		"checkout{env=production,uri=/cart}": {
+			`main /srv/app/public/index.php;App\Kernel::handle;App\Controller\CartController::add;usleep`: 1,
+		},
+	}
+}
+
 func hangingPyroscope(t *testing.T) (string, <-chan struct{}) {
 	t.Helper()
 
@@ -118,15 +130,7 @@ func TestRunDeliversEveryAcceptedSampleOnCancellation(t *testing.T) {
 	cancel()
 	require.NoError(t, awaitRun(t, done), "a shutdown is not a failed run")
 
-	require.Equal(t, map[string]map[string]int{
-		"checkout{env=production,uri=/orders/42}": {
-			`main /srv/app/public/index.php;App\Kernel::handle;App\Controller\OrderController::show;App\Repository\OrderRepository::find;PDO::prepare`: 2,
-			`main /srv/app/public/index.php;App\Kernel::handle;App\Controller\OrderController::show;json_encode`:                                       1,
-		},
-		"checkout{env=production,uri=/cart}": {
-			`main /srv/app/public/index.php;App\Kernel::handle;App\Controller\CartController::add;usleep`: 1,
-		},
-	}, countStacks(t, transport.captured()), "every sample accepted before cancellation must be delivered")
+	require.Equal(t, peekGlobalCheckoutStacks(), countStacks(t, transport.captured()), "every sample accepted before cancellation must be delivered")
 }
 
 func TestRunEndsTheDrainAtItsDeadline(t *testing.T) {
