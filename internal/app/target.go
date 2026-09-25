@@ -175,11 +175,11 @@ func (runner *targetRunner) reportStartFailure(process target.Process, err error
 }
 
 func permanentStartFailure(err error) bool {
-	if errors.Is(err, exec.ErrNotFound) {
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
 		return true
 	}
 
-	for _, code := range []error{fs.ErrNotExist, fs.ErrPermission, syscall.ENOEXEC, syscall.ENOTDIR, syscall.ELIBBAD} {
+	for _, code := range []error{syscall.ENOEXEC, syscall.ENOTDIR} {
 		if errors.Is(err, code) {
 			return true
 		}

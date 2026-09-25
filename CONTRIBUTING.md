@@ -36,7 +36,7 @@ configuration file and container examples.
 | `make test` | Clears the test cache and runs everything under `cmd/` and `internal/` |
 | `make lint` | golangci-lint plus a gofmt check |
 | `make fmt` | `go fmt` — the quickest way to fix what the gofmt check complains about |
-| `make vet` | `go vet` over the same packages |
+| `make vet` | `go vet` over the same packages, for linux and for darwin |
 | `make coverage` | Writes `coverage.out`; `make coverage-html` renders it |
 | `make bench` | Benchmarks with `-race` |
 
