@@ -30,7 +30,7 @@ func TestValidateArgs(t *testing.T) {
 		},
 		{
 			name: "an abbreviated flag that is not managed",
-			args: []string{"--max=3", "--peek-g", "server.REQUEST_URI", "--cont"},
+			args: []string{"--php=74", "--peek-g", "server.REQUEST_URI", "--cont"},
 		},
 		{
 			name: "flags of phpspy's unreleased master",
@@ -87,7 +87,12 @@ func TestValidateArgs(t *testing.T) {
 		{
 			name:    "an ambiguous abbreviation",
 			args:    []string{"--p", "1"},
-			wantErr: "phpspy flag --p is ambiguous: it could be --pid, --pgrep, --php-version, --pause-process, --peek-var, --peek-global",
+			wantErr: "phpspy flag --p is ambiguous: it could be --pid, --pgrep, --php-version, --pause-process, --peek-var, --peek-global, --peek-pdo",
+		},
+		{
+			name:    "an abbreviation that master made ambiguous",
+			args:    []string{"--max=3"},
+			wantErr: "phpspy flag --max is ambiguous: it could be --max-depth, --max-depth-outer",
 		},
 		{
 			name:    "a managed flag inside a cluster",
