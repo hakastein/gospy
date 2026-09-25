@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -178,7 +179,7 @@ func permanentStartFailure(err error) bool {
 		return true
 	}
 
-	for _, code := range permanentStartErrnos {
+	for _, code := range []error{syscall.ENOEXEC, syscall.ENOTDIR} {
 		if errors.Is(err, code) {
 			return true
 		}
