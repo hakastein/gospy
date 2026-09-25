@@ -2,7 +2,11 @@ package phpspy_test
 
 import (
 	"context"
+	"errors"
+	"strconv"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -20,6 +24,63 @@ func TestProfilerStartExposesStderrScanner(t *testing.T) {
 	require.Equal(t, "profiler-stderr", stderrScanner.Text())
 
 	require.NoError(t, profiler.Wait())
+}
+
+func TestProfilerLeavesNoProcessBehind(t *testing.T) {
+	testCases := []struct {
+		name   string
+		script string
+		cancel bool
+	}{
+		{
+			name:   "the profiler exits on its own",
+			script: "sleep 60 >/dev/null 2>&1 &\necho $!\n",
+		},
+		{
+			name:   "the profiler is cancelled",
+			script: "sleep 60 &\necho $!\nwait\n",
+			cancel: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			profiler := phpspy.NewProfiler("sh", []string{"-c", tc.script})
+			stdout, _, err := profiler.Start(ctx)
+			require.NoError(t, err)
+
+			require.True(t, stdout.Scan())
+			child, err := strconv.Atoi(stdout.Text())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+
+			if tc.cancel {
+				cancel()
+			}
+
+			// The cancelled child holds stdout, so EOF only comes once the whole group is signaled.
+			drained := make(chan struct{})
+			go func() {
+				defer close(drained)
+				for stdout.Scan() {
+				}
+			}()
+			select {
+			case <-drained:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the profiler's child still holds stdout")
+			}
+
+			_ = profiler.Wait()
+
+			require.Eventually(t, func() bool {
+				return errors.Is(syscall.Kill(child, 0), syscall.ESRCH)
+			}, 5*time.Second, 10*time.Millisecond, "the profiler's child outlived it")
+		})
+	}
 }
 
 func TestProfilerValidateConfiguration(t *testing.T) {
