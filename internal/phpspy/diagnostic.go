@@ -1,6 +1,7 @@
 package phpspy
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -40,4 +41,18 @@ func copiedField(line string) string {
 	}
 
 	return ""
+}
+
+// Transient reports a failed read of memory the traced process was changing or had just
+// released, which sampling a live process runs into all the time.
+func Transient(line string) bool {
+	return strings.HasPrefix(line, "process_vm_readv: No such process") ||
+		strings.HasPrefix(line, "copy_proc_mem:") &&
+			(strings.Contains(line, "err=Bad address") || strings.HasSuffix(line, "raddr is NULL"))
+}
+
+var diagnosticNumbers = regexp.MustCompile(`0x[0-9a-fA-F]+|[0-9]+`)
+
+func DiagnosticKind(line string) string {
+	return diagnosticNumbers.ReplaceAllString(line, "…")
 }
