@@ -27,9 +27,12 @@ import (
 const (
 	sampleBuffer         = 1000
 	DefaultBatchInterval = 5 * time.Second
+	DefaultDrainTimeout  = 10 * time.Second
 )
 
-// Config: a nil Transport keeps the real one.
+var ErrDrainAborted = errors.New("shutdown drain aborted by a second signal")
+
+// Config: a nil Transport keeps the real one; a DrainTimeout at or below zero takes DefaultDrainTimeout.
 type Config struct {
 	PyroscopeURL       string
 	PyroscopeAuth      string
@@ -46,6 +49,7 @@ type Config struct {
 	Entrypoints        []string
 	BatchInterval      time.Duration
 	StatsInterval      time.Duration
+	DrainTimeout       time.Duration
 	ProfilerApp        string
 	ProfilerArguments  []string
 	Transport          http.RoundTripper
@@ -170,13 +174,13 @@ func runPipeline(
 		Strs("tags", cfg.AppTags).
 		Msg("gospy started")
 
-	profilerCtx, profilerCancel := context.WithCancel(ctx)
-	defer profilerCancel()
+	profilerCtx, stopProfiler := context.WithCancel(ctx)
+	defer stopProfiler()
 
-	drainCtx, drainCancel := context.WithCancel(context.WithoutCancel(ctx))
-	defer drainCancel()
+	drainCtx, abandonDrain := context.WithCancel(context.WithoutCancel(ctx))
+	defer abandonDrain()
 
-	stopSignals := startSignalForwarder(profilerCtx, profilerCancel)
+	aborted, stopSignals := forwardSignals(profilerCtx, stopProfiler)
 	defer stopSignals()
 
 	stacks := make(chan *collector.Sample, sampleBuffer)
@@ -196,13 +200,46 @@ func runPipeline(
 
 	runErr := supervisor.ManageProfiler(profilerCtx, profilerImpl, parserImpl, stacks, supervisor.RestartPolicy{Mode: cfg.Restart})
 
-	close(stacks)
-	<-collectorDone
-	ingest.Wait()
-	drainCancel()
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		close(stacks)
+		<-collectorDone
+		ingest.Wait()
+	}()
+
+	if drainErr := awaitDrain(drained, aborted, abandonDrain, cfg.drainTimeout()); drainErr != nil {
+		return errors.Join(runErr, drainErr)
+	}
 
 	log.Info().Msg("shutting down")
 	return runErr
+}
+
+// awaitDrain relies on the ingest fast-fail contract: once the drain context is cancelled the
+// batch in flight fails and every queued one is counted as dropped, so the drain ends promptly.
+func awaitDrain(drained, aborted <-chan struct{}, abandonDrain context.CancelFunc, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	select {
+	case <-drained:
+		return nil
+	case <-aborted:
+	case <-deadline.C:
+		abandonDrain()
+		log.Warn().Dur("drain_timeout", timeout).Msg("shutdown drain cut short, undelivered batches dropped")
+
+		select {
+		case <-drained:
+			return nil
+		case <-aborted:
+		}
+	}
+
+	abandonDrain()
+	log.Warn().Msg("shutdown drain aborted by a second signal")
+	return ErrDrainAborted
 }
 
 func (cfg runtimeConfig) batchInterval() time.Duration {
@@ -211,6 +248,14 @@ func (cfg runtimeConfig) batchInterval() time.Duration {
 	}
 
 	return cfg.BatchInterval
+}
+
+func (cfg runtimeConfig) drainTimeout() time.Duration {
+	if cfg.DrainTimeout <= 0 {
+		return DefaultDrainTimeout
+	}
+
+	return cfg.DrainTimeout
 }
 
 func (cfg runtimeConfig) ingestConfig(sampleRate int) pyroscope.Config {
@@ -231,20 +276,33 @@ func (cfg runtimeConfig) ingestConfig(sampleRate int) pyroscope.Config {
 	}
 }
 
-func startSignalForwarder(ctx context.Context, cancel context.CancelFunc) func() {
-	signals := make(chan os.Signal, 1)
+func forwardSignals(profilerCtx context.Context, stopProfiler context.CancelFunc) (<-chan struct{}, func()) {
+	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 
+	aborted := make(chan struct{})
+	done := make(chan struct{})
+
 	go func() {
-		select {
-		case sig := <-signals:
-			log.Info().Str("signal", sig.String()).Msg("signal received")
-			cancel()
-		case <-ctx.Done():
+		for {
+			select {
+			case sig := <-signals:
+				log.Info().Str("signal", sig.String()).Msg("signal received")
+				if profilerCtx.Err() == nil {
+					stopProfiler()
+					continue
+				}
+
+				close(aborted)
+				return
+			case <-done:
+				return
+			}
 		}
 	}()
 
-	return func() {
+	return aborted, func() {
 		signal.Stop(signals)
+		close(done)
 	}
 }
