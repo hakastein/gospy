@@ -58,7 +58,7 @@ jobs:
       # and conventional title, as documented in docs/releasing.md. goreleaser
       # only uploads the file this produces.
       - name: Build Changelog
-        uses: mikepenz/release-changelog-builder-action@c9dc8369bccbc41e0ac887f8fd674f5925d315f7 # v5.4.1
+        uses: mikepenz/release-changelog-builder-action@cb021f9b36a51a7c6f18e4679b6fa2cb77a1260c # v6.3.0
         with:
           configuration: .github/configuration.json
           outputFile: ${{ runner.temp }}/release-notes.md
