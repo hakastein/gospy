@@ -71,8 +71,10 @@ dev:
 	echo "Building with VERSION=$$VERSION" ; \
 	make build VERSION=$$VERSION
 
+# The release publishes darwin archives, so the packages must vet there too.
 vet:
 	go vet ./cmd/... ./internal/...
+	GOOS=darwin go vet ./cmd/... ./internal/...
 
 # Same checks the CI lint job runs
 lint:
