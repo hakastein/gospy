@@ -1,0 +1,30 @@
+0 PDO::prepare <internal>:-1
+1 App\Repository\OrderRepository::find /srv/app/src/Repository/OrderRepository.php:64
+2 App\Controller\OrderController::show /srv/app/src/Controller/OrderController.php:39
+3 App\Kernel::handle /srv/app/src/Kernel.php:120
+4 main /srv/app/public/index.php:17
+# glopeek server.REQUEST_METHOD = GET
+# glopeek server.REQUEST_URI = /orders/42
+
+0 PDO::prepare <internal>:-1
+1 App\Repository\OrderRepository::find /srv/app/src/Repository/OrderRepository.php:64
+2 App\Controller\OrderController::show /srv/app/src/Controller/OrderController.php:39
+3 App\Kernel::handle /srv/app/src/Kernel.php:120
+4 main /srv/app/public/index.php:17
+# glopeek server.REQUEST_METHOD = GET
+# glopeek server.REQUEST_URI = /orders/42
+
+0 json_encode <internal>:-1
+1 App\Controller\OrderController::show /srv/app/src/Controller/OrderController.php:51
+2 App\Kernel::handle /srv/app/src/Kernel.php:120
+3 main /srv/app/public/index.php:17
+# glopeek server.REQUEST_METHOD = GET
+# glopeek server.REQUEST_URI = /orders/42
+
+0 usleep <internal>:-1
+1 App\Controller\CartController::add /srv/app/src/Controller/CartController.php:28
+2 App\Kernel::handle /srv/app/src/Kernel.php:120
+3 main /srv/app/public/index.php:17
+# glopeek server.REQUEST_METHOD = POST
+# glopeek server.REQUEST_URI = /cart
+
