@@ -331,6 +331,21 @@ func TestIngestSendsEachBatchAtItsOwnSampleRate(t *testing.T) {
 	require.Equal(t, map[string]string{"myapp{source=fpm}": "25", "myapp{source=cli}": "10"}, rates)
 }
 
+func TestIngestReplacesInvalidUTF8(t *testing.T) {
+	t.Parallel()
+
+	harness := startIngest(context.Background(), ingestOptions{
+		cfg: pyroscope.Config{AppName: "myapp"},
+	})
+
+	harness.send(batch("uri="+tag.SanitizeValue("/caf\xc3"), map[string]int{"main;\xffrender": 3}))
+
+	requests := harness.transport.captured()
+	require.Len(t, requests, 1)
+	require.Equal(t, "myapp{uri=/caf\uFFFD}", requests[0].query.Get("name"))
+	require.Equal(t, "main;\uFFFDrender 3", requests[0].body)
+}
+
 func TestIngestReportsFailedSends(t *testing.T) {
 	t.Parallel()
 
