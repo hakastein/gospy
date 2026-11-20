@@ -11,6 +11,10 @@ import (
 const (
 	appNameEstimatedLength  = 50
 	appQueryEstimatedLength = 150
+
+	// invalidUTF8Replacement stands in for bytes that are not UTF-8: Pyroscope rejects the
+	// whole batch over a single such byte in a label or a frame.
+	invalidUTF8Replacement = "\uFFFD"
 )
 
 type appMetadata struct {
@@ -52,7 +56,7 @@ func (app *appMetadata) queryString(batch *collector.TagCollection) string {
 	builder.Grow(appQueryEstimatedLength)
 
 	builder.WriteString("name=")
-	builder.WriteString(url.QueryEscape(app.fullAppName(batch.Tags())))
+	builder.WriteString(url.QueryEscape(strings.ToValidUTF8(app.fullAppName(batch.Tags()), invalidUTF8Replacement)))
 	builder.WriteString("&from=")
 	builder.WriteString(strconv.FormatInt(batch.From().Unix(), 10))
 	builder.WriteString("&until=")
@@ -75,7 +79,7 @@ func foldedBody(batch *collector.TagCollection) []byte {
 		} else {
 			body = append(body, '\n')
 		}
-		body = append(body, stack...)
+		body = append(body, strings.ToValidUTF8(stack, invalidUTF8Replacement)...)
 		body = append(body, ' ')
 		body = strconv.AppendInt(body, int64(count), 10)
 	}
